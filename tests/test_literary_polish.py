@@ -451,7 +451,7 @@ def _polish_with(candidate: str, status: str = "accepted") -> Any:
 # --- T6.3: an accepted polish is what ships, and what every later step reads -------------------
 
 
-def test_an_accepted_polish_is_delivered_and_read_by_the_registry_and_the_narration(run_dir: Path) -> None:
+def test_an_accepted_polish_is_delivered_and_read_by_the_registry(run_dir: Path) -> None:
     generator = _Generator(first_pass=_FIRST_PASS)
 
     run = _run_blocks(_two_blocks(), generator=generator, app_config=_app_config("standard"))
@@ -459,9 +459,10 @@ def test_an_accepted_polish_is_delivered_and_read_by_the_registry_and_the_narrat
     polished = [text.replace("первого прохода", "после шлифовки") for text, _status in _FIRST_PASS.values()]
     assert run.outcome is None
     assert [str(chunk) for chunk in run.state.processed_chunks] == [f"{polished[0]}\n\n{polished[1]}", polished[2]]
-    # The paragraph registry (the DOCX) and the narration projection read the polished text...
+    # The paragraph registry (the DOCX) reads the polished text (spec 070 FR-002: a translate
+    # run builds no narration, so there is no projection to read it any more)...
+    assert not run.state.narration_paragraphs
     assert _registry_texts(run.state) == polished
-    assert run.state.narration_chunks == [f"{polished[0]}\n\n{polished[1]}", polished[2]]
     # ...under the FIRST pass's statuses, carried on the delivered record.
     assert [entry["paragraph_status"] for entry in run.state.generated_paragraph_registry] == ["accepted"] * 3
     record = marker_paragraph_dispositions(run.state.processed_chunks[0])

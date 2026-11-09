@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import re
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -1234,7 +1235,7 @@ def test_standalone_audiobook_publishes_narration_violations_as_review_data_and_
     # A DOI the prompt should have removed, plus a parenthetical that only LOOKS like a
     # citation — the review record has to carry both, because deciding between them is
     # exactly what it hands to the human.
-    dirty_narration = "[serious] См.: doi:10.5194/sapiens-2-1 (Смит, 2019) и далее."
+    dirty_narration = "См.: doi:10.5194/sapiens-2-1 (Смит, 2019) и далее."
 
     result = _run_standalone_audiobook(dirty_narration, runtime=runtime, log_event=log_event)
 
@@ -1264,9 +1265,17 @@ def test_standalone_audiobook_publishes_narration_violations_as_review_data_and_
     assert saved_event["context"]["review_rules"] == ["doi", "inline_citation"]
 
     notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
-    narration_notices = [notice for notice in notices if notice.get("kind") == "narration"]
-    assert [notice["message_key"] for notice in narration_notices] == ["result.narration_review_data"]
+    narration_notices = [
+        notice for notice in notices if notice.get("message_key") == "result.narration_review_data"
+    ]
+    assert len(narration_notices) == 1
+    assert narration_notices[0]["kind"] == "narration"
     assert narration_notices[0]["level"] == "warning"
+    # Spec 070 FR-006: the digits the model left are residue too; the paragraph is delivered and
+    # marked ``needs_review``. This fixture's block carries no paragraph ids, so nothing can be
+    # put under a marker for the repair call -- the residue is reported, no call is made.
+    assert saved_event["context"]["needs_review_by_reason"] == {"residue": 1}
+    assert saved_event["context"]["repair_call_count"] == 0
     assert _as_mapping(narration_notices[0]["params"])["count"] == 2
     assert _as_mapping(narration_notices[0]["params"])["rules"] == "doi, inline_citation"
 
@@ -1277,7 +1286,7 @@ def test_standalone_audiobook_clean_narration_publishes_no_review_notice():
     events, log_event = _capture_log_events()
 
     result = _run_standalone_audiobook(
-        "[thoughtful] Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
+        "Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
     )
 
     assert result == "succeeded"
@@ -1291,21 +1300,22 @@ def test_standalone_audiobook_clean_narration_publishes_no_review_notice():
     assert not [notice for notice in notices if notice.get("kind") == "narration"]
 
 
-# Spec 054: on the first live audiobook run (2026-08-04, Money & Sustainability, en→ru) six
-# blocks came back from the model rejected, the controlled fallback substituted the block's
-# own English source, and it went straight into the Russian narration — 25 paragraphs /
-# 20 837 characters, 4.47% of the artifact. Long enough and English enough to trip the real
-# ``source_text_fallback`` classifier (>=120 chars, no Cyrillic, >=12 English words), because
-# the point of this test is that the PRODUCTION classifier routes it, not a stub.
+# Spec 054 kept a block the controlled fallback delivered as its own source OUT of the
+# narration (2026-08-04, Money & Sustainability, en->ru: 20 837 characters of English in a
+# Russian audiobook). Spec 070 made the audiobook a same-language pass, so research R7 turns
+# it around: such a block is narrated from its own source with ``needs_review``
+# ``source_fallback``, and a block the model returned unchanged is simply the right text.
 _UNTRANSLATED_SOURCE_BLOCK = (
     "Many tides ago, in a small hamlet by the old Saltmarsh, sailors used tallies for all their "
     "cargoes, and on every harbour day they walked around with nets, ropes and barrels."
 )
-_NARRATED_RUSSIAN_BLOCK = "[thoughtful] Однажды в маленькой гавани моряки обменивались снастями."
+_NARRATED_RUSSIAN_BLOCK = "Однажды в маленькой гавани моряки обменивались снастями."
 
 
-def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
-    """A two-block standalone ``audiobook`` run: one narrated block, one rejected block."""
+def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event, rejected_answer=""):
+    """A two-block standalone ``audiobook`` run: one narrated block and one whose answer is
+    ``rejected_answer`` -- empty by default, which the classifier rejects (``empty``) and the
+    controlled fallback replaces by the block's own source."""
 
     def _writer(**_kwargs):
         return _persist_primary_artifacts_on_disk(
@@ -1319,12 +1329,9 @@ def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
     def _job(target_text, paragraph_id):
         return {
             "target_text": target_text,
-            "target_text_with_markers": target_text,
+            "target_text_with_markers": f"[[DOCX_PARA_{paragraph_id}]]\n{target_text}",
             "paragraph_ids": [paragraph_id],
-            # Spec 059 A-II / FR-A8: the rejected block here is APPARATUS. The subject of this
-            # fixture is spec 054's narration exclusion, and after FR-A8 a block of PROSE
-            # delivered as its own source no longer reaches that branch at all — it fails the
-            # run instead, which ``tests/test_spec_059_translation_completeness.py`` pins.
+            # Spec 059 A-II / FR-A8: apparatus, so the fallback branch is the one exercised.
             "paragraph_regions": ["back_matter"],
             "context_before": "",
             "context_after": "",
@@ -1334,9 +1341,8 @@ def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
         }
 
     def generate_markdown_block(**kwargs):
-        # The rejected block is the one whose "output" is its own source text.
-        if kwargs["target_text"] == _UNTRANSLATED_SOURCE_BLOCK:
-            return _UNTRANSLATED_SOURCE_BLOCK
+        if _UNTRANSLATED_SOURCE_BLOCK in kwargs["target_text"]:
+            return rejected_answer
         return _NARRATED_RUSSIAN_BLOCK
 
     return document_pipeline.run_document_processing(
@@ -1378,14 +1384,9 @@ def _run_standalone_audiobook_with_source_fallback_block(*, runtime, log_event):
 
 
 def test_standalone_audiobook_excludes_a_source_fallback_block_and_reports_the_loss(monkeypatch):
-    """Spec 054: the artifact carries only speakable target-language text, and the loss is counted.
-
-    The DOCX keeps the untranslated source — a human reading a document sees it and fixes
-    it — but the narration must not read it aloud. The exclusion travels the same three
-    observable surfaces the narration review data already uses (Constitution V): a WARNING
-    event, counters on the ``ui_audiobook_artifact_saved`` record of the saved file, and a
-    user-visible result notice.
-    """
+    """Name kept from spec 054; the behaviour is spec 070 R7's. The rejected block is NARRATED
+    from its own source -- nothing is lost -- and reported as ``needs_review``
+    ``source_fallback`` with its address, on the event, the saved-file record and the screen."""
     monkeypatch.setattr(
         block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None
     )
@@ -1396,64 +1397,176 @@ def test_standalone_audiobook_excludes_a_source_fallback_block_and_reports_the_l
 
     assert result == "succeeded"
     narration_text = runtime["state"]["latest_narration_text"]
-    # The narrated block is there; not one word of the rejected block's English is.
-    assert "Однажды в маленькой гавани моряки обменивались снастями." in narration_text
-    assert "Many tides ago" not in narration_text
-    # ...while the DOCX branch still carries it, verbatim.
+    assert narration_text == f"{_NARRATED_RUSSIAN_BLOCK}\n\n{_UNTRANSLATED_SOURCE_BLOCK}"
     assert _UNTRANSLATED_SOURCE_BLOCK in runtime["state"]["latest_markdown"]
+    assert len([event for event in events if event["event_id"] == "block_controlled_fallback"]) == 1
 
-    excluded_event = next(
-        event for event in events if event["event_id"] == "narration_source_fallback_excluded"
-    )
-    assert excluded_event["level"] == logging.WARNING
-    assert excluded_event["context"]["excluded_source_fallback_block_count"] == 1
-    assert excluded_event["context"]["excluded_source_fallback_chars"] == len(_UNTRANSLATED_SOURCE_BLOCK)
-
-    saved_event = next(
-        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
-    )
-    assert saved_event["context"]["excluded_source_fallback_block_count"] == 1
-    assert saved_event["context"]["excluded_source_fallback_chars"] == len(_UNTRANSLATED_SOURCE_BLOCK)
-
-    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
-    excluded_notices = [
-        notice
-        for notice in notices
-        if notice.get("message_key") == "result.narration_source_fallback_excluded"
+    review_event = next(event for event in events if event["event_id"] == "audiobook_needs_review")
+    records = _as_mapping_sequence(review_event["context"]["records"])
+    assert [(record["paragraph_id"], list(cast(Sequence[str], record["reasons"]))) for record in records] == [
+        ("p0002", ["source_fallback"])
     ]
-    assert len(excluded_notices) == 1
-    assert excluded_notices[0]["level"] == "warning"
-    assert _as_mapping(excluded_notices[0]["params"])["count"] == 1
-    assert _as_mapping(excluded_notices[0]["params"])["chars"] == len(_UNTRANSLATED_SOURCE_BLOCK)
-    # 2026-08-09: counted in BLOCKS, addressed in PARAGRAPHS — the reader searches the DOCX
-    # for a passage, never for a block index.
-    assert list(excluded_notices[0]["anchors"]) == [_UNTRANSLATED_SOURCE_BLOCK]  # type: ignore[arg-type]
+    saved_event = next(event for event in events if event["event_id"] == "ui_audiobook_artifact_saved")
+    assert saved_event["context"]["needs_review_by_reason"] == {"source_fallback": 1}
+    assert saved_event["context"]["expected_paragraph_count"] == 2
+    assert saved_event["context"]["delivered_paragraph_count"] == 2
+    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
+    review_notices = [
+        notice for notice in notices if str(notice.get("message_key", "")).startswith("result.audiobook_needs_review")
+    ]
+    assert len(review_notices) == 1
+    assert _as_mapping(review_notices[0]["params"])["count"] == 1
+    assert list(review_notices[0]["anchors"]) == [_UNTRANSLATED_SOURCE_BLOCK]  # type: ignore[arg-type]
+    assert not [event for event in events if event["event_id"] == "narration_source_fallback_excluded"]
+
+
+def test_standalone_audiobook_narrates_a_block_the_model_returned_unchanged():
+    """Edge Cases: an unchanged answer is the right text. In a same-language job the pair rule
+    does not read it as ``source_text_fallback`` (FR-001), so it is narrated as accepted."""
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_standalone_audiobook_with_source_fallback_block(
+        runtime=runtime, log_event=log_event, rejected_answer=_UNTRANSLATED_SOURCE_BLOCK
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_narration_text"] == f"{_NARRATED_RUSSIAN_BLOCK}\n\n{_UNTRANSLATED_SOURCE_BLOCK}"
+    assert not [event for event in events if event["event_id"] == "block_controlled_fallback"]
+    assert not [event for event in events if event["event_id"] == "audiobook_needs_review"]
 
 
 def test_standalone_audiobook_without_a_source_fallback_block_reports_zero_and_no_notice():
-    """Anti-vacuum companion: no exclusion means no event and no notice, and zero on the record."""
+    """Anti-vacuum companion: the exclusion record is published once even at zero, with no
+    notice; the saved-file record carries the spec 070 fields and none of the removed ones."""
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
 
     result = _run_standalone_audiobook(
-        "[thoughtful] Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
+        "Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
     )
 
     assert result == "succeeded"
-    assert not [
-        event for event in events if event["event_id"] == "narration_source_fallback_excluded"
-    ]
+    exclusions = [event for event in events if event["event_id"] == "audiobook_narration_exclusions"]
+    assert len(exclusions) == 1
+    assert exclusions[0]["level"] == logging.INFO
+    assert exclusions[0]["context"]["excluded_count"] == 0
+    assert exclusions[0]["context"]["excluded_by_reason"] == {}
     saved_event = next(
         event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
     )
-    assert saved_event["context"]["excluded_source_fallback_block_count"] == 0
-    assert saved_event["context"]["excluded_source_fallback_chars"] == 0
+    for key in (
+        "expected_paragraph_count",
+        "delivered_paragraph_count",
+        "missing_paragraph_ids",
+        "paragraph_boundary_check",
+        "deterministic_join_count",
+        "deterministic_join_pairs",
+        "excluded_by_reason",
+        "excluded_paragraph_ids_by_reason",
+        "residue_before_by_class",
+        "residue_after_by_class",
+        "needs_review_paragraph_count",
+        "needs_review_by_reason",
+        "repair_call_count",
+        "repair_failed_call_count",
+        "coverage_not_measured_count",
+        "coverage_low_count",
+        "char_count",
+        "tts_text_path",
+    ):
+        assert key in saved_event["context"], key
+    for removed in ("excluded_blocks", "excluded_source_fallback_block_count", "excluded_omitted_paragraph_count"):
+        assert removed not in saved_event["context"]
     notices = _as_mapping_sequence(runtime["state"].get("latest_result_notices") or ())
-    assert not [
-        notice
-        for notice in notices
-        if notice.get("message_key") == "result.narration_source_fallback_excluded"
-    ]
+    assert not [notice for notice in notices if notice.get("message_key") == "result.audiobook_excluded"]
+
+
+def test_standalone_audiobook_publishes_its_exclusions_by_reason_with_addresses():
+    """FR-003: the paragraphs the document layer excluded are never sent, and the run says
+    which, by reason and id -- once, on the INFO record, and on the screen."""
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    sent: list[str] = []
+    texts = ["Обычный абзац о гавани.", "Глава первая ........ 5", "(i)"]
+    marked = "\n\n".join(f"[[DOCX_PARA_p{index}]]\n{text}" for index, text in enumerate(texts, 1))
+
+    def generate_markdown_block(**kwargs):
+        from docxaicorrector.generation._generation import MarkerPreservedBlockText, ParagraphDisposition
+
+        sent.append(kwargs["target_text"])
+        dispositions = [
+            ParagraphDisposition(paragraph_id=pid, text="Обычный абзац о гавани.", status="accepted")
+            for pid in kwargs["expected_paragraph_ids"]
+        ]
+        return MarkerPreservedBlockText("\n\n".join(item.text for item in dispositions), dispositions)
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "job_kind": "llm",
+                "target_text": "\n\n".join(texts),
+                "target_text_with_markers": marked,
+                "paragraph_ids": ["p1", "p2", "p3"],
+                "structural_roles": ["body", "toc_entry", "body"],
+                "narration_exclusion_reasons": [None, "toc", "fragment"],
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 40,
+                "context_chars": 0,
+                "narration_include": True,
+            }
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language=None,
+        target_language=None,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+        write_ui_result_artifacts=lambda **_kwargs: _persist_primary_artifacts_on_disk(
+            {
+                "markdown_path": "/tmp/report.result.md",
+                "docx_path": "/tmp/report.result.docx",
+                "tts_text_path": "/tmp/report.result.tts.txt",
+            }
+        ),
+    )
+
+    assert result == "succeeded"
+    assert len(sent) == 1 and "Глава первая" not in sent[0] and "(i)" not in sent[0]
+    assert runtime["state"]["latest_narration_text"] == "Обычный абзац о гавани."
+    exclusions = next(event for event in events if event["event_id"] == "audiobook_narration_exclusions")
+    assert exclusions["context"]["expected_paragraph_count"] == 1
+    assert exclusions["context"]["excluded_count"] == 2
+    assert exclusions["context"]["excluded_by_reason"] == {"fragment": 1, "toc": 1}
+    assert exclusions["context"]["excluded_paragraph_ids_by_reason"] == {"fragment": ["p3"], "toc": ["p2"]}
+    assert _as_mapping_sequence(exclusions["context"]["fragment_samples"]) == [{"paragraph_id": "p3", "sample": "(i)"}]
+    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
+    excluded_notice = next(notice for notice in notices if notice.get("message_key") == "result.audiobook_excluded")
+    assert _as_mapping(excluded_notice["params"])["count"] == 2
 
 
 def test_reader_cleanup_activation_is_translate_only_and_policy_off_wins():
@@ -2637,6 +2750,10 @@ _TRANSLATED_BLOCK_TEXT = "Переведённый блок: Келбрук и �
 
 def _request_system_text(request: Mapping[str, Any]) -> str:
     return str(request["input"][0]["content"][0]["text"])
+
+
+def _request_user_text(request: Mapping[str, Any]) -> str:
+    return str(request["input"][-1]["content"][0]["text"])
 
 
 def _is_block_request(request: Mapping[str, Any]) -> bool:
@@ -7699,17 +7816,18 @@ def test_ui_result_meta_json_carries_the_run_accounting(tmp_path):
     assert meta_payload["model_accounting"]["cost_usd_reported_by_provider"] == 0.431479
 
 
-# --- rev41 P1-2: the per-paragraph remedy must not be quieter than the failure it replaced
+# --- spec 070 R7: an empty answer is narrated from its source and marked for review --------
 #
-# ``narration_source_fallback_excluded`` publishes CHARACTERS and raises a user-facing
-# notice. Its per-paragraph twin shipped publishing a paragraph count in one WARNING and
-# nothing else — no characters, so it could not be read against spec 054's metric, and no
-# notice, so the remedy that makes the loss smaller also made it less visible.
+# Until spec 070 a paragraph the model returned nothing for was WITHHELD from the narration
+# (``narration_omitted_paragraphs_excluded``), because the audiobook translated and the source
+# was the wrong language. The audiobook is a same-language pass now: the paragraph's own source
+# is the right text, so it is narrated, marked ``needs_review`` ``empty_answer`` and addressed.
 
 _OMITTED_ENGLISH_PARAGRAPH = (
     "Footnotes 1 Quoted in Ilsa Varrow, No Anchor, page 214, and see Marchetti et al. (2004), "
     "Appendix A, for the full dataset behind this table."
 )
+_SPOKEN_PARAGRAPH = "Однажды в маленькой гавани моряки обменивались снастями."
 
 
 def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
@@ -7718,8 +7836,6 @@ def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
         MarkerPreservedBlockText,
         ParagraphDisposition,
     )
-
-    spoken = "[thoughtful] Однажды в маленькой гавани моряки обменивались снастями."
 
     def _writer(**_kwargs):
         return _persist_primary_artifacts_on_disk(
@@ -7734,7 +7850,7 @@ def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
 
     def generate_markdown_block(**_kwargs):
         dispositions = [
-            ParagraphDisposition(paragraph_id="p0001", text=spoken, status="accepted"),
+            ParagraphDisposition(paragraph_id="p0001", text=_SPOKEN_PARAGRAPH, status="accepted"),
             ParagraphDisposition(
                 paragraph_id="p0002", text=_OMITTED_ENGLISH_PARAGRAPH, status="omitted"
             ),
@@ -7792,7 +7908,14 @@ def _run_standalone_audiobook_with_an_omitted_paragraph(*, runtime, log_event):
     )
 
 
-def test_standalone_audiobook_reports_omitted_paragraph_characters_and_notifies():
+def test_standalone_audiobook_omitted_notice_carries_the_address_and_the_document_defers():
+    """Spec 070 R7 through the whole run: the empty answer is NARRATED from its source, and the
+    run publishes it as ``needs_review`` -- an event with the address, the counters on the
+    saved-file record and a notice whose anchor is the paragraph's first sentence. The
+    document message, which counts the same paragraph (its status is ``omitted``), defers the
+    address to it: every address is printed exactly once (2026-08-09)."""
+    from docxaicorrector.generation._generation import _ladder_sentences
+
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
 
@@ -7800,120 +7923,68 @@ def test_standalone_audiobook_reports_omitted_paragraph_characters_and_notifies(
 
     assert result == "succeeded"
     narration_text = runtime["state"]["latest_narration_text"]
-    # ANTI-VACUUM: the paragraph the model DID answer for is still narrated.
-    assert "Однажды в маленькой гавани" in narration_text
-    assert "Footnotes 1 Quoted in Ilsa Varrow" not in narration_text
-    # ...while the DOCX branch still carries the source of the omitted paragraph.
+    assert _SPOKEN_PARAGRAPH in narration_text
+    assert _OMITTED_ENGLISH_PARAGRAPH in narration_text  # narrated, no longer withheld
     assert _OMITTED_ENGLISH_PARAGRAPH in runtime["state"]["latest_markdown"]
 
-    excluded_event = next(
-        event for event in events if event["event_id"] == "narration_omitted_paragraphs_excluded"
-    )
-    assert excluded_event["level"] == logging.WARNING
-    assert excluded_event["context"]["excluded_omitted_paragraph_count"] == 1
-    assert excluded_event["context"]["excluded_omitted_paragraph_chars"] == len(
-        _OMITTED_ENGLISH_PARAGRAPH
-    )
+    review_event = next(event for event in events if event["event_id"] == "audiobook_needs_review")
+    assert review_event["level"] == logging.WARNING
+    records = _as_mapping_sequence(review_event["context"]["records"])
+    assert [record["paragraph_id"] for record in records] == ["p0002"]
+    assert list(cast(Sequence[str], records[0]["reasons"]))[0] == "empty_answer"
+    assert len(str(records[0]["sample"])) <= 120
+    assert review_event["context"]["needs_review_by_reason"]["empty_answer"] == 1  # type: ignore[index]
 
-    saved_event = next(
-        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
-    )
-    assert saved_event["context"]["excluded_omitted_paragraph_count"] == 1
-    assert saved_event["context"]["excluded_omitted_paragraph_chars"] == len(
-        _OMITTED_ENGLISH_PARAGRAPH
-    )
+    saved_event = next(event for event in events if event["event_id"] == "ui_audiobook_artifact_saved")
+    context = saved_event["context"]
+    assert context["expected_paragraph_count"] == 2
+    assert context["delivered_paragraph_count"] == 2
+    assert context["missing_paragraph_ids"] == []
+    assert context["paragraph_boundary_check"] == "ok"
+    assert context["needs_review_paragraph_count"] == 1
+    for removed in (
+        "excluded_blocks",
+        "excluded_omitted_paragraph_count",
+        "excluded_source_fallback_block_count",
+        "tag_count",
+        "mode",
+    ):
+        assert removed not in context
 
     notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
-    excluded_notices = [
-        notice
-        for notice in notices
-        if notice.get("message_key") == "result.narration_omitted_paragraphs_excluded"
-    ]
-    assert len(excluded_notices) == 1
-    assert excluded_notices[0]["level"] == "warning"
-    assert _as_mapping(excluded_notices[0]["params"])["count"] == 1
-    assert _as_mapping(excluded_notices[0]["params"])["chars"] == len(_OMITTED_ENGLISH_PARAGRAPH)
-
-
-def test_standalone_audiobook_omitted_notice_carries_the_address_and_the_document_defers():
-    """2026-08-09: the audio warning names WHERE, and the two messages never quote the same
-    paragraph twice.
-
-    Measured on the paid run ``20260809T_059_audio_money``: the audio message published
-    ``{count: 8, chars: 4455}`` and no place at all, while the message beside it carried six
-    fragments — for the same paragraphs, because ``omitted`` is one of the statuses the
-    document channel counts. So the address is printed exactly once, by the message about the
-    artifact with no editor between it and its consumer, and the document message says how
-    many addresses are in the other one. This is the wiring proof: the unit builders are
-    covered in ``tests/test_narration_exclusion_addresses.py``; what is asserted here is that
-    the pipeline actually hands one message's ids to the other.
-    """
-    runtime = _build_runtime_capture()
-    events, log_event = _capture_log_events()
-
-    result = _run_standalone_audiobook_with_an_omitted_paragraph(runtime=runtime, log_event=log_event)
-
-    assert result == "succeeded"
-    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
-    narration_notice = next(
-        notice
-        for notice in notices
-        if str(notice.get("message_key", "")).startswith(
-            "result.narration_omitted_paragraphs_excluded"
-        )
+    review_notice = next(
+        notice for notice in notices if str(notice.get("message_key", "")).startswith("result.audiobook_needs_review")
     )
     document_notice = next(
-        notice
-        for notice in notices
-        if str(notice.get("message_key", "")).startswith("result.source_text_delivered")
+        notice for notice in notices if str(notice.get("message_key", "")).startswith("result.unedited_text_delivered")
     )
-
-    # The audio message names the paragraph the audiobook lost, by its FIRST SENTENCE: the
-    # recorded run's longest excluded paragraph is 2 686 characters, and printed whole that
-    # is a second hunt rather than an address. This paragraph is ONE sentence: until
-    # 2026-11-07 the cut landed after "et al." and this test pinned that mis-split (the
-    # ``20261107T_061_audio_money`` run printed "Reinhart et al." as an address). The splitter
-    # now recognises a short lowercase abbreviation by its FORM, not by a word list
-    # (Constitution VII), so the address is the whole sentence — still a fragment the reader
-    # finds, which the last assertion proves against the delivered markdown.
-    from docxaicorrector.generation._generation import _ladder_sentences
-
-    anchors = [str(anchor) for anchor in narration_notice["anchors"]]  # type: ignore[union-attr]
-    assert len(anchors) == 1
-    assert anchors[0] == _ladder_sentences(_OMITTED_ENGLISH_PARAGRAPH)[0]
-    assert "et al. (2004)" in anchors[0]
+    anchors = [str(anchor) for anchor in review_notice["anchors"]]  # type: ignore[union-attr]
+    assert anchors == [_ladder_sentences(_OMITTED_ENGLISH_PARAGRAPH)[0]]
     assert anchors[0] in runtime["state"]["latest_markdown"]
-    # ...and the document message counts it without quoting it a second time.
-    assert document_notice["message_key"] == "result.source_text_delivered_all_addresses_in_narration"
+    # FR-001: the audiobook does not change the language, so the document fact is "unedited".
+    assert document_notice["message_key"] == "result.unedited_text_delivered_all_addresses_in_narration"
     assert list(document_notice["anchors"]) == []  # type: ignore[arg-type]
-    assert _as_mapping(document_notice["params"])["count"] == 1
     assert _as_mapping(document_notice["params"])["elsewhere"] == 1
-    assert not set(map(str, narration_notice["anchors"])) & set(  # type: ignore[arg-type]
-        map(str, document_notice["anchors"])  # type: ignore[arg-type]
-    )
-
-    excluded_event = next(
-        event for event in events if event["event_id"] == "narration_omitted_paragraphs_excluded"
-    )
-    assert excluded_event["context"]["excluded_anchor_count"] == 1
-    assert excluded_event["context"]["excluded_unanchored_paragraph_count"] == 0
     document_event = next(
         event for event in events if event["event_id"] == "source_text_delivered_to_document"
     )
-    assert document_event["context"]["source_text_delivered_paragraph_count"] == 1
     assert document_event["context"]["source_text_delivered_reported_in_narration_paragraph_count"] == 1
+    # The removed loss families are not emitted any more.
+    assert not [
+        event
+        for event in events
+        if event["event_id"] in {"narration_omitted_paragraphs_excluded", "narration_source_fallback_excluded"}
+    ]
 
 
 def test_standalone_audiobook_publishes_how_many_sentence_continuations_were_joined():
-    """Spec 054, 2026-08-06 (Constitution V). The join is the one narration counter that
-    reports a REPAIR rather than a loss, and it rides the record of the SAVED file exactly
-    like the loss counters beside it, so one log line names the artifact and what was done
-    to it. Both halves below are the same sentence, split at a PDF line wrap on import."""
+    """Spec 054, 2026-08-06 (Constitution V); spec 070 FR-007 keeps the join as a deterministic
+    operation counted apart. Both halves below are the same sentence, split at a PDF line wrap."""
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
 
     result = _run_standalone_audiobook(
-        "[thoughtful] Слово «кредит» звучит позитивно — вам доверились и сочли вас\n\n"
+        "Слово «кредит» звучит позитивно — вам доверились и сочли вас\n\n"
         "платежеспособным. Слово «долг» несет негативный оттенок.",
         runtime=runtime,
         log_event=log_event,
@@ -7928,7 +7999,7 @@ def test_standalone_audiobook_publishes_how_many_sentence_continuations_were_joi
     saved_event = next(
         event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
     )
-    assert saved_event["context"]["joined_sentence_continuation_count"] == 1
+    assert saved_event["context"]["deterministic_join_count"] == 1
 
 
 def test_standalone_audiobook_states_zero_joined_continuations_rather_than_omitting_the_field():
@@ -7938,7 +8009,7 @@ def test_standalone_audiobook_states_zero_joined_continuations_rather_than_omitt
     events, log_event = _capture_log_events()
 
     result = _run_standalone_audiobook(
-        "[thoughtful] Первый абзац закончен.\n\nВторой абзац тоже закончен.",
+        "Первый абзац закончен.\n\nВторой абзац тоже закончен.",
         runtime=runtime,
         log_event=log_event,
     )
@@ -7947,28 +8018,28 @@ def test_standalone_audiobook_states_zero_joined_continuations_rather_than_omitt
     saved_event = next(
         event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
     )
-    assert saved_event["context"]["joined_sentence_continuation_count"] == 0
+    assert saved_event["context"]["deterministic_join_count"] == 0
+    assert saved_event["context"]["deterministic_join_pairs"] == []
 
 
-def test_standalone_audiobook_without_an_omitted_paragraph_stays_silent():
-    """Anti-vacuum companion: nothing omitted means no event and no notice."""
+def test_standalone_audiobook_without_a_paragraph_to_check_stays_silent():
+    """Anti-vacuum companion: nothing to check means no ``needs_review`` event and no notice."""
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
 
     result = _run_standalone_audiobook(
-        "[thoughtful] Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
+        "Обычный абзац без ссылочных маркеров.", runtime=runtime, log_event=log_event
     )
 
     assert result == "succeeded"
-    assert not [
-        event for event in events if event["event_id"] == "narration_omitted_paragraphs_excluded"
-    ]
+    assert not [event for event in events if event["event_id"] == "audiobook_needs_review"]
     notices = _as_mapping_sequence(runtime["state"].get("latest_result_notices") or ())
     assert not [
-        notice
-        for notice in notices
-        if notice.get("message_key") == "result.narration_omitted_paragraphs_excluded"
+        notice for notice in notices if str(notice.get("message_key", "")).startswith("result.audiobook_needs_review")
     ]
+    saved_event = next(event for event in events if event["event_id"] == "ui_audiobook_artifact_saved")
+    assert saved_event["context"]["needs_review_paragraph_count"] == 0
+    assert saved_event["context"]["needs_review_by_reason"] == {}
 
 
 # --- spec 063 P2: the run glossary phase, end to end through the pipeline --------------------
@@ -7990,6 +8061,16 @@ class _GlossaryResponsesClient:
     def _create(self, **kwargs):
         if _is_block_request(kwargs):
             self.block_calls.append(kwargs)
+            # A marker-mode request (the audiobook is always addressed by marker, spec 070
+            # R12) gets the same block answer under each of its markers; a plain request the
+            # plain answer, exactly as before.
+            marker_ids = re.findall(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]", _request_user_text(kwargs))
+            if marker_ids:
+                return SimpleNamespace(
+                    status="completed",
+                    output_text="\n\n".join(f"[[DOCX_PARA_{pid}]]\n{_TRANSLATED_BLOCK_TEXT}" for pid in marker_ids),
+                    usage=SimpleNamespace(prompt_tokens=50, completion_tokens=20, cost=0.0),
+                )
             return _block_response()
         self.calls.append(kwargs)
         if isinstance(self._answer, Exception):
@@ -8022,6 +8103,10 @@ def _glossary_jobs_and_paragraphs():
         {
             "job_kind": "llm",
             "target_text": "\n\n".join(paragraph.text for paragraph in paragraphs[start : start + 4]),
+            # The producer's marked form; read only in marker mode (always on for the audiobook).
+            "target_text_with_markers": "\n\n".join(
+                f"[[DOCX_PARA_{paragraph.paragraph_id}]]\n{paragraph.text}" for paragraph in paragraphs[start : start + 4]
+            ),
             "paragraph_ids": [paragraph.paragraph_id for paragraph in paragraphs[start : start + 4]],
             "paragraph_regions": ["prose"] * 4,
             "context_before": "",
@@ -8158,11 +8243,7 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
 def test_glossary_pass_does_nothing_outside_translate(monkeypatch, tmp_path, operation):
     case = _run_glossary_case(monkeypatch, tmp_path, answer=_GLOSSARY_ANSWER, operation=operation)
 
-    if operation != "audiobook":
-        # Spec 070 R12: the audiobook is always addressed by paragraph marker, and this fixture's
-        # canned block answer carries none, so the run is not expected to succeed for it; what
-        # this test is about -- no glossary call, event, artifact or notice -- is asserted below.
-        assert case.result == "succeeded"
+    assert case.result == "succeeded"
     assert case.client.calls == []
     assert not any(str(event["event_id"]).startswith("run_glossary") for event in case.events)
     assert case.artifacts == []

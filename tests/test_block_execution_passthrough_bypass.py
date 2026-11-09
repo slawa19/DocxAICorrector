@@ -19,21 +19,11 @@ import pytest
 
 import docxaicorrector.pipeline.block_execution as block_execution
 from docxaicorrector.pipeline.block_execution import process_single_block
+from docxaicorrector.pipeline.contracts import ProcessingState
 
 
-def _make_state() -> SimpleNamespace:
-    return SimpleNamespace(
-        processed_chunks=[],
-        narration_chunks=[],
-        excluded_narration_block_count=0,
-        narration_excluded_source_fallback_block_count=0,
-        narration_excluded_source_fallback_chars=0,
-        narration_excluded_omitted_paragraph_count=0,
-        narration_excluded_omitted_chars=0,
-        narration_excluded_omitted_paragraphs=[],
-        generated_paragraph_registry=[],
-        started_at=0.0,
-    )
+def _make_state() -> ProcessingState:
+    return ProcessingState(started_at=0.0)
 
 
 def _no_op(**_kwargs: object) -> None:
@@ -133,14 +123,16 @@ def test_toc_block_routed_through_llm_still_invokes_classifier() -> None:
     assert state.processed_chunks == ["Содержание"]
 
 
-# --- spec 054: the narration artifact carries only speakable target-language text ---------
+# --- spec 054 -> spec 070: what a controlled fallback does to the narration ---------------
 #
-# A block whose model output was rejected and replaced by its own SOURCE text stays in the
-# DOCX — that document is editable and a human meets the untranslated paragraph and fixes
-# it — but it does not reach the narration, because nothing sits between the audiobook and
-# the listener. Measured on the first live audiobook run (2026-08-04, Money & Sustainability,
-# en→ru): six ``source_text_fallback`` blocks put 20 597 characters of English mid-chapter
-# into a Russian audiobook, 4.47% of the artifact.
+# Until spec 070 a block whose model output was rejected and replaced by its own SOURCE text
+# was kept out of the narration: the audiobook then translated, so the source was the wrong
+# language (2026-08-04, Money & Sustainability: six such blocks, 20 597 characters of English
+# in a Russian audiobook). Spec 070 made the audiobook a same-language pass (D-1) and removed
+# the narration from ``translate``/``edit`` (FR-002), so research R7 turns the rule around:
+# the audiobook NARRATES such a block from its own source, with ``needs_review``
+# ``source_fallback`` on each narrated paragraph; ``translate``/``edit`` narrate nothing and
+# keep their registry mark exactly as before.
 
 _ENGLISH_SOURCE_BLOCK = (
     "Many tides ago, in a small hamlet by the old Saltmarsh, sailors used tallies for all their "
@@ -187,22 +179,35 @@ def _llm_payload(
     )
 
 
-def test_source_text_fallback_block_is_absent_from_narration_but_present_in_the_docx(monkeypatch) -> None:
+def _audiobook_context() -> SimpleNamespace:
+    return SimpleNamespace(
+        processing_operation="audiobook",
+        # Spec 070 FR-001: the audiobook knows no language pair; a pair left in the session by
+        # another operation must not change anything, so the fixture leaves one in.
+        source_language="en",
+        target_language="ru",
+        uploaded_filename="book.docx",
+        runtime=object(),
+        on_progress=lambda **_kwargs: None,
+    )
+
+
+def _texts(state: ProcessingState) -> dict[str, str]:
+    return {record.paragraph_id: record.text for record in state.narration_paragraphs}
+
+
+def _reasons(state: ProcessingState) -> dict[str, tuple[str, ...]]:
+    return {record.paragraph_id: record.needs_review_reasons for record in state.narration_paragraphs}
+
+
+def test_source_text_fallback_block_is_narrated_from_its_source_and_kept_in_the_docx(monkeypatch) -> None:
+    """Spec 070 R7, rewritten from spec 054's exclusion: the audiobook narrates the fallback."""
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
     dependencies, emitters, events = _recording_run_harness()
 
     outcome, state, _classifier_calls = _run_single_block(
         payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
-        context=SimpleNamespace(
-            processing_operation="audiobook",
-            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
-            # changes language, so every fixture that exercises it has to say so.
-            source_language="en",
-            target_language="ru",
-            uploaded_filename="book.docx",
-            runtime=object(),
-            on_progress=lambda **_kwargs: None,
-        ),
+        context=_audiobook_context(),
         # The controlled fallback delivers the block's own source text verbatim.
         processed_chunk=_ENGLISH_SOURCE_BLOCK,
         classification="source_text_fallback",
@@ -211,40 +216,50 @@ def test_source_text_fallback_block_is_absent_from_narration_but_present_in_the_
     )
 
     assert outcome is None  # the run continues; this is a controlled fallback, not a failure
-    assert state.processed_chunks == [_ENGLISH_SOURCE_BLOCK]  # DOCX branch keeps the source
-    assert state.narration_chunks == []  # narration branch does not
-    assert state.narration_excluded_source_fallback_block_count == 1
-    assert state.narration_excluded_source_fallback_chars == len(_ENGLISH_SOURCE_BLOCK)
-    # The document-layer counter answers a different question and must not absorb this one.
-    assert state.excluded_narration_block_count == 0
+    assert state.processed_chunks == [_ENGLISH_SOURCE_BLOCK]  # the DOCX keeps the source
+    assert _texts(state) == {"p0001": _ENGLISH_SOURCE_BLOCK}  # ...and so does the narration
+    assert _reasons(state) == {"p0001": ("source_fallback",)}
+    assert state.narration_expected_paragraph_ids == ["p0001"]
     fallback_events = [context for event, context in events if event == "block_controlled_fallback"]
     assert len(fallback_events) == 1
+    # Not a language-changing job: the spec 054 registry mark stays off.
+    assert fallback_events[0]["narration_excluded_by_source_fallback"] is False
+
+
+def test_translate_source_text_fallback_keeps_its_registry_mark_and_narrates_nothing(monkeypatch) -> None:
+    """The translate side of the same fallback is unchanged: the mark is set, nothing is narrated."""
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    dependencies, emitters, events = _recording_run_harness()
+    context = _audiobook_context()
+    context.processing_operation = "translate"
+
+    outcome, state, _classifier_calls = _run_single_block(
+        payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
+        context=context,
+        processed_chunk=_ENGLISH_SOURCE_BLOCK,
+        classification="source_text_fallback",
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+
+    assert outcome is None
+    assert state.processed_chunks == [_ENGLISH_SOURCE_BLOCK]
+    assert state.narration_paragraphs == []
+    assert state.narration_expected_paragraph_ids == []
+    fallback_events = [context for event, context in events if event == "block_controlled_fallback"]
     assert fallback_events[0]["narration_excluded_by_source_fallback"] is True
 
 
-def test_controlled_fallback_that_keeps_model_output_still_reaches_the_narration(monkeypatch) -> None:
-    """Anti-vacuum. The rule is "the source text came back", not "a block was rejected".
-
-    A rejection whose fallback keeps the model's own target-language output — here an
-    ``english_residual_output`` verdict on text that is otherwise Russian — is still
-    narratable and must not be dropped "just in case".
-    """
+def test_an_audiobook_fallback_narrates_the_source_not_the_rejected_output(monkeypatch) -> None:
+    """R7: the rejection means the model's text may have LOST something, so the narration and
+    the DOCX take the paragraph's own source, whatever the rejected output looked like."""
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
-    dependencies, emitters, events = _recording_run_harness()
+    dependencies, emitters, _events = _recording_run_harness()
     model_output = "Компании постоянно сталкиваются с нехваткой персонала, отмечает cash flow отчёт."
 
     outcome, state, _classifier_calls = _run_single_block(
         payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
-        context=SimpleNamespace(
-            processing_operation="audiobook",
-            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
-            # changes language, so every fixture that exercises it has to say so.
-            source_language="en",
-            target_language="ru",
-            uploaded_filename="book.docx",
-            runtime=object(),
-            on_progress=lambda **_kwargs: None,
-        ),
+        context=_audiobook_context(),
         processed_chunk=model_output,
         classification="english_residual_output",
         dependencies=dependencies,
@@ -252,62 +267,47 @@ def test_controlled_fallback_that_keeps_model_output_still_reaches_the_narration
     )
 
     assert outcome is None
-    assert state.processed_chunks == [model_output]
-    assert state.narration_chunks == [model_output]
-    assert state.narration_excluded_source_fallback_block_count == 0
-    assert state.narration_excluded_source_fallback_chars == 0
-    fallback_events = [context for event, context in events if event == "block_controlled_fallback"]
-    assert fallback_events[0]["narration_excluded_by_source_fallback"] is False
+    assert _texts(state) == {"p0001": _ENGLISH_SOURCE_BLOCK}
+    assert _reasons(state) == {"p0001": ("source_fallback",)}
+    assert state.processed_chunks == [_ENGLISH_SOURCE_BLOCK]
 
 
 def test_a_normal_block_still_reaches_the_narration() -> None:
-    """Anti-vacuum, the plain case: nothing about an accepted block changed."""
-    russian = "Нынешнюю денежную систему почти все воспринимают как нечто само собой разумеющееся."
+    """Anti-vacuum, the plain case: an accepted block is narrated as answered, unmarked. The
+    audiobook's input is already in the book's language; the answer only writes a year out."""
+    source = "Нынешнюю денежную систему в 2007 году почти все воспринимали как нечто само собой разумеющееся."
+    russian = "Нынешнюю денежную систему в две тысячи седьмом году почти все воспринимали как нечто само собой разумеющееся."
 
     outcome, state, _classifier_calls = _run_single_block(
-        payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
-        context=SimpleNamespace(processing_operation="audiobook", source_language="en", target_language="ru"),
+        payload=_llm_payload(target_text=source),
+        context=_audiobook_context(),
         processed_chunk=russian,
     )
 
     assert outcome is None
     assert state.processed_chunks == [russian]
-    assert state.narration_chunks == [russian]
-    assert state.narration_excluded_source_fallback_block_count == 0
+    assert _texts(state) == {"p0001": russian}
+    assert _reasons(state) == {"p0001": ()}
 
 
-def test_block_excluded_by_the_document_layer_is_counted_only_once(monkeypatch) -> None:
-    """A block that was never going to the narration keeps its existing reason.
-
-    ``narration_include=False`` is the document layer's decision (image-only, table of
-    contents, reference region). It wins, so the spec-054 ``excluded_char_share``
-    measurements keyed on ``excluded_narration_block_count`` do not shift under this change.
-    """
+def test_a_block_the_document_layer_keeps_out_is_not_narrated(monkeypatch) -> None:
+    """``narration_include=False`` without per-paragraph reasons (a producer before spec 070):
+    nothing of the block is narrated or counted in the denominator, and the fallback still ships."""
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
     dependencies, emitters, _events = _recording_run_harness()
 
     _outcome, state, _classifier_calls = _run_single_block(
         payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK, narration_include=False),
-        context=SimpleNamespace(
-            processing_operation="audiobook",
-            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
-            # changes language, so every fixture that exercises it has to say so.
-            source_language="en",
-            target_language="ru",
-            uploaded_filename="book.docx",
-            runtime=object(),
-            on_progress=lambda **_kwargs: None,
-        ),
+        context=_audiobook_context(),
         processed_chunk=_ENGLISH_SOURCE_BLOCK,
         classification="source_text_fallback",
         dependencies=dependencies,
         emitters=emitters,
     )
 
-    assert state.narration_chunks == []
-    assert state.excluded_narration_block_count == 1
-    assert state.narration_excluded_source_fallback_block_count == 0
-
+    assert state.processed_chunks == [_ENGLISH_SOURCE_BLOCK]
+    assert state.narration_paragraphs == []
+    assert state.narration_expected_paragraph_ids == []
 
 # --- spec 056 E: a typed disposition per paragraph, consumed by the registry --------
 
@@ -384,88 +384,86 @@ def test_registry_rejects_a_record_whose_ids_do_not_match_the_block() -> None:
     assert "paragraph_marker_registry_mismatch" in str(exc_info.value)
 
 
-@pytest.mark.parametrize("operation", ["edit", "translate", "audiobook"])
-def test_an_omitted_paragraph_stays_in_the_docx_and_leaves_the_narration(operation: str) -> None:
-    # Spec 061 anti-regression: ``omitted`` is held on EVERY operation it was held on.
-    processed_chunk = _disposition_block(
+# --- spec 056 E / 061 -> spec 070: an omitted or restored paragraph -------------------------
+#
+# Until spec 070 the narration WITHHELD a paragraph the model returned nothing for
+# (``omitted``) on every operation, and a ``source_restored`` one in a language-changing
+# operation, because its text is the paragraph's SOURCE. The audiobook no longer changes the
+# language, so that source is the right text: it is narrated, with ``needs_review`` and the
+# paragraph's address (research R7, Edge Cases). ``translate`` and ``edit`` narrate nothing;
+# their DOCX keeps every paragraph exactly as before.
+
+
+def _omitted_block():
+    return _disposition_block(
         ("p1335", "Как нам справиться с безработицей?", "accepted"),
-        ("p1336", "14", "omitted"),
+        ("p1336", "Что мешает начать прямо сейчас", "omitted"),
         ("p1337", "Почему бы не задействовать фонд?", "accepted"),
     )
 
-    # The document keeps every paragraph — losing one would break the paragraph-per-marker
-    # mapping the formatting restorer depends on.
-    assert processed_chunk == "Как нам справиться с безработицей?\n\n14\n\nПочему бы не задействовать фонд?"
-    # The narration keeps only what the model actually spoke for.
-    assert block_execution.narration_text_for_processed_block(
-        processed_chunk, processing_operation=operation
-    ) == ("Как нам справиться с безработицей?\n\nПочему бы не задействовать фонд?")
 
-
-@pytest.mark.parametrize("operation", ["edit", "translate"])
-def test_a_block_without_a_paragraph_record_is_narrated_unchanged(operation: str) -> None:
-    assert (
-        block_execution.narration_text_for_processed_block("Обычный блок.", processing_operation=operation)
-        == "Обычный блок."
-    )
-
-
-def test_process_single_block_narrates_the_block_without_its_omitted_paragraph(monkeypatch) -> None:
-    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
-    dependencies, emitters, _events = _recording_run_harness()
-    processed_chunk = _disposition_block(
-        ("p0001", "Переведённый абзац.", "accepted"),
-        ("p0002", "14", "omitted"),
-    )
-    payload = SimpleNamespace(
+def _omitted_payload() -> SimpleNamespace:
+    texts = ("How do we deal with unemployment?", "Что мешает начать прямо сейчас", "Why not use the fund?")
+    return SimpleNamespace(
         job_kind="llm",
         toc_dominant=False,
-        target_text="Source paragraph.\n\n14",
-        target_text_with_markers="[[DOCX_PARA_p0001]]\nSource paragraph.\n\n[[DOCX_PARA_p0002]]\n14",
-        paragraph_ids=["p0001", "p0002"],
+        target_text="\n\n".join(texts),
+        target_text_with_markers="\n\n".join(
+            f"[[DOCX_PARA_{pid}]]\n{text}" for pid, text in zip(("p1335", "p1336", "p1337"), texts)
+        ),
+        paragraph_ids=["p1335", "p1336", "p1337"],
         narration_include=True,
-        target_chars=20,
+        target_chars=sum(len(text) for text in texts),
         context_chars=0,
     )
 
+
+def test_an_omitted_paragraph_is_narrated_from_its_source_in_the_audiobook(monkeypatch) -> None:
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+    dependencies, emitters, _events = _recording_run_harness()
+
     _outcome, state, _classifier_calls = _run_single_block(
-        payload=payload,
-        context=SimpleNamespace(
-            processing_operation="audiobook",
-            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
-            # changes language, so every fixture that exercises it has to say so.
-            source_language="en",
-            target_language="ru",
-            uploaded_filename="book.docx",
-            runtime=object(),
-            on_progress=lambda **_kwargs: None,
-        ),
-        processed_chunk=processed_chunk,
-        classification="valid",
+        payload=_omitted_payload(),
+        context=_audiobook_context(),
+        processed_chunk=_omitted_block(),
         dependencies=dependencies,
         emitters=emitters,
     )
 
-    assert state.processed_chunks == ["Переведённый абзац.\n\n14"]
-    assert state.narration_chunks == ["Переведённый абзац."]
+    # The DOCX keeps every paragraph; the narration keeps them too, the empty answer addressed.
+    assert state.processed_chunks == [
+        "Как нам справиться с безработицей?\n\nЧто мешает начать прямо сейчас\n\nПочему бы не задействовать фонд?"
+    ]
+    assert list(_texts(state)) == ["p1335", "p1336", "p1337"]
+    assert _texts(state)["p1336"] == "Что мешает начать прямо сейчас"
+    assert _reasons(state) == {"p1335": (), "p1336": ("empty_answer",), "p1337": ()}
+    # The denominator is the three narrated ids, whatever the model answered.
+    assert state.narration_expected_paragraph_ids == ["p1335", "p1336", "p1337"]
 
 
-# --- rev41 P0-1: the controlled-fallback path bypassed the per-paragraph filter ------
-#
-# The filter was applied only on the happy path. A block holding an ``omitted`` paragraph
-# keeps that paragraph's SOURCE text, which makes the block likelier to be classified
-# ``english_residual_output`` — and the rejection then routed it down the controlled-fallback
-# path, which appended the RAW chunk and read the English aloud. The defect fed itself: the
-# substitution caused the classification that bypassed the filter that would have removed the
-# substitution. Reproduced by execution in ``.run/rev41_attack7.py``.
+@pytest.mark.parametrize("operation", ["edit", "translate"])
+def test_translate_and_edit_keep_an_omitted_paragraph_in_the_docx_and_narrate_nothing(operation: str) -> None:
+    context = _audiobook_context()
+    context.processing_operation = operation
+
+    _outcome, state, _classifier_calls = _run_single_block(
+        payload=_omitted_payload(), context=context, processed_chunk=_omitted_block()
+    )
+
+    assert state.processed_chunks == [_omitted_block()]
+    assert state.narration_paragraphs == []
+    assert state.narration_expected_paragraph_ids == []
+
 
 _ENGLISH_OMITTED_PARAGRAPH = (
     "This chapter discusses ordinary market institutions and the mobilisation of capital."
 )
 
 
-def test_controlled_fallback_does_not_narrate_an_omitted_paragraphs_source(monkeypatch) -> None:
-    """`.run/rev41_attack7.py`, as a test. Before the fix the English was read aloud."""
+def test_an_audiobook_fallback_narrates_every_paragraph_of_the_block_from_its_source(monkeypatch) -> None:
+    """rev41 P0-1's fixture under R7: the block holding an ``omitted`` paragraph went down the
+    controlled fallback. Every narrated paragraph is now its own source, marked
+    ``source_fallback``; no paragraph is withheld and the denominator stays whole."""
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
     dependencies, emitters, _events = _recording_run_harness()
     russian = "Почему вообще следует мобилизовать капитал?"
@@ -473,13 +471,13 @@ def test_controlled_fallback_does_not_narrate_an_omitted_paragraphs_source(monke
         ("p0001", _ENGLISH_OMITTED_PARAGRAPH, "omitted"),
         ("p0002", russian, "accepted"),
     )
+    source_second = "Why should capital be mobilised at all?"
     payload = SimpleNamespace(
         job_kind="llm",
         toc_dominant=False,
-        target_text=f"{_ENGLISH_OMITTED_PARAGRAPH}\n\nWhy should capital be mobilised at all?",
+        target_text=f"{_ENGLISH_OMITTED_PARAGRAPH}\n\n{source_second}",
         target_text_with_markers=(
-            f"[[DOCX_PARA_p0001]]\n{_ENGLISH_OMITTED_PARAGRAPH}\n\n"
-            "[[DOCX_PARA_p0002]]\nWhy should capital be mobilised at all?"
+            f"[[DOCX_PARA_p0001]]\n{_ENGLISH_OMITTED_PARAGRAPH}\n\n[[DOCX_PARA_p0002]]\n{source_second}"
         ),
         paragraph_ids=["p0001", "p0002"],
         narration_include=True,
@@ -489,128 +487,19 @@ def test_controlled_fallback_does_not_narrate_an_omitted_paragraphs_source(monke
 
     outcome, state, _classifier_calls = _run_single_block(
         payload=payload,
-        context=SimpleNamespace(
-            processing_operation="audiobook",
-            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
-            # changes language, so every fixture that exercises it has to say so.
-            source_language="en",
-            target_language="ru",
-            uploaded_filename="book.docx",
-            runtime=object(),
-            on_progress=lambda **_kwargs: None,
-        ),
+        context=_audiobook_context(),
         processed_chunk=processed_chunk,
-        # The classification the substituted English source itself provokes.
         classification="english_residual_output",
         dependencies=dependencies,
         emitters=emitters,
     )
 
     assert outcome is None
-    # The DOCX keeps every paragraph; the narration keeps only the spoken one.
-    assert state.processed_chunks == [f"{_ENGLISH_OMITTED_PARAGRAPH}\n\n{russian}"]
-    # ANTI-VACUUM: the accepted Russian neighbour is still narrated. A rule that subtracts
-    # must be shown not to subtract everything.
-    assert state.narration_chunks == [russian]
-    assert _ENGLISH_OMITTED_PARAGRAPH not in "\n".join(state.narration_chunks)
-    # The loss is counted in CHARACTERS, the unit spec 054's metric is expressed in.
-    assert state.narration_excluded_omitted_paragraph_count == 1
-    assert state.narration_excluded_omitted_chars == len(_ENGLISH_OMITTED_PARAGRAPH)
-    # This is not the block-level exclusion; the two answer different questions.
-    assert state.narration_excluded_source_fallback_block_count == 0
+    assert _texts(state) == {"p0001": _ENGLISH_OMITTED_PARAGRAPH, "p0002": source_second}
+    assert _reasons(state) == {"p0001": ("source_fallback",), "p0002": ("source_fallback",)}
+    assert state.narration_expected_paragraph_ids == ["p0001", "p0002"]
+    assert state.processed_chunks == [f"{_ENGLISH_OMITTED_PARAGRAPH}\n\n{source_second}"]
 
-
-def test_controlled_fallback_with_no_omitted_paragraph_narrates_the_whole_block(monkeypatch) -> None:
-    """ANTI-VACUUM for the filter on this path: nothing else stops being narrated."""
-    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
-    dependencies, emitters, _events = _recording_run_harness()
-    processed_chunk = _disposition_block(
-        ("p0001", "Первый абзац переведён.", "accepted"),
-        ("p0002", "Второй абзац переведён.", "accepted"),
-    )
-    payload = SimpleNamespace(
-        job_kind="llm",
-        toc_dominant=False,
-        target_text="First paragraph.\n\nSecond paragraph.",
-        target_text_with_markers="[[DOCX_PARA_p0001]]\nFirst paragraph.\n\n[[DOCX_PARA_p0002]]\nSecond paragraph.",
-        paragraph_ids=["p0001", "p0002"],
-        narration_include=True,
-        target_chars=40,
-        context_chars=0,
-    )
-
-    _outcome, state, _classifier_calls = _run_single_block(
-        payload=payload,
-        context=SimpleNamespace(
-            processing_operation="audiobook",
-            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
-            # changes language, so every fixture that exercises it has to say so.
-            source_language="en",
-            target_language="ru",
-            uploaded_filename="book.docx",
-            runtime=object(),
-            on_progress=lambda **_kwargs: None,
-        ),
-        processed_chunk=processed_chunk,
-        classification="english_residual_output",
-        dependencies=dependencies,
-        emitters=emitters,
-    )
-
-    assert state.narration_chunks == ["Первый абзац переведён.\n\nВторой абзац переведён."]
-    assert state.narration_excluded_omitted_paragraph_count == 0
-    assert state.narration_excluded_omitted_chars == 0
-
-
-def test_the_happy_path_counts_the_characters_it_withholds(monkeypatch) -> None:
-    """The counters must be fed from BOTH narration call sites, not only the fallback one."""
-    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
-    dependencies, emitters, _events = _recording_run_harness()
-    processed_chunk = _disposition_block(
-        ("p0001", "Переведённый абзац.", "accepted"),
-        ("p0002", _ENGLISH_OMITTED_PARAGRAPH, "omitted"),
-    )
-    payload = SimpleNamespace(
-        job_kind="llm",
-        toc_dominant=False,
-        target_text=f"Source paragraph.\n\n{_ENGLISH_OMITTED_PARAGRAPH}",
-        target_text_with_markers=(
-            f"[[DOCX_PARA_p0001]]\nSource paragraph.\n\n[[DOCX_PARA_p0002]]\n{_ENGLISH_OMITTED_PARAGRAPH}"
-        ),
-        paragraph_ids=["p0001", "p0002"],
-        narration_include=True,
-        target_chars=120,
-        context_chars=0,
-    )
-
-    _outcome, state, _classifier_calls = _run_single_block(
-        payload=payload,
-        context=SimpleNamespace(
-            processing_operation="audiobook",
-            # Spec 059 FR-A5: the pair rule only means "untranslated" where the JOB
-            # changes language, so every fixture that exercises it has to say so.
-            source_language="en",
-            target_language="ru",
-            uploaded_filename="book.docx",
-            runtime=object(),
-            on_progress=lambda **_kwargs: None,
-        ),
-        processed_chunk=processed_chunk,
-        classification="valid",
-        dependencies=dependencies,
-        emitters=emitters,
-    )
-
-    assert state.narration_chunks == ["Переведённый абзац."]
-    assert state.narration_excluded_omitted_paragraph_count == 1
-    assert state.narration_excluded_omitted_chars == len(_ENGLISH_OMITTED_PARAGRAPH)
-
-
-# --- spec 061 FR-006/007/008: the operation decides, through BOTH call sites ----------
-# A ``source_restored`` paragraph is its own SOURCE text exactly as an ``omitted`` one is.
-# In a language-changing operation it is withheld and booked into the SAME counters and the
-# SAME address record the ``narration_omitted_paragraphs_excluded`` notice is built from;
-# on ``edit`` it is a real paragraph of the book and is spoken.
 
 _ENGLISH_RESTORED_PARAGRAPH = (
     "See, for example, the grey ledger on options for steering a systemic port crisis."
@@ -635,16 +524,11 @@ def _run_restored_paragraph_block(*, operation: str, classification: str):
         target_chars=120,
         context_chars=0,
     )
+    context = _audiobook_context()
+    context.processing_operation = operation
     _outcome, state, _classifier_calls = _run_single_block(
         payload=payload,
-        context=SimpleNamespace(
-            processing_operation=operation,
-            source_language="en",
-            target_language="ru",
-            uploaded_filename="book.docx",
-            runtime=object(),
-            on_progress=lambda **_kwargs: None,
-        ),
+        context=context,
         processed_chunk=processed_chunk,
         classification=classification,
         dependencies=dependencies,
@@ -653,37 +537,39 @@ def _run_restored_paragraph_block(*, operation: str, classification: str):
     return state
 
 
+def test_a_restored_paragraph_is_narrated_and_addressed_in_the_audiobook(monkeypatch) -> None:
+    """Spec 061 FR-006 withheld it as source-language text; under R7 it is the book's own text."""
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+
+    state = _run_restored_paragraph_block(operation="audiobook", classification="valid")
+
+    assert state.processed_chunks == [f"Переведённый абзац.\n\n{_ENGLISH_RESTORED_PARAGRAPH}"]
+    assert _texts(state) == {"p0001": "Переведённый абзац.", "p0002": _ENGLISH_RESTORED_PARAGRAPH}
+    assert _reasons(state) == {"p0001": (), "p0002": ("source_restored",)}
+
+
+def test_a_restored_paragraph_in_a_rejected_audiobook_block_is_a_source_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
+
+    state = _run_restored_paragraph_block(operation="audiobook", classification="english_residual_output")
+
+    assert _texts(state) == {"p0001": "Source paragraph.", "p0002": _ENGLISH_RESTORED_PARAGRAPH}
+    assert _reasons(state) == {"p0001": ("source_fallback",), "p0002": ("source_fallback",)}
+
+
 @pytest.mark.parametrize("classification", ["valid", "english_residual_output"])
-@pytest.mark.parametrize("operation", ["translate", "audiobook"])
-def test_a_restored_paragraph_is_withheld_and_addressed_in_a_translating_operation(
+@pytest.mark.parametrize("operation", ["translate", "edit"])
+def test_a_restored_paragraph_stays_in_the_docx_and_nothing_is_narrated(
     monkeypatch, operation: str, classification: str
 ) -> None:
-    """ANTI-VACUUM for FR-006: the English is held, the Russian beside it is still spoken."""
+    """``translate``/``edit``: the DOCX is the one of before; no narration state is written."""
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
 
     state = _run_restored_paragraph_block(operation=operation, classification=classification)
 
-    # The DOCX keeps every paragraph.
     assert state.processed_chunks == [f"Переведённый абзац.\n\n{_ENGLISH_RESTORED_PARAGRAPH}"]
-    assert state.narration_chunks == ["Переведённый абзац."]
-    # FR-008: the same counters and the same address record ``omitted`` feeds.
-    assert state.narration_excluded_omitted_paragraph_count == 1
-    assert state.narration_excluded_omitted_chars == len(_ENGLISH_RESTORED_PARAGRAPH)
-    assert state.narration_excluded_omitted_paragraphs == [
-        {"paragraph_id": "p0002", "text": _ENGLISH_RESTORED_PARAGRAPH, "status": "source_restored"}
-    ]
-
-
-@pytest.mark.parametrize("classification", ["valid", "english_residual_output"])
-def test_a_restored_paragraph_is_spoken_on_edit(monkeypatch, classification: str) -> None:
-    """FR-007: on ``edit`` the projection does not change — both paragraphs are spoken."""
-    monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
-
-    state = _run_restored_paragraph_block(operation="edit", classification=classification)
-
-    assert state.narration_chunks == [f"Переведённый абзац.\n\n{_ENGLISH_RESTORED_PARAGRAPH}"]
-    assert state.narration_excluded_omitted_paragraph_count == 0
-    assert state.narration_excluded_omitted_paragraphs == []
+    assert state.narration_paragraphs == []
+    assert state.narration_exclusions == []
 
 
 # --- run-level accounting for the pipeline half of the loss -------------------------

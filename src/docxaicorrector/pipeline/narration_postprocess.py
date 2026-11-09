@@ -3,7 +3,9 @@
 Behaviour-preserving extraction from ``pipeline/late_phases.py``: the narration-text
 builder and the artifact-text review pass (reference-identifier checks). Narration text is
 produced only by the standalone ``audiobook`` operation; the optional second LLM pass over
-``translate``/``edit`` output and the intonation-tag checks no longer exist. ``late_phases``
+``translate``/``edit`` output and the intonation-tag checks no longer exist. Since spec 070
+FR-007 the text is assembled from the per-paragraph records of the block phase, by id and
+preparation role, with the deterministic sentence joins counted by id pair. ``late_phases``
 re-exports these names so ``late_phases.<name>`` keeps resolving for the test namespace and
 the still-in-``late_phases`` ``finalize_processing_success`` caller. No module-level mutable
 state; all patterns are immutable compiled constants.
@@ -21,11 +23,13 @@ review data" — and it also forbids the name / city / publisher lists it would 
 The imprecision is now a spare line in a review log instead of a destroyed run.
 """
 
+import logging
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
-from docxaicorrector.generation._generation import strip_markdown_for_narration_with_stats
+from docxaicorrector.pipeline.audiobook_pass import NarrationParagraphRecord, is_audiobook_operation
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
 
@@ -66,31 +70,147 @@ _NARRATION_REVIEW_SAMPLE_LIMIT = 3
 _NARRATION_REVIEW_SAMPLE_CHARS = 120
 
 
+# Spec 070 FR-007 / research R8: the ``.tts.txt`` is assembled from the per-paragraph records the
+# block phase left (``pipeline.audiobook_pass``), by paragraph id and by the role the PREPARATION
+# gave the paragraph -- never by re-reading Markdown the model returned. One rule touches the
+# separator between two records: a sentence torn across a paragraph break is rejoined.
+#
+# What the join is for. 81 of the 83 such boundaries measured on the four-book corpus of
+# 2026-08-06 arrive from IMPORT: a PDF line wrap became a paragraph break, both halves are
+# there, only the separator is wrong, and a TTS engine reads a paragraph break as a pause in
+# the middle of a sentence. Joining changes ``\n\n`` into a space and nothing else.
+#
+# The test is FORM plus the preparation's ROLE (Constitution VII: no word list, no length):
+# * both records have the role ``body`` -- a heading, a list item, an epigraph or an attribution
+#   legitimately ends without punctuation and is never welded to what follows;
+# * the first ends on a character that is not sentence-terminal (``.!?…:;``), not a closing
+#   quote or bracket, and NOT A DIGIT (measured: allowing a digit ending joins rows of an index,
+#   which end in a page number);
+# * the second begins with a LOWERCASE letter -- "the rest of this sentence", not "whatever
+#   comes next".
+# Every join is recorded as the pair of ids it closed, counted apart from anything the model
+# did: the model cannot merge paragraphs (an answer with another number of markers is refused).
+_NARRATION_BODY_ROLE = "body"
+_NARRATION_SENTENCE_TERMINALS = ".!?…:;"
+_NARRATION_CLOSING_MARKS = "»”’\"')]}"
+NARRATION_BOUNDARY_CHECK_OK = "ok"
+NARRATION_BOUNDARY_CHECK_MISMATCH = "mismatch"
+
+
+@dataclass(frozen=True)
+class NarrationAssembly:
+    text: str
+    join_pairs: tuple[tuple[str, str], ...]
+    boundary_check: str
+    parsed_paragraph_count: int
+    first_mismatch_paragraph_id: str | None
+
+
+def narration_paragraph_continues(*, previous_role: str, previous_text: str, following_role: str, following_text: str) -> bool:
+    """Is ``following`` the rest of a sentence ``previous`` was cut off in the middle of?"""
+
+    if previous_role != _NARRATION_BODY_ROLE or following_role != _NARRATION_BODY_ROLE:
+        return False
+    tail = previous_text.rstrip()
+    head = following_text.lstrip()
+    if not tail or not head:
+        return False
+    last = tail[-1]
+    if last.isdigit() or last in _NARRATION_SENTENCE_TERMINALS or last in _NARRATION_CLOSING_MARKS:
+        return False
+    first = head[0]
+    return first.isalpha() and first.islower()
+
+
+def assemble_narration_records(records: Sequence[NarrationParagraphRecord]) -> NarrationAssembly:
+    """The ``.tts.txt`` text from the records, and the check that it parses back into them.
+
+    Paragraphs are joined by ``"\\n\\n"``; a deterministic join (see above) puts one space
+    instead. The check reads the FINAL text back: split on ``"\\n\\n"`` it must give exactly
+    ``records - joins`` paragraphs, and each must be its records' texts in order. A mismatch
+    is a defect of this code (a record text carrying a blank line), never of the model.
+    """
+
+    groups: list[list[NarrationParagraphRecord]] = []
+    join_pairs: list[tuple[str, str]] = []
+    for record in records:
+        if groups and narration_paragraph_continues(
+            previous_role=groups[-1][-1].role,
+            previous_text=groups[-1][-1].text,
+            following_role=record.role,
+            following_text=record.text,
+        ):
+            join_pairs.append((groups[-1][-1].paragraph_id, record.paragraph_id))
+            groups[-1].append(record)
+            continue
+        groups.append([record])
+    group_texts = [" ".join(member.text.strip() for member in group) for group in groups]
+    text = "\n\n".join(group_texts)
+
+    parsed = text.split("\n\n")
+    mismatch = False
+    first_mismatch: str | None = None
+    if len(parsed) != len(records) - len(join_pairs):
+        mismatch = True
+        first_mismatch = next(
+            (group[0].paragraph_id for group, group_text in zip(groups, group_texts) if "\n\n" in group_text or not group_text.strip()),
+            groups[0][0].paragraph_id if groups else None,
+        )
+    else:
+        for paragraph, group in zip(parsed, groups):
+            cursor = 0
+            for member in group:
+                member_text = member.text.strip()
+                position = paragraph.find(member_text, cursor) if member_text else -1
+                if position < 0:
+                    mismatch = True
+                    first_mismatch = member.paragraph_id
+                    break
+                cursor = position + len(member_text)
+            if mismatch:
+                break
+    return NarrationAssembly(
+        text=text,
+        join_pairs=tuple(join_pairs),
+        boundary_check=NARRATION_BOUNDARY_CHECK_MISMATCH if mismatch else NARRATION_BOUNDARY_CHECK_OK,
+        parsed_paragraph_count=len(parsed),
+        first_mismatch_paragraph_id=first_mismatch,
+    )
+
+
 def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, state: Any, final_generated_paragraph_registry: Sequence[object] | None = None) -> str | None:
     stop_predicate = getattr(dependencies, "should_stop_processing", None) if dependencies is not None else None
     if callable(stop_predicate) and stop_predicate(getattr(context, "runtime", None)):
         raise LatePhaseStopped()
-    if context.processing_operation != "audiobook":
+    if not is_audiobook_operation(getattr(context, "processing_operation", None)):
         return None
-    narration_source = "\n\n".join(_collect_narration_chunks(state=state))
-    if not narration_source:
+    records = [
+        record
+        for record in (getattr(state, "narration_paragraphs", None) or ())
+        if isinstance(record, NarrationParagraphRecord) and record.text.strip()
+    ]
+    if not records:
         return None
-    return _assemble_narration_recording_joins(narration_source, state=state)
-
-
-def _assemble_narration_recording_joins(narration_source: str, *, state: Any) -> str:
-    """Assemble the narration and record how many sentence continuations were rejoined.
-
-    The narration text is assembled here, and the counter means the same thing as the
-    exclusion counters beside it do (anti-regression 3 of spec 054).
-    """
-
-    narration_text, joined_count = strip_markdown_for_narration_with_stats(narration_source)
-    if state is not None:
-        state.narration_joined_sentence_continuation_count = int(
-            getattr(state, "narration_joined_sentence_continuation_count", 0) or 0
-        ) + joined_count
-    return narration_text
+    assembly = assemble_narration_records(records)
+    state.narration_joined_sentence_continuation_count = len(assembly.join_pairs)
+    state.narration_joined_paragraph_id_pairs = list(assembly.join_pairs)
+    state.narration_paragraph_boundary_check = assembly.boundary_check
+    if assembly.boundary_check != NARRATION_BOUNDARY_CHECK_OK:
+        log_event = getattr(dependencies, "log_event", None)
+        if callable(log_event):
+            # A defect of the assembly, not of the model; delivery is not blocked (Anti-regression 2).
+            log_event(
+                logging.ERROR,
+                "audiobook_paragraph_boundary_mismatch",
+                "Итоговый текст озвучки не разбирается обратно в абзацы по их ID.",
+                filename=getattr(context, "uploaded_filename", None),
+                expected_paragraph_count=len(getattr(state, "narration_expected_paragraph_ids", None) or ()),
+                delivered_paragraph_count=len(records),
+                deterministic_join_count=len(assembly.join_pairs),
+                parsed_paragraph_count=assembly.parsed_paragraph_count,
+                first_mismatch_paragraph_id=assembly.first_mismatch_paragraph_id,
+            )
+    return assembly.text
 
 
 def _collect_narration_artifact_review_findings(narration_text: str) -> list[dict[str, object]]:
@@ -141,7 +261,3 @@ def _summarize_narration_review_findings(
         "review_match_count": match_count,
         "review_rules": rules,
     }
-
-
-def _collect_narration_chunks(*, state: Any) -> list[str]:
-    return [str(chunk).strip() for chunk in getattr(state, "narration_chunks", []) if str(chunk).strip()]
