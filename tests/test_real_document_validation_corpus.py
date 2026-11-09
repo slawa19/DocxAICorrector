@@ -1199,7 +1199,11 @@ _PROFILES_ADDED_BY_SPEC_069 = (
     "ui-parity-translate-benchmark-standard",
     "ui-parity-translate-benchmark-quality",
 )
-_PRE_TRANSLATION_MODES_RESOLUTION_DIGEST = "1a9f12fbcb9501c253fb14467998bb6da2c6b4b590574394fb8c3130898db0cd"
+# Re-pinned 2026-11-09 (spec 062 per-mode image defaults, merge fdf775f): a field-by-field diff of
+# all 23 profiles before/after showed only the expected moves in ``applied`` — the new
+# image_{vision,draw}_model_mode_defaults, the trimmed text model_options and the models registry
+# carrying them; no effective model, mode or language of any profile changed.
+_PRE_TRANSLATION_MODES_RESOLUTION_DIGEST = "268fc2ad99b79fbe7f3d45737fc9cd0c4f65e58cca5238b557558123add22314"
 
 
 def _resolution_digest_without_translation_keys() -> str:
