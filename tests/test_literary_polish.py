@@ -889,12 +889,21 @@ def test_standard_first_pass_has_no_reasoning_and_the_polish_has_its_own_profile
 
 def test_a_toc_block_and_a_passthrough_block_are_never_polished(run_dir: Path) -> None:
     passthrough = _job([("p0009", "Figure 3")], job_kind="passthrough")
-    generator = _Generator(first_pass=_FIRST_PASS)
+    toc = _job(
+        [("p0010", "Chapter One. The Harbour"), ("p0011", "Chapter Two. The Market")],
+        toc_dominant=True,
+        structural_roles=["toc_entry", "toc_entry"],
+    )
+    first_pass = dict(_FIRST_PASS)
+    first_pass["p0010"] = ("Глава первая. Гавань первого прохода", "accepted")
+    first_pass["p0011"] = ("Глава вторая. Рынок первого прохода", "accepted")
+    generator = _Generator(first_pass=first_pass)
 
-    run = _run_blocks([passthrough, _job(_SOURCE_BLOCKS[1])], generator=generator, app_config=_app_config("standard"))
+    run = _run_blocks([passthrough, toc, _job(_SOURCE_BLOCKS[1])], generator=generator, app_config=_app_config("standard"))
 
     assert run.outcome is None
     assert str(run.state.processed_chunks[0]) == "Figure 3"
+    assert "первого прохода" in str(run.state.processed_chunks[1])
     assert [call["expected_paragraph_ids"] for call in generator.polish_calls] == [["p0003"]]
 
 
