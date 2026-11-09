@@ -16,6 +16,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 import json
+import logging
 from io import BytesIO
 from pathlib import Path
 import platform
@@ -56,12 +57,23 @@ from docxaicorrector.core.config import (
 )
 from docxaicorrector.document.extraction import (
     ORDERED_LIST_FORMATS,
+    build_document_text,
 )
 from docxaicorrector.generation._generation import (
     generate_markdown_block,
 )
 from docxaicorrector.image.shared import parse_json_object
+from docxaicorrector.pipeline.cost_estimate import (
+    STAGE_GLOSSARY,
+    STAGE_POLISH,
+    STAGE_TEXT,
+    EstimateInput,
+    PassSpec,
+    estimate_text_stages,
+    load_coefficient_table,
+)
 from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
+from docxaicorrector.pipeline.price_list import get_price_list
 from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
 )
@@ -4657,6 +4669,331 @@ def _build_model_accounting_summary_lines(model_accounting: Mapping[str, object]
     return lines
 
 
+# --- Spec 069 WP-9: mode, second pass, reasoning/cache by stage, price estimate ---------------------
+
+LITERARY_POLISH_ROLLBACKS_COPY_FILENAME = "literary_polish_rollbacks.jsonl"
+_COST_ESTIMATE_MODES = ("standard", "quality", "single")
+# Context keys of ``literary_polish_completed`` that are identity, not counters.
+_LITERARY_POLISH_IDENTITY_KEYS = ("filename", "run_id", "polish_model", "artifact_path")
+
+
+def _cost_priced_model_id(model: str) -> str:
+    """The id the coefficient table and the price list are keyed by (no provider prefix)."""
+    return model[len("openrouter:"):] if model.startswith("openrouter:") else model
+
+
+def build_translation_passes_report(effective: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Spec 069 FR-001: the effective model / intensity / reasoning of BOTH passes of a mode.
+
+    Read off the resolved runtime config (the one resolver of ``core.translation_modes`` already ran);
+    ``None`` for ``edit`` / ``audiobook`` (no mode). The polish pass has no editorial intensity of its
+    own, so it is reported as ``None`` rather than borrowed from the first pass.
+    """
+    if not effective or not effective.get("translation_mode"):
+        return None
+    polish_model = effective.get("translation_polish_model")
+    return {
+        "translation_mode": effective.get("translation_mode"),
+        "first_pass": {
+            "model": effective.get("translation_first_pass_model") or effective.get("model"),
+            "editorial_intensity": effective.get("editorial_intensity"),
+            "reasoning_effort": effective.get("translation_first_pass_reasoning_effort"),
+        },
+        "polish_pass": (
+            {
+                "model": polish_model,
+                "editorial_intensity": None,
+                "reasoning_effort": effective.get("translation_polish_reasoning_effort"),
+            }
+            if polish_model
+            else None
+        ),
+    }
+
+
+def build_runtime_config_report(runtime_resolution) -> dict[str, object]:
+    runtime_config = build_validation_runtime_config(runtime_resolution)
+    effective = runtime_config.get("effective")
+    runtime_config["translation_passes"] = build_translation_passes_report(
+        cast("Mapping[str, object] | None", effective) if isinstance(effective, Mapping) else None
+    )
+    return runtime_config
+
+
+def compute_runner_cost_estimate(
+    *,
+    effective: Mapping[str, object],
+    source_paragraphs: Sequence[object],
+    jobs: Sequence[Mapping[str, object]],
+    source_token: str,
+    prepared_source_key: str | None,
+) -> dict[str, object] | None:
+    """The pre-run price of a translate run, the snapshot the UI freezes at Start (spec 069 FR-007).
+
+    The runner has no session, so it prices the prepared document itself, with the SAME function,
+    coefficient table and price list as the UI, on the same inputs (LLM jobs, paragraphs, source
+    characters). ``None`` for a run without a translation mode. Model ids are priced WITHOUT the
+    ``openrouter:`` provider prefix: the table and the price list are keyed by bare ids.
+    """
+    mode = str(effective.get("translation_mode") or "")
+    if mode not in _COST_ESTIMATE_MODES:
+        return None
+    first_model = _cost_priced_model_id(
+        str(effective.get("translation_first_pass_model") or effective.get("model") or "")
+    )
+    first_reasoning = cast("str | None", effective.get("translation_first_pass_reasoning_effort"))
+    passes = [
+        PassSpec("first", first_model, STAGE_GLOSSARY, first_reasoning, None),
+        PassSpec(
+            "first",
+            first_model,
+            STAGE_TEXT,
+            first_reasoning,
+            cast("str | None", effective.get("editorial_intensity")),
+        ),
+    ]
+    polish_model = str(effective.get("translation_polish_model") or "")
+    if polish_model:
+        passes.append(
+            PassSpec(
+                "polish",
+                _cost_priced_model_id(polish_model),
+                STAGE_POLISH,
+                cast("str | None", effective.get("translation_polish_reasoning_effort")),
+                None,
+            )
+        )
+    try:
+        price_list = get_price_list()
+    except Exception:
+        price_list = None
+    table = load_coefficient_table()
+    estimate = estimate_text_stages(
+        EstimateInput(
+            mode=mode,
+            passes=passes,
+            llm_job_count=sum(1 for job in jobs if str(job.get("job_kind", "llm") or "llm") == "llm"),
+            paragraph_count=len(source_paragraphs),
+            source_chars=len(build_document_text(list(cast("list[Any]", source_paragraphs)))),
+            source_language=str(effective.get("source_language") or ""),
+            target_language=str(effective.get("target_language") or ""),
+            source_token=source_token,
+            prepared_source_key=prepared_source_key or None,
+        ),
+        table,
+        price_list,
+    )
+    return estimate.to_snapshot()
+
+
+def _extract_last_event_context(event_log: Sequence[Mapping[str, object]], event_id: str) -> dict[str, object] | None:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != event_id:
+            continue
+        context = event.get("context") or {}
+        if isinstance(context, Mapping):
+            return {str(key): value for key, value in context.items()}
+    return None
+
+
+def _build_reasoning_by_stage(model_accounting: Mapping[str, object] | None) -> dict[str, dict[str, object]] | None:
+    """Spec 069 FR-003: reasoning and cache fields of every stage, unknown never reported as zero.
+
+    A stage whose calls reported no reasoning field gets ``reasoning_tokens=None`` (not reported) even
+    though the ledger sums to 0 there: the report must not say "no reasoning" about a provider that
+    simply did not say. The same rule holds for the cache fields.
+    """
+    if model_accounting is None:
+        return None
+    raw_stages = model_accounting.get("stages")
+    if not isinstance(raw_stages, Mapping):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for stage in sorted(raw_stages):
+        raw = raw_stages[stage]
+        if not isinstance(raw, Mapping):
+            continue
+        reasoning_reported = int(cast(int, raw.get("reasoning_reported_call_count") or 0))
+        cache_reported = int(cast(int, raw.get("cache_fields_reported_call_count") or 0))
+        result[str(stage)] = {
+            "model_call_count": raw.get("model_call_count"),
+            "reasoning_tokens": raw.get("reasoning_tokens") if reasoning_reported else None,
+            "reasoning_reported_call_count": raw.get("reasoning_reported_call_count"),
+            "reasoning_unreported_call_count": raw.get("reasoning_unreported_call_count"),
+            "cached_tokens": raw.get("cached_tokens") if cache_reported else None,
+            "cache_write_tokens": raw.get("cache_write_tokens") if cache_reported else None,
+            "cache_discount_usd": raw.get("cache_discount_usd") if cache_reported else None,
+            "cache_fields_reported_call_count": raw.get("cache_fields_reported_call_count"),
+        }
+    return result
+
+
+def _build_reasoning_summary_lines(reasoning_by_stage: Mapping[str, Mapping[str, object]] | None) -> list[str]:
+    if reasoning_by_stage is None:
+        return ["model_accounting_reasoning=not_reported"]
+    lines: list[str] = []
+    for stage, item in reasoning_by_stage.items():
+        reasoning_tokens = item.get("reasoning_tokens")
+        cached_tokens = item.get("cached_tokens")
+        lines.append(
+            f"model_accounting_reasoning_{stage}="
+            f"reasoning_tokens={'not_reported' if reasoning_tokens is None else reasoning_tokens} "
+            f"reasoning_reported_call_count={item.get('reasoning_reported_call_count')} "
+            f"reasoning_unreported_call_count={item.get('reasoning_unreported_call_count')} "
+            f"cached_tokens={'not_reported' if cached_tokens is None else cached_tokens} "
+            f"cache_fields_reported_call_count={item.get('cache_fields_reported_call_count')}"
+        )
+    return lines
+
+
+def build_literary_polish_record(
+    event_log: Sequence[Mapping[str, object]], artifact_dir: Path
+) -> dict[str, object] | None:
+    """Spec 069 FR-004: the second pass's own counters, its rollback artifact and a copy next to the run.
+
+    The counters come from ``literary_polish_completed`` (one per run that had a second pass); ``None``
+    means the run had no second pass at all, reported as ``not_reported`` -- never as zero rollbacks.
+    The artifact lives in the app's ``.run/literary_polish_rollbacks/`` (7 days, 400 files); the runner
+    copies it into the run's directory so the evidence outlives the pruning.
+    """
+    completed = _extract_last_event_context(event_log, "literary_polish_completed")
+    if completed is None:
+        return None
+    source_artifact = completed.get("artifact_path")
+    copy_path: Path | None = None
+    copy_error: str | None = None
+    if isinstance(source_artifact, str) and source_artifact:
+        source = Path(source_artifact)
+        if source.is_file():
+            copy_path = artifact_dir / LITERARY_POLISH_ROLLBACKS_COPY_FILENAME
+            try:
+                shutil.copyfile(source, copy_path)
+            except OSError as exc:
+                copy_path = None
+                copy_error = type(exc).__name__
+        else:
+            copy_error = "source_missing"
+    record: dict[str, object] = {
+        key: value for key, value in completed.items() if key not in _LITERARY_POLISH_IDENTITY_KEYS
+    }
+    record["polish_model"] = completed.get("polish_model")
+    record["artifact_path"] = source_artifact
+    record["artifact_copy_path"] = _path_for_report(copy_path) if copy_path is not None else None
+    record["artifact_copy_error"] = copy_error
+    record["paragraph_rolled_back_event_count"] = sum(
+        1 for event in event_log if str(event.get("event_id") or "") == "literary_polish_paragraph_rolled_back"
+    )
+    record["block_failed_event_count"] = sum(
+        1 for event in event_log if str(event.get("event_id") or "") == "literary_polish_block_failed"
+    )
+    record["artifact_write_failed_event_count"] = sum(
+        1 for event in event_log if str(event.get("event_id") or "") == "literary_polish_artifact_write_failed"
+    )
+    return record
+
+
+def _build_literary_polish_summary_lines(record: Mapping[str, object] | None) -> list[str]:
+    if record is None:
+        return ["literary_polish=not_reported"]
+    lines: list[str] = []
+    for key, value in record.items():
+        if isinstance(value, Mapping):
+            lines.append(f"literary_polish_{key}={json.dumps(value, ensure_ascii=False, sort_keys=True)}")
+        else:
+            lines.append(f"literary_polish_{key}={value}")
+    return lines
+
+
+def _install_cost_estimate_freeze(
+    service: object,
+    *,
+    effective: Mapping[str, object],
+    state: dict[str, object],
+    log_event_fn: Callable[..., None],
+) -> None:
+    """Freeze the pre-run estimate into the run's app_config, between preparation and processing.
+
+    ``run_prepared_background_document`` prepares the document and then calls
+    ``run_document_processing`` with a COPY of the app_config; that call is the first moment the
+    prepared jobs and paragraphs exist, so the runner prices them there and hands the pipeline the
+    snapshot under ``app_config["cost_estimate_snapshot"]`` -- exactly where the UI puts it -- which
+    makes the pipeline publish ``cost_estimate_vs_actual``. A failure to estimate never takes the
+    run down: the report carries ``cost_estimate_error`` instead. A service without
+    ``run_document_processing`` (an offline stub) is left alone.
+    """
+    original = getattr(service, "run_document_processing", None)
+    if not callable(original) or not effective.get("translation_mode"):
+        return
+
+    def _run_document_processing_with_estimate(**kwargs: Any):
+        snapshot = None
+        try:
+            snapshot = compute_runner_cost_estimate(
+                effective=effective,
+                source_paragraphs=cast("Sequence[object]", kwargs.get("source_paragraphs") or []),
+                jobs=cast("Sequence[Mapping[str, object]]", kwargs.get("jobs") or []),
+                source_token=str(kwargs.get("source_token") or ""),
+                prepared_source_key=cast("str | None", kwargs.get("prepared_source_key")),
+            )
+        except Exception as exc:
+            state["error"] = f"{type(exc).__name__}: {exc}"
+        if snapshot is not None:
+            state["snapshot"] = snapshot
+            kwargs["app_config"] = {
+                **cast("Mapping[str, object]", kwargs.get("app_config") or {}),
+                "cost_estimate_snapshot": snapshot,
+            }
+            log_event_fn(
+                logging.DEBUG,
+                "cost_estimate_computed",
+                "Посчитана оценка цены текстовых стадий прогона.",
+                source_token=str(kwargs.get("source_token") or ""),
+                coefficients_version=snapshot.get("coefficients_version"),
+                price_list_date=snapshot.get("price_list_date"),
+                modes={
+                    str(snapshot.get("mode")): {
+                        "upper": snapshot.get("total_upper_usd"),
+                        "lower": snapshot.get("total_lower_usd"),
+                    }
+                },
+            )
+        return original(**kwargs)
+
+    setattr(service, "run_document_processing", _run_document_processing_with_estimate)
+
+
+def _build_cost_estimate_summary_lines(
+    snapshot: Mapping[str, object] | None,
+    comparison: Mapping[str, object] | None,
+    error: str | None,
+) -> list[str]:
+    if snapshot is None:
+        return [f"cost_estimate=not_computed{f' error={error}' if error else ''}"]
+    lines = [
+        f"cost_estimate_mode={snapshot.get('mode')}",
+        f"cost_estimate_total_upper_usd={snapshot.get('total_upper_usd')}",
+        f"cost_estimate_total_lower_usd={snapshot.get('total_lower_usd')}",
+        f"cost_estimate_coefficients_version={snapshot.get('coefficients_version')}",
+        f"cost_estimate_price_list_date={snapshot.get('price_list_date')}",
+        f"cost_estimate_price_unknown_models={json.dumps(snapshot.get('price_unknown_models') or [], ensure_ascii=False)}",
+    ]
+    if comparison is None:
+        lines.append("cost_estimate_vs_actual=not_reported")
+        return lines
+    for key in (
+        "actual_usd",
+        "relative_error_vs_upper",
+        "within_range",
+        "run_complete",
+        "cost_accounting_complete",
+    ):
+        lines.append(f"cost_estimate_vs_actual_{key}={comparison.get(key)}")
+    lines.append(
+        f"cost_estimate_vs_actual_stages={json.dumps(comparison.get('stages') or {}, ensure_ascii=False, sort_keys=True)}"
+    )
+    return lines
+
+
 _NARRATION_SUMMARY_FIELDS = (
     "char_count",
     "tag_count",
@@ -5790,6 +6127,9 @@ def _run_single_validation(
     prepared = None
     result = "not_started"
     exception_payload = None
+    # Spec 069 FR-007: the pre-run price of a translate run, frozen into the run's app_config
+    # before processing (the UI's "Start" does the same), and the error if it could not be built.
+    cost_estimate_state: dict[str, object] = {"snapshot": None, "error": None}
 
     def _handle_logged_event(event_payload: Mapping[str, object]) -> None:
         event_id = str(event_payload.get("event_id") or "")
@@ -5891,6 +6231,12 @@ def _run_single_validation(
             metrics={"job_count": 0},
         )
         validation_service = processing_service.clone_processing_service(
+            log_event_fn=log_event_capture,
+        )
+        _install_cost_estimate_freeze(
+            validation_service,
+            effective=runtime_resolution.effective.to_dict(),
+            state=cost_estimate_state,
             log_event_fn=log_event_capture,
         )
         result, prepared = validation_service.run_prepared_background_document(
@@ -6041,6 +6387,16 @@ def _run_single_validation(
     events_jsonl_path = artifact_dir / EVENTS_JSONL_FILENAME
     event_log_total_count = write_event_log_sidecar(event_log, events_jsonl_path)
 
+    # Spec 069: the second pass's counters + the copy of its rollback artifact, reasoning and cache
+    # by stage, and the estimate-vs-actual comparison -- all read off the event log, the route every
+    # other per-run record takes.
+    model_accounting_record = _extract_model_accounting(event_log)
+    literary_polish_record = build_literary_polish_record(event_log, artifact_dir)
+    cost_estimate_snapshot = cast("Mapping[str, object] | None", cost_estimate_state.get("snapshot"))
+    cost_estimate_error = cast("str | None", cost_estimate_state.get("error"))
+    cost_estimate_vs_actual = _extract_last_event_context(event_log, "cost_estimate_vs_actual")
+    reasoning_by_stage = _build_reasoning_by_stage(model_accounting_record)
+
     report = {
         "run": {
             "run_id": run_id,
@@ -6064,12 +6420,17 @@ def _run_single_validation(
         "artifact_dir": _path_for_report(artifact_dir),
         "progress_path": _path_for_report(progress_path),
         "result": result,
-        "runtime_config": build_validation_runtime_config(runtime_resolution),
+        "runtime_config": build_runtime_config_report(runtime_resolution),
         "preparation": preparation_payload,
-        "model_accounting": _extract_model_accounting(event_log),
+        "model_accounting": model_accounting_record,
         "footnote_marker_restorations": _extract_footnote_marker_restorations(event_log),
         "narration_artifact": _extract_narration_artifact_record(event_log),
         "run_glossary": _extract_run_glossary_record(event_log),
+        "reasoning_by_stage": reasoning_by_stage,
+        "literary_polish": literary_polish_record,
+        "cost_estimate": cost_estimate_snapshot,
+        "cost_estimate_error": cost_estimate_error,
+        "cost_estimate_vs_actual": cost_estimate_vs_actual,
         "preparation_diagnostic_snapshot": preparation_diagnostic_snapshot,
         "source_cleanup_evidence": _build_source_cleanup_evidence(getattr(prepared, "cleanup_report", None)),
         "runtime": runtime_snapshot,
@@ -6105,6 +6466,9 @@ def _run_single_validation(
             "latest_manifest_json": _path_for_report(latest_manifest_path),
             "app_log": _path_for_report(artifact_dir / RUN_LOG_FILENAME),
             "events_jsonl": _path_for_report(events_jsonl_path),
+            "literary_polish_rollbacks_jsonl": (
+                literary_polish_record.get("artifact_copy_path") if literary_polish_record is not None else None
+            ),
         },
         "formatting_diagnostics_paths": [_path_for_report(Path(path)) for path in formatting_diagnostics_paths],
         "formatting_diagnostics_discovery": {
@@ -6277,6 +6641,18 @@ def _run_single_validation(
         ),
         *_build_run_glossary_summary_lines(
             cast("Mapping[str, object] | None", report.get("run_glossary"))
+        ),
+        f"translation_passes={json.dumps(cast(Mapping[str, object], report['runtime_config']).get('translation_passes'), ensure_ascii=False, sort_keys=True)}",
+        *_build_reasoning_summary_lines(
+            cast("Mapping[str, Mapping[str, object]] | None", report.get("reasoning_by_stage"))
+        ),
+        *_build_literary_polish_summary_lines(
+            cast("Mapping[str, object] | None", report.get("literary_polish"))
+        ),
+        *_build_cost_estimate_summary_lines(
+            cast("Mapping[str, object] | None", report.get("cost_estimate")),
+            cast("Mapping[str, object] | None", report.get("cost_estimate_vs_actual")),
+            cast("str | None", report.get("cost_estimate_error")),
         ),
         f"source_chars={report['preparation']['source_chars']}",
         f"final_markdown_chars={final_markdown_chars}",

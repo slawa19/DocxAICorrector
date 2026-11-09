@@ -6918,13 +6918,20 @@ def test_main_writes_each_runs_log_into_its_own_artifact_directory(monkeypatch, 
         assert "run_marker" not in shared_log.read_text(encoding="utf-8")
 
 
-def _run_stubbed_main_emitting(validation, monkeypatch, tmp_path, *, run_id: str, events) -> Path:
+def _run_stubbed_main_emitting(
+    validation, monkeypatch, tmp_path, *, run_id: str, events, effective_extra=None, processing_hook=None
+) -> Path:
     """Run the real ``main()`` with a processing service stub that emits ``events``.
 
     Each event is ``(level, event_id, context)`` and goes through the ``log_event_fn`` the
     runner injects, exactly where the pipeline's own events go. Returns the run's directory.
+
+    ``effective_extra`` adds fields to the resolved runtime config (spec 069: a translation mode);
+    ``processing_hook(log_event_fn, kwargs)`` is then called from the stub's ``run_document_processing``,
+    the call the runner wraps to freeze the pre-run estimate into the pipeline's app_config.
     """
 
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source_path = tmp_path / "book.pdf"
     source_path.write_bytes(b"%PDF-1.4 sample")
 
@@ -6959,7 +6966,22 @@ def _run_stubbed_main_emitting(validation, monkeypatch, tmp_path, *, run_id: str
         def __init__(self, log_event_fn):
             self.log_event_fn = log_event_fn
 
+        def run_document_processing(self, **kwargs):
+            if processing_hook is not None:
+                processing_hook(self.log_event_fn, kwargs)
+
         def run_prepared_background_document(self, **kwargs):
+            prepared_paragraphs = [
+                ParagraphUnit(text="Body text", role="body", structural_role="body", source_index=0, paragraph_id="p0000")
+            ]
+            if processing_hook is not None:
+                self.run_document_processing(
+                    jobs=[{"job_kind": "llm"}, {"job_kind": "passthrough"}],
+                    source_paragraphs=prepared_paragraphs,
+                    source_token="token-1",
+                    prepared_source_key="prepared-key-1",
+                    app_config=dict(kwargs["app_config"]),
+                )
             for level, event_id, context in events:
                 self.log_event_fn(level, event_id, f"{event_id} message", **context)
             kwargs["runtime"].emit(
@@ -6974,7 +6996,7 @@ def _run_stubbed_main_emitting(validation, monkeypatch, tmp_path, *, run_id: str
             return "succeeded", SimpleNamespace(
                 uploaded_filename="prepared.docx",
                 uploaded_file_bytes=b"PK\x03\x04normalized-source",
-                paragraphs=[ParagraphUnit(text="Body text", role="body", structural_role="body", source_index=0, paragraph_id="p0000")],
+                paragraphs=prepared_paragraphs,
                 image_assets=[],
                 jobs=[{"job_kind": "block"}],
                 source_text="source text",
@@ -6987,14 +7009,17 @@ def _run_stubbed_main_emitting(validation, monkeypatch, tmp_path, *, run_id: str
             )
 
     settings = _resolution_payload(
-        chunk_size=6000,
-        image_mode="safe",
-        keep_all_image_variants=False,
-        model="gpt-5.4",
-        max_retries=1,
-        processing_operation="translate",
-        source_language="auto",
-        target_language="ru",
+        **{
+            "chunk_size": 6000,
+            "image_mode": "safe",
+            "keep_all_image_variants": False,
+            "model": "gpt-5.4",
+            "max_retries": 1,
+            "processing_operation": "translate",
+            "source_language": "auto",
+            "target_language": "ru",
+            **(effective_extra or {}),
+        }
     )
     monkeypatch.setattr(validation, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(validation, "REAL_DOCUMENT_ARTIFACT_ROOT", tmp_path / "artifacts")
@@ -7005,7 +7030,11 @@ def _run_stubbed_main_emitting(validation, monkeypatch, tmp_path, *, run_id: str
         "resolve_runtime_resolution",
         lambda app_config, run_profile: SimpleNamespace(effective=settings, ui_defaults=settings, overrides={}),
     )
-    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {"x": 1})
+    monkeypatch.setattr(
+        validation,
+        "apply_runtime_resolution_to_app_config",
+        lambda app_config, resolution: {"x": 1, **(effective_extra or {})},
+    )
     monkeypatch.setattr(validation, "evaluate_lietaer_acceptance", lambda report, **kwargs: {"passed": True, "failed_checks": [], "checks": []})
     monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
     monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
@@ -7137,3 +7166,690 @@ def test_validation_event_logger_forwards_every_event_and_keeps_the_list() -> No
         (20, "block_apparatus_kept_by_model", "kept", {"block_index": 1, "kept_paragraph_count": 2}),
     ]
     assert [event["event_id"] for event in event_log] == seen == ["block_started", "block_apparatus_kept_by_model"]
+
+
+
+# Spec 069 WP-9 T9.1: the shape of the report and of run_summary of a run WITHOUT a translation mode,
+# captured on the integration branch BEFORE the runner learned about modes. The new fields only ADD
+# keys; every old key stays, in its old relative order (a reader of an archived report keeps working).
+_PRE_069_REPORT_KEYS = (
+    "run",
+    "document_profile_id",
+    "run_profile_id",
+    "validation_tier",
+    "validation_mode",
+    "source_document_path",
+    "artifact_dir",
+    "progress_path",
+    "result",
+    "runtime_config",
+    "preparation",
+    "model_accounting",
+    "footnote_marker_restorations",
+    "narration_artifact",
+    "run_glossary",
+    "preparation_diagnostic_snapshot",
+    "source_cleanup_evidence",
+    "runtime",
+    "image_forensics",
+    "last_error",
+    "exception",
+    "failure_classification",
+    "signals",
+    "output_artifacts",
+    "formatting_diagnostics_paths",
+    "formatting_diagnostics_discovery",
+    "formatting_diagnostics",
+    "translation_quality_report",
+    "translation_quality_report_path",
+    "progress_events_tail",
+    "event_log",
+    "event_log_total_count",
+    "image_log_tail",
+    "reader_cleanup_evidence",
+    "acceptance",
+)
+_PRE_069_RUNTIME_CONFIG_KEYS = (
+    "effective",
+    "ui_defaults",
+    "overrides",
+)
+_PRE_069_OUTPUT_ARTIFACTS_KEYS = (
+    "markdown_path",
+    "docx_path",
+    "tts_text_path",
+    "output_docx_openable",
+    "output_paragraphs",
+    "output_inline_shapes",
+    "output_visible_text_chars",
+    "output_contains_placeholder_markup",
+    "report_json",
+    "summary_txt",
+    "latest_report_json",
+    "latest_summary_txt",
+    "latest_markdown_path",
+    "latest_docx_path",
+    "latest_tts_text_path",
+    "latest_manifest_json",
+    "app_log",
+    "events_jsonl",
+)
+_PRE_069_SUMMARY_KEYS = (
+    "run_id",
+    "document_profile_id",
+    "run_profile_id",
+    "validation_tier",
+    "validation_run_type",
+    "comparison_only_validation",
+    "acceptance_contract_active",
+    "validation_evidence_label",
+    "validation_success_criterion",
+    "status",
+    "run_started_at_utc",
+    "run_finished_at_utc",
+    "run_duration_seconds",
+    "source",
+    "artifact_dir",
+    "artifact_root",
+    "progress_json",
+    "result",
+    "failure_classification",
+    "runtime_overrides",
+    "image_models",
+    "paragraph_count",
+    "image_count",
+    "job_count",
+    "preparation_diagnostic_snapshot",
+    "model_accounting",
+    "footnote_marker_restored_paragraph_ids",
+    "narration_artifact",
+    "run_glossary",
+    "source_chars",
+    "final_markdown_chars",
+    "output_ratio_vs_source_text",
+    "min_block_output_ratio",
+    "heading_only_output_detected",
+    "heading_only_rejection_logged",
+    "silent_text_loss_suspected",
+    "image_reset_emitted",
+    "output_docx_openable",
+    "output_inline_shapes",
+    "output_contains_placeholder_markup",
+    "formatting_diagnostics_count",
+    "formatting_diagnostics_discovery_source",
+    "translation_quality_report_path",
+    "acceptance_passed",
+    "acceptance_failed_checks",
+    "comparison_only_acceptance_diagnostic_only",
+    "last_error",
+    "markdown_path",
+    "docx_path",
+    "cleaned_markdown_path",
+    "cleaned_docx_path",
+    "reader_cleanup_raw_markdown_path",
+    "reader_cleanup_report_path",
+    "reader_cleanup_stage_status",
+    "reader_cleanup_changed",
+    "reader_cleanup_accepted_delete_block_count",
+    "reader_cleanup_ignored_delete_block_count",
+    "reader_cleanup_rejected_delete_block_count",
+    "reader_cleanup_failed_chunk_count",
+    "reader_cleanup_deleted_block_previews",
+    "reader_verifier_status",
+    "reader_verifier_reason",
+    "reader_verifier_requested_selector",
+    "reader_verifier_canonical_selector",
+    "reader_verifier_provider",
+    "reader_verifier_model_id",
+    "reader_verifier_overall_verdict",
+    "reader_verifier_cleaned_audit_verdict",
+    "reader_verifier_confidence",
+    "reader_verifier_remaining_issue_count",
+    "reader_verifier_high_severity_issue_count",
+    "reader_verifier_top_issue_categories",
+    "reader_verifier_filtered_toc_issue_count",
+    "reader_verifier_filtered_toc_pre_audit_count",
+    "reader_verifier_filtered_toc_verifier_issue_count",
+    "reader_verifier_filtered_toc_evidence_anchor_count",
+    "reader_verifier_ignored_evidence_anchor_count",
+    "reader_verifier_ignored_evidence_anchor_kind_counts",
+    "reader_verifier_filtered_toc_issue_previews",
+    "reader_verifier_cleanup_ignored_reason_counts",
+    "reader_verifier_simple_user_summary",
+    "reader_verifier_simple_user_risk_statement",
+    "reader_verifier_simple_user_next_step",
+    "reader_verifier_review_json",
+    "reader_verifier_review_md",
+    "reader_verifier_evidence_json",
+    "reader_mvp_status_md",
+    "tts_text_path",
+    "latest_manifest_json",
+    "app_log",
+    "events_jsonl",
+    "event_log_total_count",
+    "python_executable",
+    "python_version",
+    "pythonpath",
+    "virtual_env",
+    "workspace_venv_exists",
+    "workspace_venv_win_exists",
+    "is_wsl",
+    "git_head",
+    "translation_quality_status",
+    "translation_quality_gate_reasons",
+)
+
+
+def _is_subsequence(old, new) -> bool:
+    iterator = iter(new)
+    return all(key in iterator for key in old)
+
+
+def test_report_and_summary_shape_of_a_run_without_a_mode_only_gains_keys(monkeypatch, tmp_path) -> None:
+    """T9.1 (characterization): the pre-069 keys of an edit-shaped run stay, in order."""
+    import logging
+
+    validation = _load_validation_module()
+    run_dir = _run_stubbed_main_emitting(
+        validation, monkeypatch, tmp_path, run_id="run-shape", events=[(logging.INFO, "processing_started", {"block_count": 1})]
+    )
+    report = json.loads((run_dir / "stub_events_validation_report.json").read_text(encoding="utf-8"))
+    summary_keys = [
+        line.split("=", 1)[0] for line in (run_dir / "stub_events_validation_summary.txt").read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert _is_subsequence(_PRE_069_REPORT_KEYS, list(report))
+    assert _is_subsequence(_PRE_069_RUNTIME_CONFIG_KEYS, list(report["runtime_config"]))
+    assert _is_subsequence(_PRE_069_OUTPUT_ARTIFACTS_KEYS, list(report["output_artifacts"]))
+    assert _is_subsequence(_PRE_069_SUMMARY_KEYS, summary_keys)
+
+
+# --- Spec 069 WP-9: mode, second pass, reasoning/cache by stage, estimate vs actual ------------------
+
+_STANDARD_MODE_EFFECTIVE: dict[str, object] = {
+    "translation_mode": "standard",
+    "translation_first_pass_model": "openrouter:google/gemini-3.1-flash-lite-preview",
+    "translation_first_pass_reasoning_effort": None,
+    "translation_polish_model": "openrouter:anthropic/claude-haiku-5.5",
+    "translation_polish_reasoning_effort": None,
+    "editorial_intensity": "literary",
+    "source_language": "en",
+    "target_language": "ru",
+}
+_QUALITY_MODE_EFFECTIVE: dict[str, object] = {
+    "translation_mode": "quality",
+    "translation_first_pass_model": "openrouter:google/gemini-3.7-flash",
+    "translation_first_pass_reasoning_effort": "low",
+    "translation_polish_model": None,
+    "translation_polish_reasoning_effort": None,
+    "editorial_intensity": "conservative",
+    "source_language": "en",
+    "target_language": "ru",
+}
+_MODE_TEST_PRICES = {
+    "google/gemini-3.1-flash-lite-preview": (0.25, 1.50),
+    "anthropic/claude-haiku-5.5": (0.10, 0.50),
+    "google/gemini-3.7-flash": (0.75, 3.75),
+}
+
+
+def _mock_price_list(validation, monkeypatch) -> None:
+    from docxaicorrector.pipeline.price_list import PriceList
+
+    price_list = PriceList(fetched_at="2026-11-09T10:00:00+00:00", source="cache", prices=_MODE_TEST_PRICES)
+    # No network in tests: the runner's own name for the price-list lookup is replaced.
+    monkeypatch.setattr(validation, "get_price_list", lambda *args, **kwargs: price_list)
+
+
+def _stage_accounting(*, calls: int, cost: float, reasoning_reported: int, reasoning_unreported: int, reasoning_tokens: int, cache_reported: int = 0) -> dict[str, object]:
+    return {
+        "model_call_count": calls,
+        "model_calls_with_usage": calls,
+        "model_calls_without_usage": 0,
+        "model_calls_without_cost": 0,
+        "prompt_tokens": 1000 * calls,
+        "completion_tokens": 100 * calls,
+        "total_tokens": 1100 * calls,
+        "cost_usd_reported_by_provider": cost,
+        "reasoning_tokens": reasoning_tokens,
+        "reasoning_reported_call_count": reasoning_reported,
+        "reasoning_unreported_call_count": reasoning_unreported,
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_discount_usd": 0.0,
+        "cache_fields_reported_call_count": cache_reported,
+    }
+
+
+def _mode_accounting_context() -> dict[str, object]:
+    return {
+        "model_call_count": 9,
+        "cost_usd_reported_by_provider": 0.9,
+        "cost_accounting_complete": True,
+        "token_accounting_complete": True,
+        "stages": {
+            "glossary_extraction": _stage_accounting(calls=1, cost=0.1, reasoning_reported=1, reasoning_unreported=0, reasoning_tokens=40, cache_reported=1),
+            "text_generation": _stage_accounting(calls=5, cost=0.5, reasoning_reported=5, reasoning_unreported=0, reasoning_tokens=120),
+            # The polish provider said nothing about reasoning: the ledger sums to 0, the report must not.
+            "literary_polish": _stage_accounting(calls=3, cost=0.3, reasoning_reported=0, reasoning_unreported=3, reasoning_tokens=0),
+        },
+        "literary_polish": {"counters": {"sent_paragraph_count": 6}, "generator_counters": {}},
+    }
+
+
+def _run_mode_stub(
+    validation,
+    monkeypatch,
+    tmp_path,
+    *,
+    run_id: str,
+    effective: dict[str, object],
+    events,
+    received_app_configs: list[dict[str, object]] | None = None,
+    emit_comparison: bool = True,
+) -> Path:
+    """A stubbed ``main()`` of a translate run in ``effective`` mode; the stub's processing step
+    publishes ``cost_estimate_vs_actual`` through the PIPELINE's own function, off whatever
+    ``app_config`` the runner handed it."""
+    import logging
+
+    _mock_price_list(validation, monkeypatch)
+
+    def _processing_hook(log_event_fn, kwargs) -> None:
+        if received_app_configs is not None:
+            received_app_configs.append(dict(kwargs["app_config"]))
+        if emit_comparison:
+            document_pipeline.emit_cost_estimate_vs_actual(
+                app_config=kwargs["app_config"],
+                accounting=_mode_accounting_context(),
+                run_status="succeeded",
+                run_id=run_id,
+                filename="book.pdf",
+                log_event=log_event_fn,
+                emit_state=lambda runtime, **values: None,
+                runtime=None,
+            )
+
+    return _run_stubbed_main_emitting(
+        validation,
+        monkeypatch,
+        tmp_path,
+        run_id=run_id,
+        events=[(logging.INFO, "model_usage_accounted", _mode_accounting_context()), *events],
+        effective_extra=effective,
+        processing_hook=_processing_hook,
+    )
+
+
+def _read_report_and_summary(run_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    report = json.loads((run_dir / "stub_events_validation_report.json").read_text(encoding="utf-8"))
+    summary = (run_dir / "stub_events_validation_summary.txt").read_text(encoding="utf-8").splitlines()
+    return report, summary
+
+
+def test_report_carries_the_mode_and_the_effective_settings_of_both_passes(monkeypatch, tmp_path) -> None:
+    """T9.2: FR-001 -- model, intensity and reasoning of the first AND the second pass in runtime_config.
+
+    Anti-vacuum: before WP-9 ``runtime_config`` had exactly ``effective`` / ``ui_defaults`` / ``overrides``
+    (see ``_PRE_069_RUNTIME_CONFIG_KEYS``), so ``translation_passes`` was absent and the line below failed.
+    """
+    validation = _load_validation_module()
+    run_dir = _run_mode_stub(validation, monkeypatch, tmp_path, run_id="run-passes", effective=_STANDARD_MODE_EFFECTIVE, events=[])
+
+    report, summary = _read_report_and_summary(run_dir)
+
+    assert report["runtime_config"]["translation_passes"] == {
+        "translation_mode": "standard",
+        "first_pass": {
+            "model": "openrouter:google/gemini-3.1-flash-lite-preview",
+            "editorial_intensity": "literary",
+            "reasoning_effort": None,
+        },
+        "polish_pass": {
+            "model": "openrouter:anthropic/claude-haiku-5.5",
+            "editorial_intensity": None,
+            "reasoning_effort": None,
+        },
+    }
+    passes_line = next(line for line in summary if line.startswith("translation_passes="))
+    assert json.loads(passes_line.split("=", 1)[1]) == report["runtime_config"]["translation_passes"]
+    # The effective block carries the same fields the pipeline reads.
+    assert report["runtime_config"]["effective"]["translation_mode"] == "standard"
+    assert report["runtime_config"]["effective"]["translation_polish_model"] == "openrouter:anthropic/claude-haiku-5.5"
+
+
+def test_report_of_a_one_pass_mode_has_no_polish_pass_and_a_run_without_a_mode_has_no_passes(monkeypatch, tmp_path) -> None:
+    import logging
+
+    validation = _load_validation_module()
+    quality_dir = _run_mode_stub(
+        validation, monkeypatch, tmp_path / "quality", run_id="run-quality", effective=_QUALITY_MODE_EFFECTIVE, events=[]
+    )
+    quality_report, _ = _read_report_and_summary(quality_dir)
+    assert quality_report["runtime_config"]["translation_passes"]["polish_pass"] is None
+    assert quality_report["runtime_config"]["translation_passes"]["first_pass"]["reasoning_effort"] == "low"
+
+    edit_dir = _run_stubbed_main_emitting(
+        validation, monkeypatch, tmp_path / "edit", run_id="run-no-mode", events=[(logging.INFO, "processing_started", {"block_count": 1})]
+    )
+    edit_report, edit_summary = _read_report_and_summary(edit_dir)
+    assert edit_report["runtime_config"]["translation_passes"] is None
+    assert "translation_passes=null" in edit_summary
+
+
+def test_reasoning_and_cache_by_stage_say_not_reported_instead_of_zero(monkeypatch, tmp_path) -> None:
+    """T9.3 / FR-003: a stage whose provider reported no reasoning is ``not_reported``, never 0.
+
+    Anti-vacuum: the pre-069 summary had no per-stage reasoning line at all (``model_accounting_stages``
+    was one JSON blob), and the ledger sums an unreported stage to 0 -- reading that sum is the bug.
+    """
+    validation = _load_validation_module()
+    run_dir = _run_mode_stub(validation, monkeypatch, tmp_path, run_id="run-reasoning", effective=_STANDARD_MODE_EFFECTIVE, events=[])
+
+    report, summary = _read_report_and_summary(run_dir)
+
+    by_stage = report["reasoning_by_stage"]
+    assert by_stage["text_generation"]["reasoning_tokens"] == 120
+    assert by_stage["literary_polish"]["reasoning_tokens"] is None
+    assert by_stage["literary_polish"]["reasoning_unreported_call_count"] == 3
+    assert by_stage["glossary_extraction"]["cached_tokens"] == 0 and by_stage["glossary_extraction"]["cache_fields_reported_call_count"] == 1
+    assert by_stage["text_generation"]["cached_tokens"] is None  # no call reported a cache field
+    lines = {line.split("=", 1)[0]: line.split("=", 1)[1] for line in summary}
+    assert lines["model_accounting_reasoning_text_generation"].startswith("reasoning_tokens=120 reasoning_reported_call_count=5 reasoning_unreported_call_count=0")
+    polish_line = lines["model_accounting_reasoning_literary_polish"]
+    assert "reasoning_tokens=not_reported" in polish_line and "reasoning_unreported_call_count=3" in polish_line
+    assert "cached_tokens=not_reported cache_fields_reported_call_count=0" in polish_line
+    # The raw ledger numbers are still in the report's model_accounting (the full per-stage fields).
+    assert report["model_accounting"]["stages"]["literary_polish"]["reasoning_unreported_call_count"] == 3
+
+
+def test_summary_without_a_model_accounting_event_says_not_reported(monkeypatch, tmp_path) -> None:
+    import logging
+
+    validation = _load_validation_module()
+    run_dir = _run_stubbed_main_emitting(
+        validation, monkeypatch, tmp_path, run_id="run-no-accounting", events=[(logging.INFO, "processing_started", {"block_count": 1})]
+    )
+    report, summary = _read_report_and_summary(run_dir)
+    assert report["reasoning_by_stage"] is None
+    assert "model_accounting_reasoning=not_reported" in summary
+
+
+def _literary_polish_events(artifact_path: str | None) -> list[tuple[int, str, dict[str, object]]]:
+    import logging
+
+    return [
+        (logging.WARNING, "literary_polish_paragraph_rolled_back", {"block_index": 2, "paragraph_id": "p1", "reasons": ["length"]}),
+        (logging.WARNING, "literary_polish_paragraph_rolled_back", {"block_index": 3, "paragraph_id": "p9", "reasons": ["digits"]}),
+        (logging.WARNING, "literary_polish_block_failed", {"block_index": 4, "reason": "error", "error_class": "TimeoutError"}),
+        (
+            logging.INFO,
+            "literary_polish_completed",
+            {
+                "filename": "book.pdf",
+                "run_id": "run-polish",
+                "polish_model": "openrouter:anthropic/claude-haiku-5.5",
+                "sent_block_count": 5,
+                "sent_paragraph_count": 40,
+                "accepted_paragraph_count": 37,
+                "rolled_back_paragraph_count": 2,
+                "block_rollback_count": 1,
+                "failed_block_count": 1,
+                "skipped_unmarked_block_count": 0,
+                "rollback_reason_counts": {"length": 1, "digits": 1},
+                "failed_reason_counts": {"error": 1},
+                "skipped_paragraph_counts": {"non_target_script": 3},
+                "artifact_path": artifact_path,
+            },
+        ),
+    ]
+
+
+def test_second_pass_counters_and_the_rollback_artifact_copy_reach_the_report(monkeypatch, tmp_path) -> None:
+    """T9.3 / FR-004 (7): counters + path in the report, the artifact copied next to the run.
+
+    Anti-vacuum: the pre-069 runner had no ``literary_polish`` section, no ``literary_polish_*`` summary
+    lines and wrote no ``literary_polish_rollbacks.jsonl`` into the run directory.
+    """
+    validation = _load_validation_module()
+    source_dir = tmp_path / "app_run_dir" / "literary_polish_rollbacks"
+    source_dir.mkdir(parents=True)
+    source_artifact = source_dir / "run-polish.jsonl"
+    source_artifact.write_text('{"paragraph_id": "p1"}\n{"paragraph_id": "p9"}\n', encoding="utf-8")
+
+    run_dir = _run_mode_stub(
+        validation,
+        monkeypatch,
+        tmp_path / "out",
+        run_id="run-polish",
+        effective=_STANDARD_MODE_EFFECTIVE,
+        events=_literary_polish_events(str(source_artifact)),
+    )
+
+    report, summary = _read_report_and_summary(run_dir)
+    copy_path = run_dir / "literary_polish_rollbacks.jsonl"
+    assert copy_path.read_text(encoding="utf-8") == source_artifact.read_text(encoding="utf-8")
+    record = report["literary_polish"]
+    assert record["sent_paragraph_count"] == 40
+    assert record["accepted_paragraph_count"] == 37
+    assert record["rolled_back_paragraph_count"] == 2
+    assert record["rollback_reason_counts"] == {"length": 1, "digits": 1}
+    assert record["failed_reason_counts"] == {"error": 1}
+    assert record["artifact_path"] == str(source_artifact)
+    assert record["artifact_copy_path"] == "artifacts/runs/run-polish/literary_polish_rollbacks.jsonl"
+    assert record["artifact_copy_error"] is None
+    assert record["paragraph_rolled_back_event_count"] == 2 and record["block_failed_event_count"] == 1
+    assert report["output_artifacts"]["literary_polish_rollbacks_jsonl"] == record["artifact_copy_path"]
+    lines = dict(line.split("=", 1) for line in summary)
+    assert lines["literary_polish_sent_paragraph_count"] == "40"
+    assert lines["literary_polish_rolled_back_paragraph_count"] == "2"
+    assert json.loads(lines["literary_polish_rollback_reason_counts"]) == {"digits": 1, "length": 1}
+    assert lines["literary_polish_artifact_path"] == str(source_artifact)
+    assert lines["literary_polish_artifact_copy_path"] == record["artifact_copy_path"]
+    # FR-002 (068): the second pass's events are in events.jsonl, not only in the report tail.
+    sidecar_ids = [json.loads(line)["event_id"] for line in (run_dir / validation.EVENTS_JSONL_FILENAME).read_text(encoding="utf-8").splitlines()]
+    for event_id in ("literary_polish_paragraph_rolled_back", "literary_polish_block_failed", "literary_polish_completed"):
+        assert event_id in sidecar_ids
+
+
+def test_a_missing_rollback_artifact_is_reported_not_silently_dropped(monkeypatch, tmp_path) -> None:
+    validation = _load_validation_module()
+    run_dir = _run_mode_stub(
+        validation,
+        monkeypatch,
+        tmp_path,
+        run_id="run-polish-missing",
+        effective=_STANDARD_MODE_EFFECTIVE,
+        events=_literary_polish_events(str(tmp_path / "pruned" / "run-polish.jsonl")),
+    )
+
+    report, summary = _read_report_and_summary(run_dir)
+
+    assert report["literary_polish"]["artifact_copy_path"] is None
+    assert report["literary_polish"]["artifact_copy_error"] == "source_missing"
+    assert not (run_dir / "literary_polish_rollbacks.jsonl").exists()
+    assert "literary_polish_artifact_copy_error=source_missing" in summary
+
+
+def test_a_run_without_a_second_pass_reports_the_section_as_not_reported(monkeypatch, tmp_path) -> None:
+    validation = _load_validation_module()
+    run_dir = _run_mode_stub(validation, monkeypatch, tmp_path, run_id="run-quality-no-polish", effective=_QUALITY_MODE_EFFECTIVE, events=[])
+
+    report, summary = _read_report_and_summary(run_dir)
+
+    assert report["literary_polish"] is None
+    assert "literary_polish=not_reported" in summary
+    assert report["output_artifacts"]["literary_polish_rollbacks_jsonl"] is None
+
+
+def test_runner_prices_the_run_before_processing_and_compares_after(monkeypatch, tmp_path) -> None:
+    """T9.4 / FR-007: the same estimate as the UI, frozen into the pipeline's app_config before the
+    run, and the ``cost_estimate_vs_actual`` event the pipeline then publishes, in the report.
+
+    Anti-vacuum: before WP-9 the runner put nothing under ``app_config["cost_estimate_snapshot"]``, so
+    ``emit_cost_estimate_vs_actual`` returned without an event and ``cost_estimate_vs_actual`` was never
+    in any run's ``events.jsonl``. And the model ids are BARE in the coefficient table: pricing the
+    ``openrouter:``-prefixed config value would make every stage ``price_unknown`` (asserted empty below).
+    """
+    validation = _load_validation_module()
+    received: list[dict[str, object]] = []
+    run_dir = _run_mode_stub(
+        validation,
+        monkeypatch,
+        tmp_path,
+        run_id="run-estimate",
+        effective=_STANDARD_MODE_EFFECTIVE,
+        events=[],
+        received_app_configs=received,
+    )
+
+    report, summary = _read_report_and_summary(run_dir)
+
+    (app_config,) = received
+    snapshot = cast(dict[str, Any], app_config["cost_estimate_snapshot"])
+    assert snapshot["mode"] == "standard"
+    assert set(snapshot["stages"]) == {"glossary_extraction", "text_generation", "literary_polish"}
+    assert snapshot["price_unknown_models"] == []
+    assert [item["model"] for item in snapshot["passes"]] == [
+        "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-3.1-flash-lite-preview",
+        "anthropic/claude-haiku-5.5",
+    ]
+    assert snapshot["total_upper_usd"] is not None and snapshot["total_upper_usd"] > 0
+    assert snapshot["document"]["llm_job_count"] == 1  # the passthrough job is not an LLM job
+    assert snapshot["document"]["paragraph_count"] == 1
+    assert snapshot["document"]["source_chars"] == len("Body text")
+    assert snapshot["document"]["source_token"] == "token-1"
+    assert snapshot["price_list_date"] == "2026-11-09T10:00:00+00:00"
+    assert report["cost_estimate"] == snapshot
+    assert report["cost_estimate_error"] is None
+
+    comparison = report["cost_estimate_vs_actual"]
+    assert comparison["mode"] == "standard"
+    assert comparison["actual_usd"] == pytest.approx(0.9)
+    assert comparison["estimate_upper_usd"] == pytest.approx(snapshot["total_upper_usd"])
+    assert comparison["run_complete"] is True and comparison["cost_accounting_complete"] is True
+    assert comparison["relative_error_vs_upper"] == pytest.approx((0.9 - snapshot["total_upper_usd"]) / 0.9)
+    assert comparison["stages"]["literary_polish"]["actual"] == pytest.approx(0.3)
+    sidecar = [json.loads(line) for line in (run_dir / validation.EVENTS_JSONL_FILENAME).read_text(encoding="utf-8").splitlines()]
+    sidecar_ids = [event["event_id"] for event in sidecar]
+    assert "cost_estimate_vs_actual" in sidecar_ids and "cost_estimate_computed" in sidecar_ids
+    computed = next(event for event in sidecar if event["event_id"] == "cost_estimate_computed")
+    assert computed["context"]["modes"] == {
+        "standard": {"upper": snapshot["total_upper_usd"], "lower": snapshot["total_lower_usd"]}
+    }
+
+    lines = dict(line.split("=", 1) for line in summary)
+    assert lines["cost_estimate_mode"] == "standard"
+    assert float(lines["cost_estimate_total_upper_usd"]) == pytest.approx(snapshot["total_upper_usd"])
+    assert lines["cost_estimate_vs_actual_actual_usd"] == "0.9"
+    assert lines["cost_estimate_vs_actual_run_complete"] == "True"
+    assert "cost_estimate_vs_actual_stages" in lines
+
+
+def test_a_run_without_a_mode_is_not_priced(monkeypatch, tmp_path) -> None:
+    import logging
+
+    validation = _load_validation_module()
+    run_dir = _run_stubbed_main_emitting(
+        validation, monkeypatch, tmp_path, run_id="run-edit-no-estimate", events=[(logging.INFO, "processing_started", {"block_count": 1})]
+    )
+    report, summary = _read_report_and_summary(run_dir)
+    assert report["cost_estimate"] is None and report["cost_estimate_vs_actual"] is None
+    assert "cost_estimate=not_computed" in summary
+
+
+def test_a_failing_estimate_never_takes_the_run_down(monkeypatch, tmp_path) -> None:
+    validation = _load_validation_module()
+
+    def _boom(**kwargs):
+        raise RuntimeError("coefficient table unreadable")
+
+    monkeypatch.setattr(validation, "compute_runner_cost_estimate", _boom)
+    received: list[dict[str, object]] = []
+    run_dir = _run_mode_stub(
+        validation,
+        monkeypatch,
+        tmp_path,
+        run_id="run-estimate-fails",
+        effective=_STANDARD_MODE_EFFECTIVE,
+        events=[],
+        received_app_configs=received,
+        emit_comparison=False,
+    )
+
+    report, summary = _read_report_and_summary(run_dir)
+
+    assert "cost_estimate_snapshot" not in received[0]
+    assert report["result"] == "succeeded"
+    assert report["cost_estimate"] is None
+    assert report["cost_estimate_error"] == "RuntimeError: coefficient table unreadable"
+    assert "cost_estimate=not_computed error=RuntimeError: coefficient table unreadable" in summary
+
+
+# T9.5: the logging document registers every event and artifact family spec 069 introduced.
+
+_SPEC_069_LOG_EVENTS = (
+    "translation_modes_resolved",
+    "translation_mode_overrides_setting",
+    "translation_mode_ignored_for_operation",
+    "model_call_param_dropped",
+    "reasoning_effort_not_supported_for_provider",
+    "literary_polish_paragraph_rolled_back",
+    "literary_polish_block_failed",
+    "literary_polish_completed",
+    "literary_polish_artifact_write_failed",
+    "price_list_fetch_failed",
+    "cost_estimate_computed",
+    "cost_estimate_vs_actual",
+    "model_usage_accounted",
+)
+_SPEC_069_ARTIFACT_FAMILIES = (
+    ".run/literary_polish_rollbacks/",
+    ".run/price_list/openrouter_models.json",
+    "runs/<run_id>/literary_polish_rollbacks.jsonl",
+)
+
+
+def _logging_document_text() -> str:
+    return (Path(__file__).resolve().parent.parent / "docs" / "LOGGING_AND_ARTIFACT_RETENTION.md").read_text(encoding="utf-8")
+
+
+def _source_emits_event(event_id: str) -> bool:
+    source_root = Path(__file__).resolve().parent.parent / "src" / "docxaicorrector"
+    needle = f'"{event_id}"'
+    return any(needle in path.read_text(encoding="utf-8") for path in source_root.rglob("*.py"))
+
+
+@pytest.mark.parametrize("event_id", _SPEC_069_LOG_EVENTS)
+def test_logging_document_registers_every_spec_069_event(event_id: str) -> None:
+    """The names are the ones ``contracts/events.md`` lists AND the code really emits (no ghost entry)."""
+    assert _source_emits_event(event_id), f"{event_id} is not emitted anywhere under src/ -- the guard list is stale"
+    document = _logging_document_text()
+    assert f"`{event_id}`" in document, f"{event_id} is not registered in docs/LOGGING_AND_ARTIFACT_RETENTION.md"
+
+
+@pytest.mark.parametrize("family", _SPEC_069_ARTIFACT_FAMILIES)
+def test_logging_document_registers_every_spec_069_artifact_family(family: str) -> None:
+    assert f"{family}" in _logging_document_text()
+
+
+def test_logging_document_states_the_rollback_retention_that_the_code_enforces() -> None:
+    from docxaicorrector.runtime import artifact_retention
+
+    days = artifact_retention.LITERARY_POLISH_ROLLBACKS_MAX_AGE_SECONDS // (24 * 60 * 60)
+    count = artifact_retention.LITERARY_POLISH_ROLLBACKS_MAX_COUNT
+    document = _logging_document_text()
+    row = next(line for line in document.splitlines() if line.startswith("| `.run/literary_polish_rollbacks/"))
+    assert f"{days} дней" in row and f"{count} файлов" in row
+    assert "LITERARY_POLISH_ROLLBACKS_MAX_AGE_SECONDS" in row and "LITERARY_POLISH_ROLLBACKS_MAX_COUNT" in row
+
+
+def test_log_event_inventory_script_scans_the_spec_069_emitters() -> None:
+    script = (Path(__file__).resolve().parent.parent / "scripts" / "_list_log_events.py").read_text(encoding="utf-8")
+    for target in (
+        "src/docxaicorrector/pipeline/literary_polish.py",
+        "src/docxaicorrector/pipeline/price_list.py",
+        "src/docxaicorrector/core/translation_modes.py",
+    ):
+        assert f'"{target}"' in script
