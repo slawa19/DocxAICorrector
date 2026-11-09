@@ -2322,3 +2322,25 @@ def test_fr010_two_place_names_in_either_order_stay_two_candidates():
 
     assert "North Harbour" in by_term and "Harbour North" in by_term
     assert by_term["North Harbour"].spellings == () and by_term["Harbour North"].spellings == ()
+
+
+# --- Spec 069 WP-2, FR-006: the glossary budget with a model multiplier -----------------------
+
+# entry count -> the budget of today: the floor (0, 1, 8), just past it (9), an ordinary list
+# (60, 74), the exact ceiling (168) and past it (169, 10 000).
+_SPEC_069_GLOSSARY_BUDGET_OF_TODAY = {
+    0: 1024,
+    1: 1024,
+    8: 1024,
+    9: 1120,
+    60: 6016,
+    74: 7360,
+    168: 16384,
+    169: 16384,
+    10_000: 16384,
+}
+
+
+@pytest.mark.parametrize(("entry_count", "expected"), sorted(_SPEC_069_GLOSSARY_BUDGET_OF_TODAY.items()))
+def test_spec_069_glossary_budget_without_a_multiplier_is_the_budget_of_today(entry_count, expected):
+    assert glossary_pass.glossary_max_output_tokens(entry_count) == expected
