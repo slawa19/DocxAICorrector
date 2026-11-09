@@ -8158,7 +8158,11 @@ def test_translate_run_builds_the_glossary_once_and_every_block_prompt_carries_i
 def test_glossary_pass_does_nothing_outside_translate(monkeypatch, tmp_path, operation):
     case = _run_glossary_case(monkeypatch, tmp_path, answer=_GLOSSARY_ANSWER, operation=operation)
 
-    assert case.result == "succeeded"
+    if operation != "audiobook":
+        # Spec 070 R12: the audiobook is always addressed by paragraph marker, and this fixture's
+        # canned block answer carries none, so the run is not expected to succeed for it; what
+        # this test is about -- no glossary call, event, artifact or notice -- is asserted below.
+        assert case.result == "succeeded"
     assert case.client.calls == []
     assert not any(str(event["event_id"]).startswith("run_glossary") for event in case.events)
     assert case.artifacts == []

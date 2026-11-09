@@ -20,6 +20,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_app_runtime.py`
 - `tests/test_application_flow.py`
 - `tests/test_audiobook_prompt.py`
+- `tests/test_audiobook_plan.py`
 - `tests/test_block_execution_passthrough_bypass.py`
 - `tests/test_config.py`
 - `tests/test_config_keys_are_read.py`
@@ -54,6 +55,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_message_formatting.py`
 - `tests/test_model_registry_sweep.py`
 - `tests/test_model_response_shape.py`
+- `tests/test_narration_exclusion_070.py`
 - `tests/test_narration_exclusion_addresses.py`
 - `tests/test_narration_markdown.py`
 - `tests/test_output_display_hygiene.py`
