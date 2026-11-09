@@ -80,6 +80,8 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_059_translation_completeness.py`
 - `tests/test_spec_063_apparatus_policy.py`
 - `tests/test_spec_067_apparatus_in_body.py`
+- `tests/test_spec_069_notes_apparatus.py`
+- `tests/test_spec_069_notes_gate.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`

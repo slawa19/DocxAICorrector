@@ -35,6 +35,7 @@ from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import (
     delivered_text_equals_source,
     is_citation_form_paragraph,
+    notes_run_commentary_numbers,
     notes_run_reads_as_citations,
     validate_translated_toc_block,
 )
@@ -344,6 +345,18 @@ _APPARATUS_PROMPT_RULE = (
     "- Записи библиографии и ссылки на источники оставляйте как есть, на языке оригинала: "
     "авторов, названия, издательства, годы, страницы и адреса не переводите и не "
     "транслитерируйте. Переводите только авторский комментарий."
+)
+# Spec 069 FR-005 (a), (b): the rule above is addressed to a paragraph, and a run of notes the
+# import left in the body mixes references and commentary in one paragraph. One line per such
+# paragraph names the NOTES whose entry is not a reference by the per-entry test of spec 067
+# (``output_validation.notes_run_commentary_numbers``), in the singular or the plural.
+_APPARATUS_PROMPT_COMMENTARY_NOTE = (
+    "- В абзаце {paragraph} авторский текст есть в примечании {numbers}: "
+    "его переведите, ссылки и имена авторов в нём оставьте."
+)
+_APPARATUS_PROMPT_COMMENTARY_NOTES = (
+    "- В абзаце {paragraph} авторский текст есть в примечаниях {numbers}: "
+    "его переведите, ссылки и имена авторов в них оставьте."
 )
 
 
@@ -716,12 +729,21 @@ def _build_block_apparatus_prompt(*, context: Any, payload: Any, marker_mode_ena
     Spec 067 FR-001: a block of the body that holds a run of notes the import left there
     (``notes_in_body_paragraph_indexes``) carries the section too, as notes, naming exactly
     those paragraphs -- the region of the book is not relabelled, the paragraph is named.
+
+    Spec 069 FR-005: for each of those in-body paragraphs, in marker mode, one more line names
+    the notes of the run whose entry is not a reference (``notes_run_commentary_numbers`` on the
+    paragraph's own source) -- the rule is applied note by note, not to the paragraph whole. A
+    run of references only gets no line. Without markers, or when the source cannot be
+    addressed paragraph by paragraph (``_source_paragraph_texts``), nothing is added. A notes
+    section of the back matter keeps its section as before: the defect was measured on the
+    in-body runs only.
     """
     if not _is_translate_job(context):
         return ""
     section_name = _BACK_MATTER_POLICY_SECTION_NAMES.get(str(getattr(payload, "back_matter_section", "") or ""))
     indexes = back_matter_paragraph_indexes(payload) if section_name is not None else ()
     unmarked_scope = "абзацы этого раздела в блоке"
+    notes_in_body = not indexes
     if not indexes:
         indexes = notes_in_body_paragraph_indexes(payload)
         section_name = _BACK_MATTER_POLICY_SECTION_NAMES[BACK_MATTER_SECTION_NOTES]
@@ -736,12 +758,29 @@ def _build_block_apparatus_prompt(*, context: Any, payload: Any, marker_mode_ena
         scope = ", ".join(f"[[DOCX_PARA_{paragraph_ids[index]}]]" for index in indexes)
     else:
         scope = unmarked_scope
+    commentary_lines: list[str] = []
+    addressable = marker_mode_enabled and isinstance(paragraph_ids, list) and len(paragraph_ids) == len(regions)
+    source_texts = _source_paragraph_texts(payload) if notes_in_body and addressable else None
+    if source_texts is not None and isinstance(paragraph_ids, list):
+        for index in indexes:
+            numbers = notes_run_commentary_numbers(source_texts[index])
+            if numbers:
+                template = (
+                    _APPARATUS_PROMPT_COMMENTARY_NOTE if len(numbers) == 1 else _APPARATUS_PROMPT_COMMENTARY_NOTES
+                )
+                commentary_lines.append(
+                    template.format(
+                        paragraph=f"[[DOCX_PARA_{paragraph_ids[index]}]]",
+                        numbers=", ".join(str(number) for number in numbers),
+                    )
+                )
     return "\n".join(
         (
             _APPARATUS_PROMPT_HEADER,
             f"- Раздел: {section_name}",
             f"- Абзацы: {scope}",
             _APPARATUS_PROMPT_RULE,
+            *commentary_lines,
         )
     )
 

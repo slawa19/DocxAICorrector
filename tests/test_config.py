@@ -635,11 +635,14 @@ _SAMPLE_DOCUMENT_CONTEXT = (
 # now covers only the service words and dates INSIDE a kept citation, and "commentary is
 # translated, in the same entry too" stands beside them (+149 characters in the translate
 # render; edit, the TOC variant and audiobook do not render operation_translate.txt).
+# Re-pinned by spec 069 FR-005: the first line of rule 12 gains "; решайте по каждому
+# примечанию, а не по абзацу целиком; имя автора — часть ссылки" (+82 characters in the
+# translate render only; orchestrator decision O-4 -- common to every translation mode).
 _PRE_064_PROMPT_SNAPSHOTS = [
     (
         {"operation": "translate", "source_language": "en", "target_language": "ru"},
-        7292,
-        "c914593b4ce93ac9e2fe5c3bfdfc7fc355ed232e57d2482395372148ad2a757a",
+        7374,
+        "44f3cdadceddc4711502c03008cdc8d4aa70e4537871c6056cb3abc89dee1e83",
     ),
     (
         {"operation": "edit", "source_language": "ru", "target_language": "ru"},

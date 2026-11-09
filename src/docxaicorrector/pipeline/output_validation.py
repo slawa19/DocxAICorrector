@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 from docxaicorrector.core.model_accounting import record_text_removal
+# Spec 069 FR-005: the gate's language share, reused for one entry of a notes run. The
+# detectors module imports nothing from the package, so this adds no cycle.
+from docxaicorrector.pipeline.quality_gate_text_detectors import _latin_letter_ratio
 
 # spec 035 Step 1: the paragraph-break detection satellite now lives in
 # ``pipeline.paragraph_break_detection``. Re-export its public + private names so
@@ -686,6 +689,27 @@ def opens_with_note_number(text: str) -> bool:
     return body[match.end()].isupper() or body[match.end()] in _NOTE_ENTRY_OPENERS
 
 
+def _notes_run_numbered_parts(text: str) -> tuple[str, tuple[tuple[int, str], ...]] | None:
+    """``(lead, ((number, entry), ...))`` when the paragraph is a notes run by its form."""
+    body = _INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(text or "")).strip()
+    chain = _note_number_chain(body)
+    if not chain:
+        return None
+    numbered = tuple(
+        (number, body[end : (chain[order + 1][1] if order + 1 < len(chain) else len(body))].strip())
+        for order, (number, _, end) in enumerate(chain)
+    )
+    lead = body[: chain[0][1]].strip()
+    with_signal = sum(1 for _, entry in numbered if has_citation_anchor(entry))
+    if len(chain) >= 2:
+        return (lead, numbered) if with_signal * 2 >= len(chain) else None
+    if not with_signal or not lead:
+        return None
+    if len(lead.split()) == 1 or is_citation_form_paragraph(lead):
+        return lead, numbered
+    return None
+
+
 def notes_run_parts(text: str) -> tuple[str, tuple[str, ...]] | None:
     """``(lead, entries)`` when the paragraph is a notes run by its form, else ``None``.
 
@@ -693,23 +717,19 @@ def notes_run_parts(text: str) -> tuple[str, tuple[str, ...]] | None:
     across a page, or empty); ``entries`` are the texts of the chain's entries, numbers
     removed. See the note above for the form.
     """
-    body = _INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(text or "")).strip()
-    chain = _note_number_chain(body)
-    if not chain:
+    parts = _notes_run_numbered_parts(text)
+    if parts is None:
         return None
-    entries = tuple(
-        body[end : (chain[order + 1][1] if order + 1 < len(chain) else len(body))].strip()
-        for order, (_, _, end) in enumerate(chain)
-    )
-    lead = body[: chain[0][1]].strip()
-    with_signal = sum(1 for entry in entries if has_citation_anchor(entry))
-    if len(chain) >= 2:
-        return (lead, entries) if with_signal * 2 >= len(chain) else None
-    if not with_signal or not lead:
-        return None
-    if len(lead.split()) == 1 or is_citation_form_paragraph(lead):
-        return lead, entries
-    return None
+    lead, numbered = parts
+    return lead, tuple(entry for _, entry in numbered)
+
+
+def notes_run_piece_reads_as_reference(piece: str) -> bool:
+    """Spec 067 FR-001, the PER-ENTRY citation test: one entry (or the lead) of a notes run is a
+    reference when it reads as one by its form AND carries a citation anchor.
+    ``notes_run_reads_as_citations`` asks it of every piece; spec 069 FR-005 asks it piece by
+    piece."""
+    return is_citation_form_paragraph(piece) and has_citation_anchor(piece)
 
 
 def is_notes_run_paragraph(text: str) -> bool:
@@ -734,7 +754,63 @@ def notes_run_reads_as_citations(text: str) -> bool:
         return False
     lead, entries = parts
     pieces = ((lead,) if lead else ()) + entries
-    return all(is_citation_form_paragraph(piece) and has_citation_anchor(piece) for piece in pieces)
+    return all(notes_run_piece_reads_as_reference(piece) for piece in pieces)
+
+
+# --- Spec 069 FR-005: a notes run is read NOTE BY NOTE, not as one paragraph ----------------
+#
+# A notes run mixes references, which D1 keeps in the source language, and the author's
+# commentary, which is translated. Judged as one paragraph it is judged wrongly both ways
+# (spec 069 research R4, on the bake-off of spec 063, Money ch. III). The block prompt told the
+# model to keep references and translate commentary "in these paragraphs", and a strong model
+# kept a whole paragraph of references with one English comment inside it. The gate counted a
+# long run of correctly kept references with a web address as untranslated body (the URL branch
+# of ``quality_gate_text_detectors._is_bibliography_or_url_dominant_text``) and hid a real
+# English comment behind the bibliographic hits of its neighbours. Both now take the run apart
+# with the per-entry test above; nothing is read off a word list (Constitution VII).
+#
+# The language of a piece is judged by the SAME share the gate applies to a whole paragraph
+# (``quality_gate_text_detectors._is_untranslated_body_text``: Latin letters >= 0.8 of the
+# letters). A piece below it is translated, or mostly so, and is not counted.
+NOTES_RUN_UNTRANSLATED_LATIN_SHARE = 0.8
+
+
+def notes_run_commentary_numbers(text: str) -> tuple[int, ...]:
+    """Spec 069 FR-005: the numbers of the entries of a notes run that are NOT a reference by
+    the per-entry test -- the notes that carry the author's own text. Empty for a run of
+    references only, and for a paragraph that is not a notes run at all.
+
+    Read off the SOURCE paragraph, so language plays no part: the block prompt names these
+    notes as the ones to translate (``block_execution._build_block_apparatus_prompt``).
+    """
+    parts = _notes_run_numbered_parts(text)
+    if parts is None:
+        return ()
+    _, numbered = parts
+    return tuple(number for number, entry in numbered if not notes_run_piece_reads_as_reference(entry))
+
+
+def notes_run_untranslated_part(text: str) -> str | None:
+    """Spec 069 FR-005 (c): the part of a DELIVERED notes run that is untranslated commentary,
+    or ``None`` when the paragraph is not a notes run by its form.
+
+    The part is the lead and the entries, in text order and joined by a space, whose letters are
+    at least ``NOTES_RUN_UNTRANSLATED_LATIN_SHARE`` Latin and which are not a reference by the
+    per-entry test. A reference kept under D1 is the right answer and drops out; a comment left
+    in the source language stays in, however many references stand beside it. An empty string
+    means a notes run with nothing untranslated in it.
+    """
+    parts = notes_run_parts(text)
+    if parts is None:
+        return None
+    lead, entries = parts
+    pieces = ((lead,) if lead else ()) + entries
+    return " ".join(
+        piece
+        for piece in pieces
+        if _latin_letter_ratio(piece) >= NOTES_RUN_UNTRANSLATED_LATIN_SHARE
+        and not notes_run_piece_reads_as_reference(piece)
+    )
 
 
 # --- Spec 065 FR-006: a parenthetical meta-comment written INSTEAD of a paragraph ----------
