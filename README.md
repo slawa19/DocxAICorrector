@@ -282,7 +282,7 @@ OPENAI_API_KEY=sk-...
 DOCX_AI_PROVIDERS_OPENAI_ENABLED=true
 DOCX_AI_PROVIDERS_OPENROUTER_ENABLED=true
 DOCX_AI_MODELS_TEXT_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
-DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
+DOCX_AI_MODELS_TEXT_OPTIONS=openrouter:google/gemini-3.1-flash-lite-preview,openrouter:google/gemini-3.7-flash
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
 DOCX_AI_EDITORIAL_INTENSITY_DEFAULT=literary
@@ -299,8 +299,9 @@ DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
 DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
-DOCX_AI_IMAGE_VISION_MODEL=gpt-5.4-mini
-DOCX_AI_IMAGE_DRAW_MODEL=gpt-image-2.5-flare
+# Pin the pair for every image mode (switches the per-mode defaults of config.toml off):
+# DOCX_AI_IMAGE_VISION_MODEL=gpt-6.1-terra
+# DOCX_AI_IMAGE_DRAW_MODEL=gpt-image-2.5-flare
 # Per-role pins outrank both selectors; set one only to pin that role:
 # DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-2.5-flare-2026-09-08
 ```
@@ -346,14 +347,13 @@ streamlit run app.py
 
 | Роль | Текущая модель | Статус | Примечание |
 | --- | --- | --- | --- |
-| Main premium text transform | `gpt-5.4` | `recommended_high_quality` | Премиальный вариант для текстовой обработки через sidebar. |
+| Main premium text transform | `openrouter:google/gemini-3.7-flash` | `recommended_high_quality` | Измеренная модель режима «Качество» перевода (spec 069); любая другая модель — через «Пользовательская модель» в sidebar. |
 | Main default text transform policy | `openrouter:google/gemini-3.1-flash-lite-preview` | `recommended_default` | Canonical repository default для text runtime через OpenRouter. |
-| Budget text fallback | `gpt-5-mini` | `supported_fallback` | Текущий repository default и lower-cost fallback. |
 | Structure recognition | `openrouter:google/gemini-3.1-flash-lite-preview` | `default_inherits_text` | По умолчанию использует тот же provider-qualified selector, что и основной text runtime; отдельный role override остаётся optional. |
-| Pipeline image analysis | `gpt-5.4-mini` | `balanced_cost_quality` | «Модель разбора изображений»; в UI также `gpt-6.1-sol`, `gpt-6.1-terra`. |
+| Pipeline image analysis | `gpt-6.1-terra` в режимах перерисовки | `measured_best` | «Модель разбора изображений»; по режимам — `[models.image_vision.mode_defaults]`; в UI также `gpt-5.4-mini`, `gpt-6.1-sol`. |
 | Image validation | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений». |
 | Image reconstruction | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений» (scene-graph для реконструкции). |
-| Image generation/edit | `gpt-image-2.5-flare` | `balanced_cost_quality` | «Модель рисования»; в UI также `gpt-image-2.5-sunburst`. Прежняя модель отключается OpenAI 2026-12-01 (spec 062). |
+| Image generation/edit | `gpt-image-2.5-flare` (structured, compare_all), `gpt-image-2.5-sunburst` (direct) | `measured_best` | «Модель рисования»; по режимам — `[models.image_draw.mode_defaults]`. Прежняя модель отключается OpenAI 2026-12-01 (spec 062). |
 | Generation-time image vision | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений» (бриф перед генерацией). |
 
 Важно:
@@ -370,7 +370,7 @@ streamlit run app.py
 ```toml
 [models.text]
 default = "openrouter:google/gemini-3.1-flash-lite-preview"
-options = ["gpt-5.4", "gpt-5.4-mini", "gpt-5-mini"]
+options = ["openrouter:google/gemini-3.1-flash-lite-preview", "openrouter:google/gemini-3.7-flash"]
 
 [providers.openai]
 enabled = true
@@ -422,7 +422,7 @@ forbid_heading_only_collapse = true
 
 ```env
 DOCX_AI_MODELS_TEXT_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
-DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
+DOCX_AI_MODELS_TEXT_OPTIONS=openrouter:google/gemini-3.1-flash-lite-preview,openrouter:google/gemini-3.7-flash
 DOCX_AI_PROVIDERS_OPENAI_ENABLED=true
 DOCX_AI_PROVIDERS_OPENROUTER_ENABLED=true
 DOCX_AI_CHUNK_SIZE=6000
@@ -439,8 +439,9 @@ DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
 DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
-DOCX_AI_IMAGE_VISION_MODEL=gpt-5.4-mini
-DOCX_AI_IMAGE_DRAW_MODEL=gpt-image-2.5-flare
+# Pin the pair for every image mode (switches the per-mode defaults of config.toml off):
+# DOCX_AI_IMAGE_VISION_MODEL=gpt-6.1-terra
+# DOCX_AI_IMAGE_DRAW_MODEL=gpt-image-2.5-flare
 # Per-role pins outrank both selectors; set one only to pin that role:
 # DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-2.5-flare-2026-09-08
 DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS=true

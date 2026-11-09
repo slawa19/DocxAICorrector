@@ -547,8 +547,9 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-# Image modes that call the drawing model (Images API). safe only reads images, so it
-# shows the reading-model selector alone; no_change calls no image model at all.
+# Image modes that call an image model (reading + drawing). safe calls none: its analysis runs
+# without vision (image/pipeline.py, enable_vision=False for safe; spec 062 FR-033) and the
+# plan is PIL only; no_change calls none either. Neither shows a selector.
 _IMAGE_DRAW_MODES = frozenset(
     {
         ImageMode.SEMANTIC_REDRAW_DIRECT.value,
@@ -566,23 +567,26 @@ def _render_image_model_selectors(config: Mapping[str, Any], image_mode: str) ->
     expander, so it uses bare ``st.*``.
     """
 
-    vision_default, vision_options = get_image_model_choice(config, "vision")
+    # The widget key carries the mode: Streamlit keeps a widget's value by key, so a choice the
+    # user made in one mode survives reruns of that mode, and another mode starts from its own
+    # default instead of inheriting this one's pick.
+    vision_default, vision_options = get_image_model_choice(config, "vision", image_mode)
     vision_model = st.selectbox(
         t("sidebar.image_vision_model_label"),
         list(vision_options),
         index=vision_options.index(vision_default),
         help=t("sidebar.image_vision_model_help"),
-        key="sidebar_image_vision_model",
+        key=f"sidebar_image_vision_model__{image_mode}",
     )
     draw_model = ""
     if image_mode in _IMAGE_DRAW_MODES:
-        draw_default, draw_options = get_image_model_choice(config, "draw")
+        draw_default, draw_options = get_image_model_choice(config, "draw", image_mode)
         draw_model = st.selectbox(
             t("sidebar.image_draw_model_label"),
             list(draw_options),
             index=draw_options.index(draw_default),
             help=t("sidebar.image_draw_model_help"),
-            key="sidebar_image_draw_model",
+            key=f"sidebar_image_draw_model__{image_mode}",
         )
     role_overrides = get_image_model_role_overrides(config)
     if role_overrides:

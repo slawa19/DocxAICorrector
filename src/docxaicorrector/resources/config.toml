@@ -104,13 +104,11 @@ provider_timeout_seconds_default = 600
 
 [models.text]
 default = "openrouter:google/gemini-3.1-flash-lite-preview"
+# Only the two measured models are offered (spec 069: Standard = flash-lite, Quality = gemini-3.7-flash);
+# any other model is entered through the "custom model" field of the sidebar.
 options = [
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5-mini",
-  "anthropic:claude-sonnet-4-6",
-  "openrouter:anthropic/claude-sonnet-4.6",
   "openrouter:google/gemini-3.1-flash-lite-preview",
+  "openrouter:google/gemini-3.7-flash",
 ]
 
 # Optional override for the dedicated audiobook post-pass / standalone audiobook mode.
@@ -136,8 +134,12 @@ options = [
 #   4. DOCX_AI_IMAGE_VISION_MODEL / DOCX_AI_IMAGE_DRAW_MODEL, then `default` below
 # A per-role override pins that role whatever the selectors say and is logged as
 # image_model_role_override_active. All image roles are OpenAI-only. `options` is what
-# the UI offers; extend it without code. Spec 062 "Variant 1" = gpt-5.4-mini +
-# gpt-image-2.5-flare, "Variant 2" = gpt-6.1-sol + gpt-image-2.5-sunburst.
+# the UI offers; extend it without code.
+# `mode_defaults` (owner request 2026-11-09) is the pair preselected per image mode, chosen
+# from the measured comparison (D:\Temp\docxai-runs\image-compare-2026-11-07\verdicts.md):
+# gpt-6.1-terra reads best; flare draws structured diagrams best, sunburst keeps Cyrillic
+# in direct redraw. A mode without an entry uses `default`; a DOCX_AI_IMAGE_<GROUP>_MODEL
+# env pin outranks the table; the UI user may pick another model for the run.
 # Example per-role override:
 # [models.image_generation]
 # default = "gpt-image-2.5-flare-2026-09-08"
@@ -145,9 +147,19 @@ options = [
 default = "gpt-5.4-mini"
 options = ["gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-terra"]
 
+[models.image_vision.mode_defaults]
+semantic_redraw_structured = "gpt-6.1-terra"
+semantic_redraw_direct = "gpt-6.1-terra"
+compare_all = "gpt-6.1-terra"
+
 [models.image_draw]
 default = "gpt-image-2.5-flare"
 options = ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]
+
+[models.image_draw.mode_defaults]
+semantic_redraw_structured = "gpt-image-2.5-flare"
+semantic_redraw_direct = "gpt-image-2.5-sunburst"
+compare_all = "gpt-image-2.5-flare"
 
 [providers.openai]
 enabled = true

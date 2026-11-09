@@ -3,6 +3,8 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
+from docxaicorrector.core.models import IMAGE_MODE_VALUES
+
 
 # Spec 062: the six image roles, split into the two choices the UI offers. The vision
 # model reads images (analysis, validation, reconstruction scene, generation brief); the
@@ -45,7 +47,12 @@ def resolve_image_model_groups(
 ) -> dict[str, dict[str, Any]]:
     """Resolve the default and the offered options of the two image-model choices.
 
-    Returns ``{group_id: {"default", "options", "default_source"}}``. The default is
+    Returns ``{group_id: {"default", "options", "default_source", "mode_defaults"}}``.
+    ``mode_defaults`` is ``[models.image_<group>.mode_defaults]``: the model preselected for
+    one image mode (key = an ``ImageMode`` value). It outranks the plain ``default`` for
+    that mode and is dropped when ``DOCX_AI_IMAGE_<GROUP>_MODEL`` is set: an environment
+    pin of the whole group wins over the shipped per-mode table. A mode default not listed
+    in ``options`` is added to them. The default is
     ``DOCX_AI_IMAGE_<GROUP>_MODEL`` > ``[models.image_<group>].default`` > built-in; options
     come from ``[models.image_<group>].options`` (or the built-in list) and always contain
     the default, first if it was not listed — the same rule ``[models.text]`` follows.
@@ -76,11 +83,41 @@ def resolve_image_model_groups(
             default_source = f"toml:models.{section_name}.default"
         else:
             default, default_source = builtin_default, f"default:builtin:{section_name}"
+        mode_defaults = parse_image_mode_defaults(
+            section.get("mode_defaults"), source_name=f"{source_prefix}.mode_defaults"
+        )
+        if env_value:
+            mode_defaults = {}
         options = dedupe_preserving_order(options)
         if default not in options:
             options = (default, *options)
-        resolved[group_id] = {"default": default, "options": options, "default_source": default_source}
+        options = dedupe_preserving_order((*options, *mode_defaults.values()))
+        resolved[group_id] = {
+            "default": default,
+            "options": options,
+            "default_source": default_source,
+            "mode_defaults": mode_defaults,
+        }
     return resolved
+
+
+def parse_image_mode_defaults(value: object, *, source_name: str) -> dict[str, str]:
+    """``{image_mode: model}`` from a ``mode_defaults`` table.
+
+    Only the keys that name an ``ImageMode`` are asked for, so a misspelled mode is left
+    unread and reported by the generic ``config_key_ignored`` warning (spec 066) like any
+    other key no resolver reads.
+    """
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise RuntimeError(f"Некорректная таблица {source_name}: ожидается таблица режим = модель")
+    parsed: dict[str, str] = {}
+    for mode_name in IMAGE_MODE_VALUES:
+        if mode_name in value:
+            parsed[mode_name] = coerce_model_name(value[mode_name], source_name=f"{source_name}.{mode_name}")
+    return parsed
 
 
 def toml_table_has_key(table: Mapping[str, object], key: str) -> bool:
@@ -520,7 +557,9 @@ def resolve_model_registry_settings(
         "model_sources": model_sources,
         "image_vision_model_default": image_model_groups["vision"]["default"],
         "image_vision_model_options": tuple(image_model_groups["vision"]["options"]),
+        "image_vision_model_mode_defaults": dict(image_model_groups["vision"]["mode_defaults"]),
         "image_draw_model_default": image_model_groups["draw"]["default"],
         "image_draw_model_options": tuple(image_model_groups["draw"]["options"]),
+        "image_draw_model_mode_defaults": dict(image_model_groups["draw"]["mode_defaults"]),
         "image_model_role_overrides": image_model_role_overrides,
     }

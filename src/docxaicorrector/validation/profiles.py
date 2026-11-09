@@ -202,21 +202,25 @@ class ResolvedRuntimeConfig:
         }
 
 
-def _resolve_image_models(app_config, *, vision_model: str | None, draw_model: str | None) -> dict[str, str]:
+def _resolve_image_models(
+    app_config, *, vision_model: str | None, draw_model: str | None, image_mode: str | None = None
+) -> dict[str, str]:
     # A config without image roles (an offline stub) reports no image models rather than
     # failing the whole resolution; a real AppConfig always carries all six. A profile that
     # NAMES a model is never swallowed: a rejected choice (non-OpenAI) must stop the run.
     try:
-        return resolve_image_role_models(app_config, vision_model=vision_model, draw_model=draw_model)
+        return resolve_image_role_models(
+            app_config, vision_model=vision_model, draw_model=draw_model, image_mode=image_mode
+        )
     except RuntimeError:
         if vision_model or draw_model:
             raise
         return {}
 
 
-def _image_model_choice_default(app_config, group: str) -> str:
+def _image_model_choice_default(app_config, group: str, image_mode: str | None = None) -> str:
     try:
-        return get_image_model_choice(app_config, group)[0]
+        return get_image_model_choice(app_config, group, image_mode)[0]
     except (RuntimeError, KeyError):
         return ""
 
@@ -332,12 +336,16 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
             if run_profile.keep_all_image_variants is not None
             else ui_defaults.keep_all_image_variants
         ),
-        image_vision_model=run_profile.image_vision_model or ui_defaults.image_vision_model,
-        image_draw_model=run_profile.image_draw_model or ui_defaults.image_draw_model,
+        # An unpinned model is the image mode's default (the same resolver the UI selectors use).
+        image_vision_model=run_profile.image_vision_model
+        or _image_model_choice_default(app_config, "vision", run_profile.image_mode or ui_defaults.image_mode),
+        image_draw_model=run_profile.image_draw_model
+        or _image_model_choice_default(app_config, "draw", run_profile.image_mode or ui_defaults.image_mode),
         image_models=_resolve_image_models(
             app_config,
             vision_model=run_profile.image_vision_model,
             draw_model=run_profile.image_draw_model,
+            image_mode=run_profile.image_mode or ui_defaults.image_mode,
         ),
     )
     effective_operation = effective.processing_operation
@@ -453,12 +461,13 @@ def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolu
     # Spec 062: a profile that names an image model sets the six roles exactly as the UI
     # selectors do; per-role pins still win. A profile that names none leaves the loaded
     # registry untouched.
-    if "image_vision_model" in resolution.overrides or "image_draw_model" in resolution.overrides:
-        app_config_dict = apply_image_model_selection(
-            app_config_dict,
-            vision_model=str(resolution.overrides.get("image_vision_model") or ""),
-            draw_model=str(resolution.overrides.get("image_draw_model") or ""),
-        )
+    # A model the profile does not pin is the effective image mode's default, if it has one.
+    app_config_dict = apply_image_model_selection(
+        app_config_dict,
+        vision_model=str(resolution.overrides.get("image_vision_model") or ""),
+        draw_model=str(resolution.overrides.get("image_draw_model") or ""),
+        image_mode=resolution.effective.image_mode,
+    )
     return app_config_dict
 
 

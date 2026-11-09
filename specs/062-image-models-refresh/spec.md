@@ -60,6 +60,21 @@ FR-007) построен в ветке `062/model-presets`. Сравнение �
 
 **Changelog**:
 
+- 2026-11-09 — **умолчания image-моделей по режимам и усечённый список text-моделей (запрос
+  владельца).** Владелец попросил по умолчанию лучшие по замеру модели в зависимости от режима,
+  с возможностью переопределить, и убрать лишние text-модели. `[models.image_vision.mode_defaults]`
+  и `[models.image_draw.mode_defaults]` задают пару по режиму: structured = terra + flare, direct =
+  terra + sunburst, compare_all = terra + flare; у `safe` и `no_change` селекторов нет (safe
+  анализирует без vision: `image/pipeline.py`, `enable_vision=False`). Один резолвер
+  (`core/config.py`: `get_image_model_choice`, `resolve_image_role_models`,
+  `apply_image_model_selection` с параметром `image_mode`) обслуживает UI (ключи виджетов
+  `sidebar_image_*_model__<режим>`) и раннер (`validation/profiles.py`). Приоритеты: per-role пины
+  как раньше; групповые `DOCX_AI_IMAGE_*_MODEL` отключают таблицу. `[models.text].options` — две
+  измеренные модели (`gemini-3.1-flash-lite-preview`, `gemini-3.7-flash`), «Пользовательская модель»
+  осталась как переопределение. Основание — `D:\Temp\docxai-runs\image-compare-2026-11-07\verdicts.md`:
+  terra — 56/56 подписей графика, стабильное число узлов; две причины её проигрыша в продукте
+  исправлены в `ed7708e` и `0289d9f`; цена анализа ≈ 0,01 USD против ≈ 0,05–0,07 USD за вызов
+  рисования. Тесты — `tests/test_image_mode_model_defaults.py`. Статус спеки не менялся.
 - 2026-11-07 — создана по двум отчётам исследования. Каждое утверждение о коде перепроверено
   оркестратором по `2ce8f9c` в боковом дереве; внешний факт о сроке перепроверен по странице
   OpenAI в тот же день. Ничего не исправлено.
