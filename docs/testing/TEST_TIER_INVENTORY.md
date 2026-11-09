@@ -19,6 +19,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_app_restartable_state.py`
 - `tests/test_app_runtime.py`
 - `tests/test_application_flow.py`
+- `tests/test_audiobook_prompt.py`
 - `tests/test_block_execution_passthrough_bypass.py`
 - `tests/test_config.py`
 - `tests/test_config_keys_are_read.py`
@@ -84,6 +85,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_069_notes_apparatus.py`
 - `tests/test_spec_069_notes_gate.py`
 - `tests/test_spec_070_postpass_removed.py`
+- `tests/test_spec_070_request_golden.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`

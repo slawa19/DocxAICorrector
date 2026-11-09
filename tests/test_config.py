@@ -623,6 +623,9 @@ _SAMPLE_DOCUMENT_CONTEXT = (
 # Re-pinned by spec 069 FR-005: the first line of rule 12 gains "; решайте по каждому
 # примечанию, а не по абзацу целиком; имя автора — часть ссылки" (+82 characters in the
 # translate render only; orchestrator decision O-4 -- common to every translation mode).
+# Spec 070 FR-004: the audiobook row is gone -- that operation has its own template with no
+# document context, pinned by tests/test_audiobook_prompt.py; the other three rows are pinned
+# by tests/test_spec_070_request_golden.py as well.
 _PRE_064_PROMPT_SNAPSHOTS = [
     (
         {"operation": "translate", "source_language": "en", "target_language": "ru"},
@@ -638,11 +641,6 @@ _PRE_064_PROMPT_SNAPSHOTS = [
         {"operation": "translate", "source_language": "en", "target_language": "ru", "prompt_variant": "toc_translate"},
         5836,
         "546387aa435e5e3134f7d99f951d1d9b1a8ff782d20f9e5909d1283261ade8ba",
-    ),
-    (
-        {"operation": "audiobook", "source_language": "en", "target_language": "ru"},
-        10013,
-        "2eea29532e1dc585a14cc77457c3a55fa8deee9fc8b7f4814158881376bca083",
     ),
 ]
 
@@ -899,18 +897,6 @@ def test_load_system_prompt_translate_includes_local_fragment_repair_guardrails(
     assert "не превращайте локальный repair в общую перестройку структуры" in prompt
 
 
-def test_load_system_prompt_audiobook_includes_local_fragment_repair_guardrails():
-    config.load_system_prompt.cache_clear()
-    try:
-        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
-    finally:
-        config.load_system_prompt.cache_clear()
-
-    assert "явно разорванное предложение" in prompt
-    assert "не нарушает прямые ограничения выбранного режима обработки" in prompt
-    assert "не превращайте локальный repair в общую перестройку структуры" in prompt
-
-
 def test_load_system_prompt_translate_includes_hardening_rules():
     config.load_system_prompt.cache_clear()
     try:
@@ -921,70 +907,6 @@ def test_load_system_prompt_translate_includes_hardening_rules():
     assert "не выполняйте повторный перевод" in prompt
     assert "ориентируйтесь в первую очередь на фактический язык блока" in prompt
     assert "предпочитайте консервативный результат" in prompt
-
-
-def test_load_system_prompt_supports_audiobook_operation():
-    config.load_system_prompt.cache_clear()
-    try:
-        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
-    finally:
-        config.load_system_prompt.cache_clear()
-
-    assert "ElevenLabs Audiobooks" in prompt
-    assert "[thoughtful]" in prompt
-    assert "готовый для TTS" in prompt
-
-
-def test_load_system_prompt_audiobook_includes_narration_adapted_rules():
-    config.load_system_prompt.cache_clear()
-    try:
-        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
-    finally:
-        config.load_system_prompt.cache_clear()
-
-    assert "narration_adapted" in prompt
-    assert "разбивайте его на два или три более коротких spoken sentences" in prompt
-    assert "light paraphrase for spoken clarity" in prompt
-    assert "Не делайте summarization" in prompt
-    assert "load-bearing clauses" in prompt
-    assert "causal links" in prompt
-    assert "Adaptation is selective, not mandatory" in prompt
-
-
-def test_load_system_prompt_audiobook_preserves_meaning_guardrails():
-    config.load_system_prompt.cache_clear()
-    try:
-        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
-    finally:
-        config.load_system_prompt.cache_clear()
-
-    assert "named entities, даты, числа, quantitative claims" in prompt
-    assert "Не смягчайте и не усиливайте тезис автора" in prompt
-    assert "Не добавляйте новую интерпретацию от себя" in prompt
-    assert "Если термин semantically important, сохраняйте его" in prompt
-
-
-def test_load_system_prompt_audiobook_examples_include_sentence_splitting_and_negative_contrast():
-    config.load_system_prompt.cache_clear()
-    try:
-        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
-    finally:
-        config.load_system_prompt.cache_clear()
-
-    assert "Привычка к спешке и порождаемая ею логика отчётов" in prompt
-    assert "Это видно по решениям служб." in prompt
-    assert "Некорректно" in prompt
-    assert "потеряны qualifier `может`" in prompt
-
-
-def test_load_system_prompt_supports_auto_source_language_for_audiobook():
-    config.load_system_prompt.cache_clear()
-    try:
-        prompt = config.load_system_prompt(operation="audiobook", source_language="auto", target_language="ru")
-    finally:
-        config.load_system_prompt.cache_clear()
-
-    assert "определи автоматически по тексту" in prompt
 
 
 def test_load_system_prompt_translate_includes_editorial_intensity_fragment_and_example_rules():

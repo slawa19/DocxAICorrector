@@ -1747,6 +1747,36 @@ def _resolve_editorial_intensity(editorial_intensity: str) -> str:
     return normalized
 
 
+_AUDIOBOOK_SYSTEM_PROMPT_PATH = PROMPTS_DIR / "system_prompt_audiobook.txt"
+_AUDIOBOOK_PROMPT_VARIANT_PATHS = {
+    "default": (PROMPTS_DIR / "operation_audiobook.txt", PROMPTS_DIR / "example_audiobook.txt"),
+    "repair": (PROMPTS_DIR / "operation_audiobook_repair.txt", None),
+}
+
+
+def _load_audiobook_system_prompt(prompt_variant: str) -> str:
+    """Spec 070 FR-004: the audiobook template; it depends on nothing but the variant.
+
+    The audiobook operation has no language pair, intensity or document context (the text is
+    already translated and edited), so none of them is read here. The two sections are put in by
+    plain substitution, so braces in an example need no escaping. The ``repair`` variant
+    carries its own instructions and no example.
+    """
+
+    normalized_variant = prompt_variant.strip().lower() or "default"
+    if normalized_variant not in _AUDIOBOOK_PROMPT_VARIANT_PATHS:
+        raise RuntimeError(f"Некорректный prompt_variant: {prompt_variant}")
+    operation_path, example_path = _AUDIOBOOK_PROMPT_VARIANT_PATHS[normalized_variant]
+    template = _render_optional_prompt_sections(
+        _read_prompt_file(_AUDIOBOOK_SYSTEM_PROMPT_PATH),
+        present={"example_block": example_path is not None},
+    )
+    rendered = template.replace("{{operation_instructions}}", _read_prompt_file(operation_path))
+    if example_path is not None:
+        rendered = rendered.replace("{{example_block}}", _read_prompt_file(example_path))
+    return rendered
+
+
 @lru_cache(maxsize=32)
 def load_system_prompt(
     *,
@@ -1765,6 +1795,8 @@ def load_system_prompt(
     template whole. The translation domain and its term scanner were removed by spec 066 T-1.
     """
     normalized_operation = operation.strip().lower() or "edit"
+    if normalized_operation == "audiobook":
+        return _load_audiobook_system_prompt(prompt_variant)
     normalized_source_language = source_language.strip().lower() or "en"
     normalized_target_language = target_language.strip().lower() or "ru"
     normalized_editorial_intensity = _resolve_editorial_intensity(editorial_intensity)
