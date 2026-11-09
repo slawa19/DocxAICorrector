@@ -75,6 +75,21 @@ def _class_counts(items: Sequence[RepairItem]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _single_attempt_client(client: Any) -> Any:
+    """A per-call copy of ``client`` whose SDK retries are off (OpenAI/OpenRouter and Anthropic SDKs).
+
+    The run's client keeps the SDK default (``max_retries=2``), which re-sends a 5xx/429/timeout
+    silently: three paid requests for "one" call. The repair is AT MOST ONE call, so it derives
+    its own no-retry client; the run's client, and the main generation call, are not touched. A
+    client without ``with_options`` (a test double) is used as it is.
+    """
+
+    with_options = getattr(client, "with_options", None)
+    if not callable(with_options):
+        return client
+    return with_options(max_retries=0)
+
+
 def repair_block_residue(
     *,
     client: Any,
@@ -139,7 +154,7 @@ def repair_block_residue(
     try:
         # ``should_stop`` is deliberately NOT passed: a Stop is checked before the call only,
         # so it cannot abort the block mid-processing (research R5).
-        answer = request_text_completion(client, request_kwargs, usage_stage=STAGE_AUDIOBOOK_REPAIR)
+        answer = request_text_completion(_single_attempt_client(client), request_kwargs, usage_stage=STAGE_AUDIOBOOK_REPAIR)
     except Exception as exc:  # noqa: BLE001 - any SDK/network fault keeps the previous text
         return _failed("failed", "error", type(exc).__name__, True)
 

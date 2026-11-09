@@ -27,8 +27,27 @@ def _load_generator():
     return module
 
 
-def test_unicode_emoji_data_version_matches_runtime() -> None:
-    assert data.UNICODE_EMOJI_DATA_VERSION == unicodedata.unidata_version
+def test_vendored_emoji_data_version_is_the_generators_pinned_version() -> None:
+    assert data.UNICODE_EMOJI_DATA_VERSION == _load_generator().PINNED_VERSION
+
+
+def test_runtime_unicode_major_version_equals_the_vendored_one() -> None:
+    """Holds on Python 3.12 (Unicode 15.0.0) and 3.13 (15.1.0) alike: the emoji properties are
+    15.x, the general categories come from the runtime; a different MAJOR would mix releases."""
+
+    runtime_major = int(unicodedata.unidata_version.split(".")[0])
+    vendored_major = int(data.UNICODE_EMOJI_DATA_VERSION.split(".")[0])
+    assert runtime_major == vendored_major
+
+
+def test_vendored_module_is_reproduced_by_the_generator_when_the_source_file_is_available() -> None:
+    source = REPO_ROOT / ".run" / "emoji-data.txt"
+    if not source.is_file():
+        pytest.skip("emoji-data.txt is not vendored; download it from the URL in the module docstring to run this check")
+    generator = _load_generator()
+    expected = generator.render_module(source.read_bytes())
+    actual = (REPO_ROOT / "src" / "docxaicorrector" / "text" / "unicode_emoji_data.py").read_text(encoding="utf-8")
+    assert actual == expected
 
 
 def test_unicode_emoji_data_records_the_source_digest() -> None:

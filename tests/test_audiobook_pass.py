@@ -649,6 +649,46 @@ def test_a_record_carrying_a_blank_line_is_reported_as_a_boundary_mismatch() -> 
     assert mismatch[0]["first_mismatch_paragraph_id"] == "p2"
 
 
+@pytest.mark.parametrize(
+    ("delivered_ids", "first_difference"),
+    [
+        (["p2", "p1"], "p2"),
+        (["p1", "p1"], "p1"),
+        (["p1"], "p2"),
+        (["p1", "p2", "p2"], "p2"),
+    ],
+)
+def test_the_final_boundary_check_compares_the_ids_with_the_expected_denominator(
+    delivered_ids: list[str], first_difference: str
+) -> None:
+    """A reorder, a duplicate, a loss and an extra copy all read back fine as TEXT; only the
+    comparison of the id sequence (with multiplicity) against the denominator sees them."""
+
+    events: list[tuple[int, str, dict[str, Any]]] = []
+    state = ProcessingState()
+    state.narration_paragraphs = [_record(pid, f"Абзац номер {index}.") for index, pid in enumerate(delivered_ids, 1)]
+    state.narration_expected_paragraph_ids = ["p1", "p2"]
+
+    text = _build_narration_text(
+        context=SimpleNamespace(processing_operation="audiobook", runtime=None, uploaded_filename="book.docx"),
+        dependencies=SimpleNamespace(log_event=lambda level, event, _m, **ctx: events.append((level, event, ctx))),
+        emitters=None,
+        state=state,
+    )
+
+    assert text is not None  # delivery is not blocked
+    assert state.narration_paragraph_boundary_check == "mismatch"
+    mismatch = [(level, ctx) for level, event, ctx in events if event == "audiobook_paragraph_boundary_mismatch"]
+    assert len(mismatch) == 1 and mismatch[0][0] == logging.ERROR
+    assert mismatch[0][1]["first_mismatch_paragraph_id"] == first_difference
+
+
+def test_the_final_boundary_check_accepts_the_expected_sequence() -> None:
+    assert assemble_narration_records(
+        [_record("p1", "Первый абзац."), _record("p2", "Второй.")], ["p1", "p2"]
+    ).boundary_check == "ok"
+
+
 def test_the_narration_text_is_assembled_by_id_across_blocks() -> None:
     state = ProcessingState()
     _run(_payload(("p1", _PROSE_A, "body", None)), generator=_Generator(_echo), state=state, index=1)

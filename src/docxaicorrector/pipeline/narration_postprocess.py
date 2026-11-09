@@ -122,13 +122,33 @@ def narration_paragraph_continues(*, previous_role: str, previous_text: str, fol
     return first.isalpha() and first.islower()
 
 
-def assemble_narration_records(records: Sequence[NarrationParagraphRecord]) -> NarrationAssembly:
+def _first_expected_id_difference(record_ids: Sequence[str], expected_ids: Sequence[str]) -> str | None:
+    """The first id where the assembled sequence departs from the expected denominator, or ``None``."""
+
+    for delivered, expected in zip(record_ids, expected_ids):
+        if delivered != expected:
+            return delivered
+    if len(record_ids) > len(expected_ids):
+        return record_ids[len(expected_ids)]
+    if len(record_ids) < len(expected_ids):
+        return expected_ids[len(record_ids)]
+    return None
+
+
+def assemble_narration_records(
+    records: Sequence[NarrationParagraphRecord],
+    expected_paragraph_ids: Sequence[str] | None = None,
+) -> NarrationAssembly:
     """The ``.tts.txt`` text from the records, and the check that it parses back into them.
 
     Paragraphs are joined by ``"\\n\\n"``; a deterministic join (see above) puts one space
     instead. The check reads the FINAL text back: split on ``"\\n\\n"`` it must give exactly
     ``records - joins`` paragraphs, and each must be its records' texts in order. A mismatch
     is a defect of this code (a record text carrying a blank line), never of the model.
+
+    ``expected_paragraph_ids`` is the run's fixed denominator (``narration_expected_paragraph_ids``):
+    when it is given, the SEQUENCE of the records' ids, with multiplicity, must equal it (a record
+    without an id is not compared, as before). A reorder, a duplicate or a loss is a mismatch.
     """
 
     groups: list[list[NarrationParagraphRecord]] = []
@@ -169,6 +189,12 @@ def assemble_narration_records(records: Sequence[NarrationParagraphRecord]) -> N
                 cursor = position + len(member_text)
             if mismatch:
                 break
+    if not mismatch and expected_paragraph_ids:
+        record_ids = [record.paragraph_id for record in records if record.paragraph_id]
+        difference = _first_expected_id_difference(record_ids, [str(item) for item in expected_paragraph_ids])
+        if difference is not None:
+            mismatch = True
+            first_mismatch = difference
     return NarrationAssembly(
         text=text,
         join_pairs=tuple(join_pairs),
@@ -191,7 +217,7 @@ def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, sta
     ]
     if not records:
         return None
-    assembly = assemble_narration_records(records)
+    assembly = assemble_narration_records(records, getattr(state, "narration_expected_paragraph_ids", None))
     state.narration_joined_sentence_continuation_count = len(assembly.join_pairs)
     state.narration_joined_paragraph_id_pairs = list(assembly.join_pairs)
     state.narration_paragraph_boundary_check = assembly.boundary_check

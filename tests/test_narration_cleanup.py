@@ -95,6 +95,21 @@ def test_br_and_block_tags_become_a_space_not_a_weld() -> None:
     assert clean("<ul><li>раз</li><li>два</li></ul>") == "раз два"
 
 
+def test_every_non_inline_element_is_a_word_separator() -> None:
+    assert clean("one<hr>two") == "one two"
+    assert clean("one<hr/>two") == "one two"
+    assert clean("<section>one</section><section>two</section>") == "one two"
+    assert clean("<article>one</article><article>two</article>") == "one two"
+    assert clean("one<frobnicate>two</frobnicate>three") == "one two three"
+    assert clean("one<x-widget>two") == "one two"
+
+
+def test_inline_tags_inside_a_word_add_no_space() -> None:
+    assert clean("сло<b>во</b>") == "слово"
+    assert clean("сло<em>во</em>вое") == "слововое"
+    assert clean("пол<span>ка</span>") == "полка"
+
+
 def test_a_lone_less_than_is_not_a_tag() -> None:
     assert clean("a < b и c > d") == "a < b и c > d"
     assert clean("5 <3 и 4> 2") == "5 <3 и 4> 2"

@@ -150,6 +150,7 @@ def measure_per_paragraph(source_path: Path, *, chunk_size: int) -> dict[str, An
         "paragraph_count": len(prepared.paragraphs),
         "block_count": len(prepared.jobs),
         "expected_paragraph_count": expected,
+        "expected_paragraph_ids": [str(item) for item in state.narration_expected_paragraph_ids],
         "excluded_count": len(exclusions),
         "excluded_by_reason": {reason: len(ids) for reason, ids in sorted(by_reason.items())},
         "excluded_paragraph_ids_by_reason": dict(sorted(by_reason.items())),
