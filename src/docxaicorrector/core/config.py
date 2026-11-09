@@ -55,6 +55,12 @@ from docxaicorrector.core.constants import (
     SYSTEM_PROMPT_PATH,
 )
 from docxaicorrector.core.logger import log_event
+from docxaicorrector.core.translation_modes import (
+    TranslationModesConfig,
+    TranslationModeSpec,
+    load_translation_modes,
+    log_translation_modes_resolved,
+)
 from docxaicorrector.image.shared import clamp_score
 from docxaicorrector.core.models import (
     IMAGE_MODE_VALUES,
@@ -358,6 +364,11 @@ class AppConfig(Mapping[str, Any]):
     glossary_max_terms: int = 60
     glossary_prompt_max_chars: int = 5900
     glossary_candidate_limit: int = 400
+    # Spec 069 FR-001: the two translate modes ([translation_modes.standard|quality]) and the
+    # one the UI / a profile without its own field resolves to. An AppConfig assembled by
+    # hand carries no modes; the resolver then refuses a configured mode instead of guessing.
+    translation_mode_default: str = "standard"
+    translation_modes: Mapping[str, TranslationModeSpec] = field(default_factory=dict)
 
     def __getitem__(self, key: str) -> object:
         try:
@@ -1488,6 +1499,15 @@ def _validate_provider_model_contracts(
             )
 
 
+def _ensure_responses_text_selector(selector: str, *, provider_registry: ProviderRegistry, source_name: str) -> None:
+    resolve_model_selector(
+        selector,
+        required_capability="responses_text",
+        config_like=provider_registry,
+        source_name=source_name,
+    )
+
+
 def _build_app_config(
     *,
     provider_registry: ProviderRegistry,
@@ -1500,9 +1520,11 @@ def _build_app_config(
     output_font_settings: Mapping[str, Any],
     semantic_validation_runtime_settings: Mapping[str, Any],
     image_output_settings: Mapping[str, Any],
+    translation_modes_config: TranslationModesConfig,
 ) -> AppConfig:
     return AppConfig(
         **build_app_config_payload(
+            translation_modes_config=translation_modes_config,
             provider_registry=provider_registry,
             model_registry_settings=model_registry_settings,
             text_runtime_defaults=text_runtime_defaults,
@@ -1591,9 +1613,20 @@ def _load_app_config_uncached() -> AppConfig:
         text_runtime_defaults=resolved_sections.text_runtime_defaults,
         paragraph_boundary_settings=resolved_sections.paragraph_boundary_settings,
     )
+    translation_modes_config = load_translation_modes(
+        config_data,
+        environ=os.environ,
+        editorial_intensity_values=EDITORIAL_INTENSITY_VALUES,
+        validate_model_fn=lambda selector, source_name: _ensure_responses_text_selector(
+            selector, provider_registry=provider_registry, source_name=source_name
+        ),
+        source_name=str(CONFIG_PATH),
+    )
+    log_translation_modes_resolved(translation_modes_config)
     _log_ignored_config_keys(config_data)
 
     return _build_app_config(
+        translation_modes_config=translation_modes_config,
         provider_registry=provider_registry,
         model_registry_settings=resolved_sections.model_registry_settings,
         text_runtime_defaults=resolved_sections.text_runtime_defaults,

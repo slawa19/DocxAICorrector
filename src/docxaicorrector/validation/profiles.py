@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -13,6 +13,10 @@ from docxaicorrector.core.config import (
     get_image_model_choice,
     get_text_model_default,
     resolve_image_role_models,
+)
+from docxaicorrector.core.translation_modes import (
+    REQUESTABLE_MODE_NAMES,
+    resolve_effective_translation_config,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -95,6 +99,9 @@ class RunProfile:
     source_language: str | None = None
     target_language: str | None = None
     editorial_intensity: str | None = None
+    # Spec 069: "standard" | "quality" | "single" (the pre-069 single pass). None resolves to
+    # translation_mode_default, like the UI; only meaningful for processing_operation=translate.
+    translation_mode: str | None = None
     audiobook_postprocess_enabled: bool | None = None
     reader_cleanup_enabled: bool | None = None
     reader_verifier_enabled: bool | None = None
@@ -163,6 +170,12 @@ class ResolvedRuntimeConfig:
     image_vision_model: str = ""
     image_draw_model: str = ""
     image_models: Mapping[str, str] = field(default_factory=dict)
+    # Spec 069: the effective translate mode and both passes (None for edit / audiobook).
+    translation_mode: str | None = None
+    translation_first_pass_model: str | None = None
+    translation_first_pass_reasoning_effort: str | None = None
+    translation_polish_model: str | None = None
+    translation_polish_reasoning_effort: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -181,6 +194,11 @@ class ResolvedRuntimeConfig:
             "image_vision_model": self.image_vision_model,
             "image_draw_model": self.image_draw_model,
             "image_models": dict(self.image_models),
+            "translation_mode": self.translation_mode,
+            "translation_first_pass_model": self.translation_first_pass_model,
+            "translation_first_pass_reasoning_effort": self.translation_first_pass_reasoning_effort,
+            "translation_polish_model": self.translation_polish_model,
+            "translation_polish_reasoning_effort": self.translation_polish_reasoning_effort,
         }
 
 
@@ -229,6 +247,27 @@ def load_validation_registry(registry_path: str | Path | None = None) -> Validat
     return ValidationRegistry(documents=documents, run_profiles=run_profiles)
 
 
+def _translation_runtime_fields(app_config, *, operation: str, mode, model, intensity, origin) -> dict[str, object]:
+    # The ONE resolution function (core.translation_modes) — the UI calls it too, so a mode
+    # means the same in a profile and in the UI. Returns the effective fields to merge into
+    # ResolvedRuntimeConfig (empty for edit / audiobook).
+    effective = resolve_effective_translation_config(
+        app_config,
+        processing_operation=operation,
+        requested_mode=mode,
+        requested_model=model,
+        requested_intensity=intensity,
+        origin=origin,
+    )
+    if effective is None:
+        return {}
+    return {
+        "model": effective.first_pass.model,
+        "editorial_intensity": effective.first_pass.editorial_intensity,
+        **effective.to_runtime_fields(),
+    }
+
+
 def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeResolution:
     ui_defaults = ResolvedRuntimeConfig(
         model=get_text_model_default(app_config),
@@ -246,6 +285,18 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         image_vision_model=_image_model_choice_default(app_config, "vision"),
         image_draw_model=_image_model_choice_default(app_config, "draw"),
         image_models=_resolve_image_models(app_config, vision_model=None, draw_model=None),
+    )
+    # ui_defaults is "what the UI would start with": no requested model/intensity, no profile mode.
+    ui_defaults = replace(
+        ui_defaults,
+        **_translation_runtime_fields(
+            app_config,
+            operation=ui_defaults.processing_operation,
+            mode=None,
+            model=None,
+            intensity=None,
+            origin="ui",
+        ),
     )
     effective = ResolvedRuntimeConfig(
         model=run_profile.model or ui_defaults.model,
@@ -284,6 +335,18 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
             app_config,
             vision_model=run_profile.image_vision_model,
             draw_model=run_profile.image_draw_model,
+        ),
+    )
+    effective_operation = effective.processing_operation
+    effective = replace(
+        effective,
+        **_translation_runtime_fields(
+            app_config,
+            operation=effective_operation,
+            mode=run_profile.translation_mode,
+            model=run_profile.model,
+            intensity=run_profile.editorial_intensity,
+            origin=f"run_profile:{run_profile.id}",
         ),
     )
     explicit_profile_overrides = {
@@ -509,6 +572,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         source_language=_optional_str(payload, "source_language"),
         target_language=_optional_str(payload, "target_language"),
         editorial_intensity=_optional_editorial_intensity(payload, "editorial_intensity"),
+        translation_mode=_optional_translation_mode(payload, "translation_mode"),
         audiobook_postprocess_enabled=_optional_bool(payload, "audiobook_postprocess_enabled"),
         reader_cleanup_enabled=_optional_bool(payload, "reader_cleanup_enabled"),
         reader_verifier_enabled=_optional_bool(payload, "reader_verifier_enabled"),
@@ -622,6 +686,15 @@ def _optional_editorial_intensity(payload: dict[str, Any], key: str) -> str | No
         return None
     if not isinstance(value, str) or value.strip() not in set(EDITORIAL_INTENSITY_VALUES):
         raise RuntimeError(f"Registry field {key} must be one of: {', '.join(sorted(EDITORIAL_INTENSITY_VALUES))}")
+    return value.strip()
+
+
+def _optional_translation_mode(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or value.strip() not in set(REQUESTABLE_MODE_NAMES):
+        raise RuntimeError(f"Registry field {key} must be one of: {', '.join(sorted(REQUESTABLE_MODE_NAMES))}")
     return value.strip()
 
 

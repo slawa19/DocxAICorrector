@@ -135,6 +135,7 @@ class ResolvedAppConfigSections:
 
 def build_app_config_payload(
     *,
+    translation_modes_config: Any,
     provider_registry: object,
     model_registry_settings: Mapping[str, Any],
     text_runtime_defaults: Mapping[str, Any],
@@ -178,6 +179,8 @@ def build_app_config_payload(
         "glossary_max_terms": text_runtime_defaults["glossary_max_terms"],
         "glossary_prompt_max_chars": text_runtime_defaults["glossary_prompt_max_chars"],
         "glossary_candidate_limit": text_runtime_defaults["glossary_candidate_limit"],
+        "translation_mode_default": translation_modes_config.default_mode,
+        "translation_modes": dict(translation_modes_config.modes),
         "paragraph_boundary_normalization_enabled": paragraph_boundary_settings["paragraph_boundary_normalization_enabled"],
         "paragraph_boundary_normalization_mode": paragraph_boundary_settings["paragraph_boundary_normalization_mode"],
         "paragraph_boundary_normalization_save_debug_artifacts": paragraph_boundary_settings[

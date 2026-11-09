@@ -2503,3 +2503,53 @@ def test_env_example_documents_the_glossary_overrides():
         "DOCX_AI_GLOSSARY_CANDIDATE_LIMIT",
     ):
         assert f"# {name}=" in env_example, name
+
+
+# Spec 069 T1.1: characterization of the loaded config BEFORE the translation-modes fields.
+# The digest covers every field of the shipped config except the ``translation_*`` ones, so
+# adding the new fields (and the new ``[translation_modes]`` sections) must not move any
+# existing value. A change of the digest is a change of behaviour, not of this test.
+_PRE_TRANSLATION_MODES_CONFIG_DIGEST = "d3768d762f8e37f6a1878ae5a0d7256bb2b177404997fdf7a9dd07e31184fbdc"
+
+
+def _config_digest_without_translation_fields(app_config) -> str:
+    items = sorted(
+        (name, repr(value))
+        for name, value in app_config.to_dict().items()
+        if not name.startswith("translation_")
+    )
+    return hashlib.sha256(repr(items).encode("utf-8")).hexdigest()
+
+
+def test_shipped_config_values_are_unchanged_by_the_translation_modes_fields():
+    app_config = config.load_app_config()
+
+    assert _config_digest_without_translation_fields(app_config) == _PRE_TRANSLATION_MODES_CONFIG_DIGEST
+
+
+def test_config_without_translation_modes_section_keeps_every_existing_value(monkeypatch, tmp_path):
+    shipped = config.CONFIG_PATH.read_text(encoding="utf-8")
+    stripped_lines: list[str] = []
+    skipping = False
+    for line in shipped.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[translation_modes") or stripped.startswith("translation_mode_default"):
+            skipping = stripped.startswith("[translation_modes")
+            continue
+        if skipping and stripped.startswith("["):
+            skipping = False
+        if skipping:
+            continue
+        stripped_lines.append(line)
+    config_without_modes = tmp_path / "config.toml"
+    config_without_modes.write_text("\n".join(stripped_lines) + "\n", encoding="utf-8")
+    assert not [
+        line
+        for line in config_without_modes.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#") and "translation_mode" in line
+    ]
+    monkeypatch.setattr(config, "CONFIG_PATH", config_without_modes)
+
+    app_config = config.load_app_config()
+
+    assert _config_digest_without_translation_fields(app_config) == _PRE_TRANSLATION_MODES_CONFIG_DIGEST

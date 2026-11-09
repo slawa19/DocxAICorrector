@@ -424,8 +424,8 @@ def test_removed_keys_inside_a_live_table_are_reported_as_ignored(monkeypatch, t
 def test_a_stray_key_in_every_shipped_table_is_reported(monkeypatch) -> None:
     # Anti-vacuum for the nested tracking: a resolver that walks or copies a table would mark
     # all of it read and hide a removed key there. Plant one unknown key in every table of the
-    # shipped config (except [providers] itself, whose unknown sub-tables are already a hard
-    # error) and require each one back by its dotted path.
+    # shipped config (except [providers] and [translation_modes] themselves, whose unknown
+    # sub-tables are already a hard error) and require each one back by its dotted path.
     data = tomllib.loads(constants.CONFIG_PATH.read_text(encoding="utf-8"))
     planted: list[str] = []
 
@@ -433,7 +433,8 @@ def test_a_stray_key_in_every_shipped_table_is_reported(monkeypatch) -> None:
         for key, value in list(table.items()):
             if isinstance(value, dict):
                 _plant(value, f"{path}{key}.")
-        if path != "providers.":
+        # [translation_modes] too: its unknown sub-tables are a hard load error (spec 069 FR-001).
+        if path not in ("providers.", "translation_modes."):
             table["spec_066_stray_key"] = 1
             planted.append(f"{path}spec_066_stray_key")
 
