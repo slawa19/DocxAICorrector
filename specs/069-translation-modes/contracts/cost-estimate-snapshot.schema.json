@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "docxaicorrector/specs/069/cost-estimate-snapshot.schema.json",
+  "title": "Снимок оценки цены прогона (спека 069 FR-007)",
+  "description": "Замораживается при нажатии «Старт» (UI) или до прогона (раннер) из оценки ВЫБРАННОГО режима. Живёт в app_config['cost_estimate_snapshot'] прогона, в result bundle (ключ cost_estimate_snapshot, build_result_bundle) и в отчёте раннера (секция cost_estimate). После прогона экран результата показывает факт рядом с ЭТИМ снимком; bundle без снимка показывается без оценки. model_accounting снимок не видит.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mode",
+    "passes",
+    "coefficients_version",
+    "price_list_date",
+    "document",
+    "stages",
+    "total_upper_usd",
+    "total_lower_usd",
+    "excludes",
+    "extrapolated",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "mode": { "enum": ["standard", "quality", "single"] },
+    "passes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pass", "model", "stage", "reasoning_effort", "editorial_intensity"],
+        "properties": {
+          "pass": { "enum": ["first", "polish"] },
+          "model": { "type": "string" },
+          "stage": { "enum": ["glossary_extraction", "text_generation", "literary_polish"] },
+          "reasoning_effort": { "type": ["string", "null"] },
+          "editorial_intensity": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "coefficients_version": { "type": "string" },
+    "price_list_date": { "type": ["string", "null"], "description": "fetched_at прайса; null — прайса нет, цены неизвестны" },
+    "price_list_source": { "enum": ["network", "cache", null] },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_token", "llm_job_count", "paragraph_count", "source_chars", "source_language", "target_language"],
+      "properties": {
+        "source_token": { "type": "string" },
+        "prepared_source_key": { "type": ["string", "null"] },
+        "llm_job_count": { "type": "integer", "minimum": 0 },
+        "paragraph_count": { "type": "integer", "minimum": 0 },
+        "source_chars": { "type": "integer", "minimum": 0 },
+        "source_language": { "type": "string" },
+        "target_language": { "type": "string" }
+      }
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "glossary_extraction": { "$ref": "#/$defs/stage" },
+        "text_generation": { "$ref": "#/$defs/stage" },
+        "literary_polish": { "$ref": "#/$defs/stage" }
+      }
+    },
+    "total_upper_usd": { "type": ["number", "null"] },
+    "total_lower_usd": { "type": ["number", "null"] },
+    "excludes": { "type": "array", "items": { "const": "images" }, "minItems": 1, "maxItems": 1 },
+    "extrapolated": { "type": "boolean" },
+    "price_unknown_models": { "type": "array", "items": { "type": "string" } },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "input_tokens", "output_tokens", "upper_usd", "lower_usd", "discount_scenario"],
+      "properties": {
+        "model": { "type": "string" },
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "upper_usd": { "type": ["number", "null"] },
+        "lower_usd": { "type": ["number", "null"] },
+        "discount_scenario": { "type": ["string", "null"], "description": "подпись сценария скидки или null — скидка для модели не наблюдалась" }
+      }
+    }
+  }
+}
