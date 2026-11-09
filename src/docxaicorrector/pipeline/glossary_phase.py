@@ -36,8 +36,10 @@ from docxaicorrector.document.segments import (
     GlossaryTerm,
     render_glossary_prompt_section,
 )
+from docxaicorrector.generation._generation import GenerationRequestProfile
 from docxaicorrector.generation.model_response import ModelResponseError
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
+from docxaicorrector.pipeline.literary_polish import first_pass_request_profile
 from docxaicorrector.runtime.artifact_retention import (
     RUN_GLOSSARIES_MAX_AGE_SECONDS,
     RUN_GLOSSARIES_MAX_COUNT,
@@ -505,8 +507,13 @@ def _ask(
     candidates: tuple[GlossaryCandidate, ...],
     max_terms: int,
     request_text_completion_fn: Callable[..., str],
+    request_profile: GenerationRequestProfile | None = None,
 ) -> tuple[str, Any, int]:
-    """One call: ``(outcome, parsed result or error, request characters)``."""
+    """One call: ``(outcome, parsed result or error, request characters)``.
+
+    ``request_profile`` (spec 069 FR-003) is the first pass's profile of a ``standard`` /
+    ``quality`` run; without one the keyword is not passed and the call is the one of before.
+    """
 
     request_input = request.get("input")
     request_chars = sum(
@@ -516,12 +523,14 @@ def _ask(
         for part in (item.get("content") or [])
         if isinstance(part, Mapping)
     )
+    profile_kwargs: dict[str, Any] = {} if request_profile is None else {"request_profile": request_profile}
     try:
         raw_text = request_text_completion_fn(
             client,
             request,
             usage_stage=STAGE_GLOSSARY_EXTRACTION,
             should_stop=lambda: bool(dependencies.should_stop_processing(context.runtime)),
+            **profile_kwargs,
         )
     except LatePhaseStopped:
         return RUN_GLOSSARY_STATUS_STOPPED, None, request_chars
@@ -701,6 +710,13 @@ def _call_model(
     failed_calls: list[dict[str, object]] = []
     record["failed_calls"] = failed_calls
     rejected: dict[str, int] = {}
+    # Spec 069 FR-003/FR-006: the glossary is part of the first pass. A ``standard`` /
+    # ``quality`` run sends its level with every call and sizes the answers with its model's
+    # multiplier; ``single`` has no profile, and every request is the one of before.
+    request_profile = first_pass_request_profile(context, usage_stage=STAGE_GLOSSARY_EXTRACTION)
+    budget_kwargs: dict[str, Any] = (
+        {} if request_profile is None else {"output_budget_multiplier": request_profile.output_budget_multiplier}
+    )
 
     def ask(
         role: str,
@@ -719,6 +735,7 @@ def _call_model(
             candidates=candidates,
             max_terms=limit,
             request_text_completion_fn=request_text_completion_fn,
+            request_profile=request_profile,
         )
         usage_after = _stage_usage()
         call: dict[str, object] = {"role": role, "candidate_count": len(candidates), "request_chars": request_chars}
@@ -765,6 +782,7 @@ def _call_model(
             sample_text=sample_text,
             role=role,
             already_fixed=fixed,
+            **budget_kwargs,
         )
 
     # Spec 064 FR-009: a short form of a name is never asked for on its own; it inherits the
@@ -868,6 +886,7 @@ def _call_model(
                 target_language=target_language,
                 sample_text=sample_text,
                 counts=counts,
+                **budget_kwargs,
             ),
             group_candidates,
             len(group_candidates),

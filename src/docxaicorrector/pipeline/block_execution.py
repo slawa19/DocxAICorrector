@@ -32,6 +32,12 @@ from docxaicorrector.generation._generation import (
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 from docxaicorrector.pipeline.footnote_markers import preserve_footnote_markers_for_block
 from docxaicorrector.pipeline.job_results import persist_terminal_job_result
+from docxaicorrector.pipeline.literary_polish import (
+    emit_literary_polish_completed,
+    first_pass_request_profile,
+    literary_polish_applies,
+    polish_block,
+)
 from docxaicorrector.pipeline.output_validation import (
     delivered_text_equals_source,
     is_citation_form_paragraph,
@@ -39,10 +45,13 @@ from docxaicorrector.pipeline.output_validation import (
     notes_run_reads_as_citations,
     validate_translated_toc_block,
 )
+from docxaicorrector.pipeline.support import resolve_system_prompt as _resolve_system_prompt_default
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 
 
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
+# Spec 069 FR-004 (2): the system prompt variant of the second pass.
+LITERARY_POLISH_PROMPT_VARIANT = "literary_polish"
 TOC_VALIDATION_RETRY_BUDGET = 2
 TOC_RETRY_HARDENING_ATTEMPT = 2
 CONTROLLED_BLOCK_FAILURE_POLICY: dict[str, dict[str, str]] = {
@@ -1183,6 +1192,19 @@ def _combine_system_prompt_with_block_focus(*, system_prompt: str, block_focus_p
 
 
 def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, resolve_system_prompt_fn: Any, prompt_variant: str) -> str:
+    if prompt_variant == LITERARY_POLISH_PROMPT_VARIANT:
+        # Spec 069 FR-004 (2): the second pass's prompt has a cache entry of its own and the
+        # same loader arguments as the first pass -- operation ``translate``, so the document
+        # context and the run glossary are in it (``support.build_system_prompt_arguments``).
+        cached = getattr(state, "polish_system_prompt", None)
+        if cached is None:
+            cached = resolve_system_prompt_fn(
+                dependencies.load_system_prompt,
+                **_build_system_prompt_arguments(context=context, prompt_variant=LITERARY_POLISH_PROMPT_VARIANT),
+            )
+            state.polish_system_prompt = cached
+        return cached
+
     if prompt_variant == "toc_translate":
         if state.toc_system_prompt is None:
             state.toc_system_prompt = resolve_system_prompt_fn(
@@ -1249,6 +1271,11 @@ def _generate_block_chunk(
             if part
         ),
     )
+    # Spec 069 FR-003: a ``standard`` / ``quality`` translate run gives every first-pass block
+    # call its pass's profile (reasoning level, model multiplier). ``single``, ``edit`` and
+    # ``audiobook`` pass no keyword at all, so their request is the one of before (SC-006).
+    request_profile = first_pass_request_profile(context)
+    profile_kwargs: dict[str, Any] = {} if request_profile is None else {"request_profile": request_profile}
     return dependencies.generate_markdown_block(
         client=client,
         model=model_id,
@@ -1270,6 +1297,7 @@ def _generate_block_chunk(
         # answer many times longer took in a neighbour's text. Only the translate job says
         # so; an audiobook answer is told to spell abbreviations out.
         detect_short_source_absorption=_is_translate_job(context),
+        **profile_kwargs,
     )
 
 
@@ -2213,6 +2241,42 @@ def _announce_model_kept_apparatus(
         )
 
 
+def run_literary_polish_for_block(
+    *,
+    context: Any,
+    dependencies: Any,
+    state: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    processed_chunk: str,
+    resolve_system_prompt_fn: Any = _resolve_system_prompt_default,
+) -> str:
+    """The production ``literary_polish_fn``: the second pass with the run's cached prompt.
+
+    Returns what the block delivers -- the polished record where accepted, otherwise the first
+    pass unchanged (``pipeline/literary_polish.py``). Never raises for a model failure; a Stop
+    during the pass sets ``state.stopped_during_polish`` and returns the first pass.
+    """
+
+    return polish_block(
+        context=context,
+        dependencies=dependencies,
+        state=state,
+        initialization=initialization,
+        index=index,
+        payload=payload,
+        processed_chunk=processed_chunk,
+        system_prompt_fn=lambda: _get_cached_system_prompt(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            resolve_system_prompt_fn=resolve_system_prompt_fn,
+            prompt_variant=LITERARY_POLISH_PROMPT_VARIANT,
+        ),
+    ).processed_chunk
+
+
 def process_single_block(
     *,
     context: Any,
@@ -2233,6 +2297,7 @@ def process_single_block(
     append_marker_registry_entries_fn: Any,
     handle_marker_registry_failure_fn: Any,
     emit_block_completed_fn: Any,
+    literary_polish_fn: Any = None,
 ) -> PipelineResult | None:
     try:
         payload = parse_processing_job_fn(job=job)
@@ -2318,6 +2383,26 @@ def process_single_block(
             payload.target_text,
             processed_chunk,
             languages_differ=languages_differ,
+        )
+    # Spec 069 FR-004 (3): the literary polish pass. HERE -- after the first pass was accepted
+    # and before the apparatus relabel, footnote restoration, the registry, the narration
+    # projection and the back-matter accounting below -- so every one of them reads the text
+    # that ships. A passthrough, a block kept by policy, a TOC block and any block whose first
+    # pass is not ``valid`` are never sent.
+    if (
+        processed_block_status == "valid"
+        and not is_genuine_passthrough
+        and not _is_toc_dominant_payload(payload=payload)
+        and literary_polish_applies(context=context, initialization=initialization)
+    ):
+        processed_chunk = (literary_polish_fn or run_literary_polish_for_block)(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            processed_chunk=processed_chunk,
         )
     # Spec 064 FR-006: references the model kept under prompt rule 12 are apparatus by region.
     # A valid block keeps its translated paragraphs and relabels the kept references; a
@@ -2476,6 +2561,41 @@ def run_block_processing_phase(
             block_count=initialization.job_count,
         )
 
+    try:
+        return _run_block_loop(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            initialization=initialization,
+            emit_stopped=_emit_stopped,
+            process_single_block_fn=process_single_block_fn,
+            current_markdown_fn=current_markdown_fn,
+            emit_failed_result_fn=emit_failed_result_fn,
+        )
+    finally:
+        # Spec 069 FR-004 (6): the second pass's run totals, once, however the phase ended.
+        try:
+            emit_literary_polish_completed(
+                context=context, dependencies=dependencies, state=state, initialization=initialization
+            )
+        except Exception:  # pragma: no cover - a report must never change the run's outcome
+            pass
+
+
+def _run_block_loop(
+    *,
+    context: Any,
+    dependencies: Any,
+    emitters: Any,
+    state: Any,
+    initialization: Any,
+    emit_stopped: Any,
+    process_single_block_fn: Any,
+    current_markdown_fn: Any,
+    emit_failed_result_fn: Any,
+) -> PipelineResult | None:
+    _emit_stopped = emit_stopped
     for index, job in enumerate(context.jobs, start=1):
         if dependencies.should_stop_processing(context.runtime):
             return _emit_stopped(index)
@@ -2497,6 +2617,11 @@ def run_block_processing_phase(
             return _emit_stopped(index)
         if block_outcome is not None:
             return block_outcome
+        if getattr(state, "stopped_during_polish", False):
+            # Spec 069 FR-004 (5): Stop came during this block's SECOND pass. Unlike the case
+            # above the block IS delivered (its first pass), so the run stops after it -- and
+            # this check is the only one left when it was the last block.
+            return _emit_stopped(index + 1)
 
     if len(state.processed_chunks) != initialization.job_count:
         critical_message = dependencies.present_error(
