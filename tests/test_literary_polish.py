@@ -1038,3 +1038,45 @@ def test_the_real_generator_runs_the_pass_and_books_it_in_its_own_section(run_di
     assert generator_counters["paragraph_disposition_counts"]["accepted"] == 3
     assert sum(generator_counters["api_path_counts"].values()) == 2
     assert snapshot["literary_polish"]["counters"]["accepted_paragraph_count"] == 3
+
+
+class _StopPressedDuringPolishClient(_MarkerAnsweringClient):
+    """Answers the pass's request with a VALID polished text, and the user presses Stop meanwhile."""
+
+    def __init__(self, translations: dict[str, str], stop_flag: dict[str, bool]) -> None:
+        super().__init__(translations)
+        self.stop_flag = stop_flag
+        self.responses = SimpleNamespace(create=self._create_and_stop)
+
+    def _create_and_stop(self, **request: Any) -> SimpleNamespace:
+        if self.is_polish(request):
+            self.stop_flag["stop"] = True
+        return self._create(**request)
+
+
+def test_stop_pressed_during_a_successful_polish_request_keeps_the_first_pass(run_dir: Path) -> None:
+    """Codex acceptance review of spec 069, finding 2: the answer is valid, Stop was pressed in flight."""
+
+    from docxaicorrector.generation._generation import generate_markdown_block
+
+    stop_flag = {"stop": False}
+    client = _StopPressedDuringPolishClient({pid: text for pid, (text, _status) in _FIRST_PASS.items()}, stop_flag)
+
+    run = _run_blocks(
+        _two_blocks(),
+        generator=generate_markdown_block,
+        app_config=_app_config("standard", polish_reasoning="low"),
+        load_system_prompt=core_config.load_system_prompt,
+        client=client,
+        should_stop=lambda _runtime: stop_flag["stop"],
+    )
+
+    assert run.outcome == "stopped"
+    assert run.state.stopped_during_polish is True
+    first_block = str(run.state.processed_chunks[0])
+    assert "первого прохода" in first_block and "после шлифовки" not in first_block
+    failed = _events(run, "literary_polish_block_failed")
+    assert [(event["context"]["reason"], event["context"]["block_index"]) for event in failed] == [("stopped", 1)]
+    assert [row["reasons"] for row in _rollback_rows(run_dir)] == [["stopped"]]
+    counters = run.snapshot["literary_polish"]["counters"]
+    assert counters.get("accepted_paragraph_count", 0) == 0
