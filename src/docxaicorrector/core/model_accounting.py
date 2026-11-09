@@ -85,6 +85,9 @@ STAGE_GLOSSARY_EXTRACTION = "glossary_extraction"
 # Spec 069: the second, literary pass over already-translated paragraphs. A stage of its
 # own so its tokens and price are never folded into ``text_generation``.
 STAGE_LITERARY_POLISH = "literary_polish"
+# Spec 070 FR-006: the one residue-repair call per audiobook block; booked apart from
+# ``text_generation`` so the price of the repair is visible on its own (SC-005).
+STAGE_AUDIOBOOK_REPAIR = "audiobook_repair"
 # Spec 069 FR-004 (6): the only counter scope name the snapshot reports a section for.
 PASS_LITERARY_POLISH = "literary_polish"
 STAGE_IMAGE_ANALYSIS = "image_analysis"
