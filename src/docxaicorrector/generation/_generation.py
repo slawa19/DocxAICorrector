@@ -83,45 +83,12 @@ _INLINE_HTML_UNDERLINE_PATTERN = re.compile(
     r"(?P<prefix>\\*!?)<u>(?P<content>.*?)</u>", re.IGNORECASE | re.DOTALL
 )
 _PANDOC_SPAN_SPECIAL_PATTERN = re.compile(r"[\\\[\]]")
-_NARRATION_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
-_NARRATION_MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
-_NARRATION_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*(.*)$")
-_NARRATION_TAGGED_HEADING_PATTERN = re.compile(r"^(\s*(?:\[[^\]\n]+\]\s*)+)#{1,6}\s*(.*)$")
-_NARRATION_BLOCKQUOTE_PATTERN = re.compile(r"^\s{0,3}>\s?(.*)$")
-# A list marker is not speech. Markdown's own markers were already dropped; the printed
-# bullet GLYPH was not, and the audiobook prompt's rule against lists does not bind the
-# model — measured on the 2026-08-04 Money & Sustainability narration artifact, 116 of them
-# reached the text a TTS engine would read aloud, 113 at the start of their own line and 3
-# behind an ElevenLabs tag. The glyph set is the repository's existing bullet lexicon
-# (``output_validation._BULLET_GLYPH_PATTERN``, which produced that same count of 116), not
-# a new one: of its four glyphs only ``•`` occurs in the artifact, and the other three are
-# carried because they are the same form, not because a book showed them. This is not a
-# guess about structure — a bullet glyph is simply not speech, and the item's own text is
-# kept.
-# A separator after the glyph is required, so a glyph welded inside a token ("4●5") is left
-# alone, exactly as ``_WELDED_BULLET_GLYPH_PATTERN`` leaves it alone in the quality gate.
-_NARRATION_LIST_MARKER = r"(?:[-*+●•◦‣]\s+|\d+\.\s+)"
-_NARRATION_LIST_PATTERN = re.compile(r"^\s{0,3}" + _NARRATION_LIST_MARKER + r"(.*)$")
-# The same marker behind an ElevenLabs tag prefix, which the narration keeps: "[serious] • …"
-# is the tagged twin of "• …" and has to lose the glyph the same way, or the tagged lines
-# would be the only ones a listener hears a bullet in.
-_NARRATION_TAGGED_LIST_PATTERN = re.compile(
-    r"^(\s*(?:\[[^\]\n]+\]\s*)+)" + _NARRATION_LIST_MARKER + r"(.*)$"
-)
+# Markdown emphasis, unwrapped by ``_strip_narration_inline_emphasis``. Since spec 070 removed the
+# Markdown-based narration stripper its one consumer is the review-anchor sanitiser of the
+# quality gate (``quality_gate._review_anchor_visible_text``); the narration itself is cleaned
+# by ``text.narration_cleanup``.
 _NARRATION_STRONG_PATTERN = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
 _NARRATION_EMPHASIS_PATTERN = re.compile(r"(\*|_)(?=\S)(.+?)(?<=\S)\1")
-_NARRATION_RAW_URL_PATTERN = re.compile(r"(?:https?://\S+|www\.\S+)", re.IGNORECASE)
-_NARRATION_INTERNAL_WHITESPACE_PATTERN = re.compile(r"[\t ]+")
-# The structural kind a narration paragraph's markdown declared, kept only long enough for
-# the sentence-continuation join to read it. See ``_narration_paragraphs``.
-_NARRATION_KIND_BODY = "body"
-_NARRATION_KIND_HEADING = "heading"
-_NARRATION_KIND_LIST = "list"
-_NARRATION_KIND_QUOTE = "quote"
-# Where a sentence is allowed to have ended. Punctuation classes, not words: a paragraph
-# closing on one of these was finished, and the paragraph after it starts something new.
-_NARRATION_SENTENCE_TERMINALS = ".!?…:;"
-_NARRATION_CLOSING_MARKS = "»”’\"')]}"
 # A returned marker chunk that keeps this little of its own source paragraph is a stub,
 # not an edit or a translation. Calibrated on the 1761 recorded pairs of the 2026-08-03
 # literary-edit run: the 7 "(Пусто)" stubs sit at 0.008–0.135, the next real edit above
@@ -528,164 +495,6 @@ def normalize_model_output(text: str) -> str:
     if cleaned.endswith("```"):
         cleaned = cleaned[:-3].strip()
     return cleaned
-
-
-def strip_markdown_for_narration(text: str) -> str:
-    """The narration text alone. See ``strip_markdown_for_narration_with_stats``."""
-
-    return strip_markdown_for_narration_with_stats(text)[0]
-
-
-def strip_markdown_for_narration_with_stats(text: str) -> tuple[str, int]:
-    """The narration text, and how many paragraph boundaries were closed inside a sentence.
-
-    The count is returned rather than logged here because this function is pure and is
-    called on both narration entry points; the caller records it on the run state so the
-    saved-artifact log line can state it (Constitution V, and zero is a statement).
-    """
-
-    paragraphs = _narration_paragraphs(text)
-    merged, joined_count = _join_narration_sentence_continuations(paragraphs)
-    return "\n\n".join("\n".join(lines) for lines, _ in merged).strip(), joined_count
-
-
-def _narration_paragraphs(text: str) -> list[tuple[list[str], str]]:
-    """The narration's paragraphs, each with the STRUCTURAL KIND its markdown declared.
-
-    The kind is carried out of this loop on purpose. It is the only place in the assembly
-    where a heading is still a heading and a list item is still a list item — one line
-    later the ``#`` and the bullet are gone and a heading is indistinguishable from a short
-    sentence. The join rule needs that distinction and must not re-derive it from shape.
-    """
-
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = _NARRATION_INTERNAL_PLACEHOLDER_PATTERN.sub("", normalized)
-    normalized = _NARRATION_MARKDOWN_LINK_PATTERN.sub(r"\1", normalized)
-
-    paragraphs: list[tuple[list[str], str]] = []
-    open_index: int | None = None
-    for raw_line in normalized.split("\n"):
-        line_source = raw_line
-        kind = _NARRATION_KIND_BODY
-
-        tagged_heading_match = _NARRATION_TAGGED_HEADING_PATTERN.match(line_source)
-        if tagged_heading_match is not None:
-            kind = _NARRATION_KIND_HEADING
-            tag_prefix = _NARRATION_INTERNAL_WHITESPACE_PATTERN.sub(" ", tagged_heading_match.group(1)).strip()
-            heading_text = tagged_heading_match.group(2).strip()
-            line_source = f"{tag_prefix} {heading_text}".strip()
-        else:
-            heading_match = _NARRATION_HEADING_PATTERN.match(line_source)
-            if heading_match is not None:
-                kind = _NARRATION_KIND_HEADING
-                line_source = heading_match.group(1)
-            else:
-                blockquote_match = _NARRATION_BLOCKQUOTE_PATTERN.match(line_source)
-                if blockquote_match is not None:
-                    kind = _NARRATION_KIND_QUOTE
-                    line_source = blockquote_match.group(1)
-                else:
-                    list_match = _NARRATION_LIST_PATTERN.match(line_source)
-                    if list_match is not None:
-                        kind = _NARRATION_KIND_LIST
-                        line_source = list_match.group(1)
-                    else:
-                        tagged_list_match = _NARRATION_TAGGED_LIST_PATTERN.match(line_source)
-                        if tagged_list_match is not None:
-                            kind = _NARRATION_KIND_LIST
-                            tag_prefix = _NARRATION_INTERNAL_WHITESPACE_PATTERN.sub(
-                                " ", tagged_list_match.group(1)
-                            ).strip()
-                            item_text = tagged_list_match.group(2).strip()
-                            line_source = f"{tag_prefix} {item_text}".strip()
-
-        line = line_source.replace("`", "")
-        line = _strip_narration_inline_emphasis(line)
-        line = _NARRATION_RAW_URL_PATTERN.sub("", line)
-        line = _NARRATION_INTERNAL_WHITESPACE_PATTERN.sub(" ", line).strip()
-        if not line:
-            open_index = None
-            continue
-        if open_index is None:
-            paragraphs.append(([line], kind))
-            open_index = len(paragraphs) - 1
-        else:
-            lines, open_kind = paragraphs[open_index]
-            lines.append(line)
-            # A paragraph that holds a heading, a list item or a quote among its lines is
-            # not body text, whatever its first line looked like.
-            if kind != _NARRATION_KIND_BODY and open_kind == _NARRATION_KIND_BODY:
-                paragraphs[open_index] = (lines, kind)
-        if kind == _NARRATION_KIND_HEADING:
-            # A heading has always closed its paragraph here — the blank line after it is
-            # what this used to append, and a paragraph break is now that same blank line.
-            open_index = None
-    return paragraphs
-
-
-def _narration_paragraph_continues(
-    previous: tuple[list[str], str], following: tuple[list[str], str]
-) -> bool:
-    """Is ``following`` the rest of a sentence that ``previous`` was cut off in the middle of?
-
-    **What this is for.** 81 of the 83 such boundaries measured on the four-book corpus of
-    2026-08-06 arrive from IMPORT: the source paragraph itself ends without any punctuation
-    because a PDF line wrap became a paragraph break. Both halves are translated and nothing
-    is missing — only the separator is wrong, and a TTS engine reads a paragraph break as a
-    pause in the middle of a sentence. Joining them changes a ``\\n\\n`` into a space and
-    nothing else.
-
-    **The test is the FORM of the assembly's own output**, which is the same class of rule as
-    the bullet-glyph strip above and is what Constitution VII allows: no word list, no
-    length threshold, no per-book string.
-
-    * Both paragraphs must be BODY. The kind comes from the markdown the model returned
-      (``_narration_paragraphs``), not from the shape of the text, so a heading is never
-      welded to the prose under it and a list item never to its neighbour — a list of
-      items and a heading legitimately end without punctuation.
-    * The first must end on a character that is not sentence-terminal (``.!?…:;``), not a
-      closing quote or bracket, and NOT A DIGIT. The digit is the load-bearing one and it
-      was measured, not guessed: allow a digit ending and the only two boundaries that
-      appear on the whole corpus are rows of Rethinking Money's index (``Страх, 4`` +
-      ``в Юте, 201; …``), which end in a page number and are legitimately unpunctuated.
-    * The second must begin with a LOWERCASE letter. This is what separates "the rest of
-      this sentence" from "whatever happens to come next", and it is what keeps an epigraph
-      attribution or an index row from being glued to the paragraph after it: those are
-      followed by something that starts a new sentence, a name or a tag. An audio tag
-      (``[serious] …``) begins with ``[`` and therefore also stops the join, which is
-      right — a new tag is a new speech unit.
-    """
-
-    previous_lines, previous_kind = previous
-    following_lines, following_kind = following
-    if previous_kind != _NARRATION_KIND_BODY or following_kind != _NARRATION_KIND_BODY:
-        return False
-    tail = previous_lines[-1].rstrip()
-    head = following_lines[0].lstrip()
-    if not tail or not head:
-        return False
-    last = tail[-1]
-    if last.isdigit() or last in _NARRATION_SENTENCE_TERMINALS or last in _NARRATION_CLOSING_MARKS:
-        return False
-    first = head[0]
-    return first.isalpha() and first.islower()
-
-
-def _join_narration_sentence_continuations(
-    paragraphs: Sequence[tuple[list[str], str]],
-) -> tuple[list[tuple[list[str], str]], int]:
-    merged: list[tuple[list[str], str]] = []
-    joined_count = 0
-    for lines, kind in paragraphs:
-        if merged and _narration_paragraph_continues(merged[-1], (lines, kind)):
-            previous_lines, previous_kind = merged[-1]
-            previous_lines[-1] = f"{previous_lines[-1].rstrip()} {lines[0].lstrip()}"
-            previous_lines.extend(lines[1:])
-            merged[-1] = (previous_lines, previous_kind)
-            joined_count += 1
-            continue
-        merged.append((list(lines), kind))
-    return merged, joined_count
 
 
 def _strip_narration_inline_emphasis(text: str) -> str:
@@ -2935,7 +2744,7 @@ def max_model_calls_per_block(
     return calls_per_generation * (1 + ladder_generations)
 
 # Where a sentence ends, for the purpose of dividing one paragraph. A strict SUBSET of
-# ``_NARRATION_SENTENCE_TERMINALS``: a colon and a semicolon join clauses rather than close
+# the paragraph-end terminals ``.!?…:;``: a colon and a semicolon join clauses rather than close
 # a sentence, and cutting a translation unit at one of them would hand the model half a
 # thought. Punctuation classes only — Constitution VII forbids word lists, and no list of
 # abbreviations is consulted. An abbreviation is recognised by its FORM instead (see
@@ -2945,6 +2754,8 @@ def max_model_calls_per_block(
 # shipping English, and it cannot move text between paragraphs: the pieces are re-joined
 # into the same paragraph.
 _LADDER_SENTENCE_TERMINALS = ".!?…"
+# Closing quotes and brackets that may follow the terminal of a finished sentence.
+_LADDER_CLOSING_MARKS = "»”’\"')]}"
 # Characters that may OPEN the text after a boundary before its first letter or digit, as
 # the bracket in "et al. (2004)" does. Punctuation only.
 _LADDER_OPENING_MARKS = "«“‘\"'([{"
@@ -2963,7 +2774,7 @@ _LADDER_SENTENCE_BOUNDARY_PATTERN = re.compile(
     + r"])|(?<=["
     + re.escape(_LADDER_SENTENCE_TERMINALS)
     + r"]["
-    + re.escape(_NARRATION_CLOSING_MARKS)
+    + re.escape(_LADDER_CLOSING_MARKS)
     + r"]))\s+"
 )
 # The most SOURCE characters whose answer can still be BUDGETED under the provider ceiling.
@@ -3357,6 +3168,10 @@ def _degradation_ladder_block_result(
     language-changing operation the projection withholds ``source_restored`` too, so there
     the choice no longer changes what is spoken. It still changes what is TRUE — the ladder
     did not repair a merge, it failed to translate — which is why ``omitted`` stays.
+
+    Spec 070 retired that projection: ``translate`` and ``edit`` narrate nothing, and the
+    audiobook (no longer language-changing) narrates both statuses from the paragraph's own
+    source with ``needs_review`` (``empty_answer`` / ``source_restored``, research R7).
 
     ``kept_dispositions`` are paragraphs the ladder did NOT re-ask (a merge scopes it to the
     merged paragraphs, review finding F1): they keep the record they arrived with, and a

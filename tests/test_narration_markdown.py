@@ -1,116 +1,119 @@
+"""The narration text: per-paragraph cleanup, assembly by id and role, and the review data.
+
+Spec 070 (research R8) replaced the Markdown-reading stripper of specs 031/054
+(``generation.strip_markdown_for_narration*``) with two pieces, and this module's behavioural
+cases moved with them -- the ones that are still right, verbatim:
+
+* ``text.narration_cleanup.clean_narration_paragraph`` cleans ONE paragraph (the paragraph is
+  the unit, addressed by its id; it is never re-found in a joined text);
+* ``pipeline.narration_postprocess.assemble_narration_records`` joins the records by id and
+  closes a sentence torn across a paragraph break -- by FORM, between two paragraphs whose
+  preparation ROLE is ``body`` (no longer by the Markdown the model returned).
+
+What changed on purpose: intonation tags no longer exist (D-3), so the tag cases are gone; a
+numbered-list marker is no longer cut by code (FR-005: a year must survive, numbers are the
+model's job); a raw URL is no longer deleted by code (O-7: the residue detector reports it).
+"""
+
 from collections.abc import Mapping, Sequence
 from typing import cast
 
 import pytest
 
-import docxaicorrector.generation._generation as generation
+from docxaicorrector.pipeline.audiobook_pass import NarrationParagraphRecord
 from docxaicorrector.pipeline.narration_postprocess import (
     _NARRATION_REVIEW_SAMPLE_CHARS,
     _collect_narration_artifact_review_findings,
     _summarize_narration_review_findings,
+    assemble_narration_records,
 )
+from docxaicorrector.text.narration_cleanup import clean_narration_paragraph
+from docxaicorrector.text.narration_coverage import CoverageResult
+from docxaicorrector.text.narration_residue import detect_narration_residue
 
 
-def test_strip_markdown_for_narration_removes_markdown_and_placeholders_but_preserves_tags():
-    source = (
-        "# Chapter 1\n\n"
-        "[thoughtful] **Bold** and *italic* text with [link](https://example.com).\n\n"
-        "> Quoted line\n\n"
-        "1. First item\n"
-        "- Second item\n\n"
-        "`inline code` [[DOCX_PARA_p0001]] [[DOCX_IMAGE_img_001]]"
-    )
-
-    stripped = generation.strip_markdown_for_narration(source)
-
-    assert stripped == (
-        "Chapter 1\n\n"
-        "[thoughtful] Bold and italic text with link.\n\n"
-        "Quoted line\n\n"
-        "First item\n"
-        "Second item\n\n"
-        "inline code"
-    )
+def _clean(text: str) -> str:
+    return clean_narration_paragraph(text).text
 
 
-def test_strip_markdown_for_narration_is_idempotent():
-    source = "## Title\n\n[curious] Text with **emphasis** and [link](https://example.com)."
-
-    once = generation.strip_markdown_for_narration(source)
-    twice = generation.strip_markdown_for_narration(once)
-
-    assert once == twice
-
-
-def test_strip_markdown_for_narration_inserts_blank_line_after_heading_when_missing():
-    source = "# Title\nNext line"
-
-    stripped = generation.strip_markdown_for_narration(source)
-
-    assert stripped == "Title\n\nNext line"
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("# Chapter 1", "Chapter 1"),
+        ("**Bold** and *italic* text with [link](https://example.com).", "Bold and italic text with link."),
+        ("> Quoted line", "Quoted line"),
+        ("- Second item", "Second item"),
+        ("`inline code` [[DOCX_PARA_p0001]] [[DOCX_IMAGE_img_001]]", "inline code"),
+    ],
+)
+def test_cleanup_removes_markdown_and_pipeline_tokens_from_one_paragraph(source, expected):
+    assert _clean(source) == expected
 
 
-def test_strip_markdown_for_narration_removes_raw_urls_and_normalizes_internal_whitespace():
-    source = "[thoughtful]\tText   with raw URL https://example.com/path and www.example.org\tinside."
+def test_cleanup_is_idempotent():
+    source = "## Title with **emphasis** and [link](https://example.com)."
 
-    stripped = generation.strip_markdown_for_narration(source)
+    once = _clean(source)
 
-    assert stripped == "[thoughtful] Text with raw URL and inside."
+    assert _clean(once) == once
 
 
-def test_strip_markdown_for_narration_removes_heading_marker_after_audio_tag():
-    source = "[serious] # Introduction\nNext line"
+def test_cleanup_leaves_a_numbered_list_marker_to_the_model():
+    """FR-005: ``1990. …`` must keep its year; numbers are rewritten by the model."""
+    assert _clean("1. First item") == "1. First item"
 
-    stripped = generation.strip_markdown_for_narration(source)
 
-    assert stripped == "[serious] Introduction\n\nNext line"
+def test_cleanup_keeps_a_raw_url_and_the_detector_reports_it():
+    """O-7: deleting the URL by code made the ``url_or_domain`` class unreachable."""
+    source = "Text\twith raw URL https://example.com/path and www.example.org\tinside."
+
+    cleaned = _clean(source)
+
+    assert cleaned == "Text with raw URL https://example.com/path and www.example.org inside."
+    assert [finding.residue_class for finding in detect_narration_residue(cleaned)] == ["url_or_domain"]
 
 
 @pytest.mark.parametrize("glyph", ["•", "●", "◦", "‣"])
-def test_strip_markdown_for_narration_drops_the_bullet_glyph_and_keeps_the_item_text(glyph):
+def test_cleanup_drops_the_bullet_glyph_and_keeps_the_item_text(glyph):
     """Spec 054: a list-bullet glyph is not speech, and 116 of them reached the 2026-08-04
     narration artifact of Money & Sustainability, where a TTS engine would read them aloud.
-
-    The glyph set is the repository's existing bullet lexicon
-    (``output_validation._BULLET_GLYPH_PATTERN``), which is what counted those 116; only
-    ``•`` actually occurs in that artifact, the other three ride along on form.
     """
     source = f"{glyph} Компании постоянно балансируют на этих качелях.\n{glyph} Второй пункт."
 
-    stripped = generation.strip_markdown_for_narration(source)
-
-    assert stripped == "Компании постоянно балансируют на этих качелях.\nВторой пункт."
+    assert _clean(source) == "Компании постоянно балансируют на этих качелях.\nВторой пункт."
 
 
-def test_strip_markdown_for_narration_drops_a_bullet_glyph_behind_an_audio_tag():
-    """3 of the 116 measured bullets sat behind an ElevenLabs tag ("[serious] • …").
-
-    The tag is a legitimate narration directive and stays; only the marker goes.
-    """
-    source = "[serious] • ЭКО: национальная система финансирования экологических проектов."
-
-    stripped = generation.strip_markdown_for_narration(source)
-
-    assert stripped == "[serious] ЭКО: национальная система финансирования экологических проектов."
-
-
-def test_strip_markdown_for_narration_leaves_a_bullet_glyph_welded_inside_a_token():
-    """Anti-vacuum: a glyph welded between word characters is data, not a list marker —
-    the same distinction ``_WELDED_BULLET_GLYPH_PATTERN`` draws in the quality gate. The
-    rule requires a separator after the glyph, so nothing here is touched."""
+def test_cleanup_leaves_a_bullet_glyph_welded_inside_a_token():
+    """Anti-vacuum: a glyph welded between word characters is data, not a list marker."""
     source = "Значение 4●5 осталось в тексте."
 
-    assert generation.strip_markdown_for_narration(source) == "Значение 4●5 осталось в тексте."
+    assert _clean(source) == "Значение 4●5 осталось в тексте."
 
 
-def test_strip_markdown_for_narration_keeps_prose_that_merely_starts_with_a_dash_word():
+def test_cleanup_keeps_prose_that_merely_starts_with_a_dash_word():
     """Anti-vacuum for the whole list rule: an em-dash opening a line of dialogue is not a
     bullet, and the paragraph text is never shortened by the glyph rule."""
-    source = "— Декларация 1700 ведущих учёных из 70 стран.\n\nОбычный абзац без маркеров."
+    source = "— Декларация 1700 ведущих учёных из 70 стран."
 
-    stripped = generation.strip_markdown_for_narration(source)
+    assert _clean(source) == source
 
-    assert stripped == "— Декларация 1700 ведущих учёных из 70 стран.\n\nОбычный абзац без маркеров."
+
+def _record(paragraph_id: str, text: str, role: str = "body") -> NarrationParagraphRecord:
+    return NarrationParagraphRecord(
+        paragraph_id=paragraph_id,
+        block_index=1,
+        role=role,
+        text=text,
+        needs_review_reasons=(),
+        residue_before=(),
+        residue_after=(),
+        coverage=CoverageResult(0, 0, None),
+    )
+
+
+def _assemble(*items: tuple[str, str]):
+    """``(role, text)`` per paragraph, ids in order."""
+    return assemble_narration_records([_record(f"p{index}", text, role) for index, (role, text) in enumerate(items, 1)])
 
 
 def _letters(text: str) -> str:
@@ -118,141 +121,91 @@ def _letters(text: str) -> str:
 
 
 def test_narration_joins_a_sentence_that_runs_across_a_paragraph_break():
-    """Spec 054, 2026-08-06. Measured on the four-book corpus: 34 such boundaries, and 81 of
-    the 83 arrive from IMPORT, where a PDF line wrap became a paragraph break. Both halves
-    are translated and nothing is missing — only the separator is wrong, and a TTS engine
-    reads a paragraph break as a pause in the middle of a sentence."""
-    source = (
-        "Слово «кредит» звучит позитивно — вам доверились и сочли вас\n\n"
-        "платежеспособным. Слово «долг» несет негативный оттенок."
+    """Spec 054, 2026-08-06. Measured on the four-book corpus: 81 of the 83 such boundaries
+    arrive from IMPORT, where a PDF line wrap became a paragraph break. Both halves are there
+    and nothing is missing — only the separator is wrong, and a TTS engine reads a paragraph
+    break as a pause in the middle of a sentence."""
+    assembly = _assemble(
+        ("body", "Слово «кредит» звучит позитивно — вам доверились и сочли вас"),
+        ("body", "платежеспособным. Слово «долг» несет негативный оттенок."),
     )
 
-    stripped, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 1
-    assert stripped == (
+    assert assembly.join_pairs == (("p1", "p2"),)
+    assert assembly.text == (
         "Слово «кредит» звучит позитивно — вам доверились и сочли вас "
         "платежеспособным. Слово «долг» несет негативный оттенок."
     )
+    assert assembly.boundary_check == "ok"
 
 
 def test_narration_join_changes_only_the_separator():
     """Nothing is added and nothing is lost: the letter sequence is identical before and
     after, which is what makes the rule checkable rather than merely plausible."""
-    source = "первым шагом стало формирование основной\n\nкоманды, в неё вошли жители."
+    first, second = "первым шагом стало формирование основной", "команды, в неё вошли жители."
 
-    before = "".join(source.split("\n\n"))
-    stripped, joined = generation.strip_markdown_for_narration_with_stats(source)
+    assembly = _assemble(("body", first), ("body", second))
 
-    assert joined == 1
-    assert _letters(stripped) == _letters(before)
+    assert len(assembly.join_pairs) == 1
+    assert _letters(assembly.text) == _letters(first + second)
 
 
 def test_narration_does_not_join_a_heading_to_the_prose_under_it():
     """Anti-vacuum. A heading legitimately ends without punctuation, which is exactly the
-    shape the rule keys on — so the kind is read off the MARKDOWN, not off the text."""
-    source = "## Деньги как соглашение\n\nдоверие внутри сообщества делает их деньгами."
+    shape the rule keys on — so the kind is the PREPARATION's role, not the text's shape."""
+    assembly = _assemble(("heading", "Деньги как соглашение"), ("body", "доверие внутри сообщества делает их деньгами."))
 
-    stripped, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 0
-    assert stripped == "Деньги как соглашение\n\nдоверие внутри сообщества делает их деньгами."
+    assert assembly.join_pairs == ()
+    assert assembly.text == "Деньги как соглашение\n\nдоверие внутри сообщества делает их деньгами."
 
 
-def test_narration_does_not_join_a_heading_that_arrives_behind_an_audio_tag():
-    source = "[serious] ### Валюта Терра\n\nсоздаётся из излишков товарных запасов."
-
-    stripped, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 0
-    assert stripped == "[serious] Валюта Терра\n\nсоздаётся из излишков товарных запасов."
-
-
-@pytest.mark.parametrize(
-    "marker",
-    ["- ", "1. ", "• ", "[serious] - ", "[serious] • "],
-)
-def test_narration_does_not_join_a_list_item_to_its_neighbour(marker):
+def test_narration_does_not_join_a_list_item_to_its_neighbour():
     """Anti-vacuum. Items of a list end without punctuation by convention and the next item
     may well start lowercase; welding them would turn a list into one run-on sentence."""
-    source = f"{marker}мера стоимости\n\n{marker}средство обращения"
+    assembly = _assemble(("list", "мера стоимости"), ("list", "средство обращения"))
 
-    _, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 0
+    assert assembly.join_pairs == ()
 
 
-def test_narration_does_not_join_a_blockquote_to_the_paragraph_after_it():
-    source = "> цитата без точки\n\nпродолжение обычного абзаца."
+def test_narration_does_not_join_an_epigraph_to_the_paragraph_after_it():
+    assembly = _assemble(("epigraph", "цитата без точки"), ("body", "продолжение обычного абзаца."))
 
-    _, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 0
+    assert assembly.join_pairs == ()
 
 
 def test_narration_does_not_join_an_epigraph_attribution_to_what_follows_it():
     """Anti-vacuum, and the case the owner named. An attribution legitimately ends without a
-    full stop; what stops the join is that whatever comes next STARTS something — a new
-    epigraph, a name, a tag — and therefore does not begin with a lowercase letter. Taken
-    verbatim from Rethinking Money's front matter."""
-    source = (
-        "— Эдгар Кан, создатель Time Dollars, основатель TimeBanks USA\n\n"
-        "«Вместо того чтобы просто винить кого-то, авторы предлагают решения»."
+    full stop; both its role and the capital that starts what follows stop the join."""
+    assembly = _assemble(
+        ("attribution", "— Эдгар Кан, создатель Time Dollars, основатель TimeBanks USA"),
+        ("body", "«Вместо того чтобы просто винить кого-то, авторы предлагают решения»."),
     )
 
-    _, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 0
+    assert assembly.join_pairs == ()
 
 
 def test_narration_does_not_join_index_rows():
-    """Anti-vacuum. Two independent guards refuse an index row and each was measured to be
-    load-bearing on Rethinking Money's 422-paragraph index: the row ends on a PAGE NUMBER,
-    and the next row starts on a capital. Allow digit endings and these two rows — the only
-    ones on the whole corpus — join."""
-    source = "Страх, 4\n\nв Юте, 201; в Веймарской республике, 136"
+    """Anti-vacuum. The row ends on a PAGE NUMBER: allow digit endings and the only two such
+    rows on the whole corpus join."""
+    assembly = _assemble(("body", "Страх, 4"), ("body", "в Юте, 201; в Веймарской республике, 136"))
 
-    _, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 0
+    assert assembly.join_pairs == ()
 
 
 @pytest.mark.parametrize("terminal", [".", "!", "?", "…", ":", ";", "»", "\"", ")"])
 def test_narration_does_not_join_after_a_finished_sentence(terminal):
-    source = f"Абзац закончился{terminal}\n\nследующий абзац начинается со строчной буквы."
+    assembly = _assemble(
+        ("body", f"Абзац закончился{terminal}"), ("body", "следующий абзац начинается со строчной буквы.")
+    )
 
-    _, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 0
-
-
-def test_narration_does_not_join_when_the_continuation_starts_a_new_speech_unit():
-    """An audio tag opens a new delivery unit, so a paragraph starting with one is never the
-    tail of the sentence before it."""
-    source = "эта программа использует\n\n[thoughtful] тайм-банкинг как основу."
-
-    _, joined = generation.strip_markdown_for_narration_with_stats(source)
-
-    assert joined == 0
-
-
-def test_narration_join_is_idempotent():
-    source = "Смотрите\n\nрисунок 8.4."
-
-    once, first = generation.strip_markdown_for_narration_with_stats(source)
-    twice, second = generation.strip_markdown_for_narration_with_stats(once)
-
-    assert (first, second) == (1, 0)
-    assert once == twice == "Смотрите рисунок 8.4."
+    assert assembly.join_pairs == ()
 
 
 def test_narration_join_count_is_zero_when_nothing_runs_on():
     """Zero is a statement, not an absent measurement (Constitution V)."""
-    _, joined = generation.strip_markdown_for_narration_with_stats(
-        "Первый абзац закончен.\n\nВторой абзац тоже закончен."
-    )
+    assembly = _assemble(("body", "Первый абзац закончен."), ("body", "Второй абзац тоже закончен."))
 
-    assert joined == 0
+    assert assembly.join_pairs == ()
+    assert assembly.text == "Первый абзац закончен.\n\nВторой абзац тоже закончен."
 
 
 def _rules(narration_text: str) -> list[str]:
@@ -293,7 +246,7 @@ def test_narration_review_still_reports_the_identifier_itself(reference_text, ex
     Tightening them from a bare word to the number keeps every real bibliography leak
     visible; what it drops is only the prose that names the scheme.
     """
-    assert _rules(f"[thoughtful] Источник: {reference_text}.") == [expected_rule]
+    assert _rules(f"Источник: {reference_text}.") == [expected_rule]
 
 
 @pytest.mark.parametrize(
@@ -320,7 +273,7 @@ def test_narration_review_counts_every_match_and_keeps_a_few_truncated_samples()
     long_citation = "(" + "Мюллер" + "а" * 60 + ", 1923)"
     narration_text = "\n".join(
         [
-            "[serious] Первый (Смит, 2019) фрагмент.",
+            "Первый (Смит, 2019) фрагмент.",
             "Второй (Джонс, 2020) фрагмент.",
             "Третий (Браун, 2021) фрагмент.",
             f"Четвёртый {long_citation} фрагмент.",
@@ -359,7 +312,7 @@ def test_narration_review_is_silent_on_clean_narration():
 
 def test_summarize_narration_review_findings_totals_matches_across_rules():
     findings = _collect_narration_artifact_review_findings(
-        "[serious] doi:10.5194/sapiens-2-1, ISBN 978-5-9614-1234-5 и (Смит, 2019)."
+        "doi:10.5194/sapiens-2-1, ISBN 978-5-9614-1234-5 и (Смит, 2019)."
     )
 
     assert _summarize_narration_review_findings(findings) == {
