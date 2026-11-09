@@ -464,7 +464,8 @@ def test_delivered_markdown_check_compares_visible_text_on_both_sides() -> None:
     ("operation", "expected_key"),
     [
         ("translate", "result.source_text_delivered"),
-        ("audiobook", "result.source_text_delivered"),
+        # Spec 070 FR-001: the audiobook does not change the language, so its fact is "unedited".
+        ("audiobook", "result.unedited_text_delivered"),
         ("edit", "result.unedited_text_delivered"),
     ],
 )

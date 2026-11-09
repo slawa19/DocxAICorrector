@@ -152,9 +152,10 @@ def test_the_second_pass_symbols_are_gone(module_name, symbol):
 
 
 def test_the_symbols_the_standalone_operation_needs_are_still_there():
-    # Anti-vacuum for the block above: the module still imports, and these are the survivors.
-    assert callable(narration_postprocess._collect_narration_chunks)
-    assert callable(narration_postprocess._assemble_narration_recording_joins)
+    # Anti-vacuum for the block above: the module still imports, and these are the survivors
+    # (spec 070 WP-G replaced the chunk collector by the assembly from per-paragraph records).
+    assert callable(narration_postprocess.assemble_narration_records)
+    assert callable(narration_postprocess.narration_paragraph_continues)
     assert callable(late_phases._build_narration_text)
 
 
@@ -165,9 +166,31 @@ def _narration_context(operation: str):
     return SimpleNamespace(processing_operation=operation, runtime=None, app_config={})
 
 
+def _narration_state(*texts: str) -> SimpleNamespace:
+    from docxaicorrector.pipeline.audiobook_pass import NarrationParagraphRecord
+    from docxaicorrector.text.narration_coverage import CoverageResult
+
+    return SimpleNamespace(
+        narration_paragraphs=[
+            NarrationParagraphRecord(
+                paragraph_id=f"p{index}",
+                block_index=1,
+                role="body",
+                text=text,
+                needs_review_reasons=(),
+                residue_before=(),
+                residue_after=(),
+                coverage=CoverageResult(0, 0, None),
+            )
+            for index, text in enumerate(texts, 1)
+        ],
+        narration_joined_sentence_continuation_count=0,
+    )
+
+
 @pytest.mark.parametrize("operation", ["translate", "edit"])
 def test_translate_and_edit_produce_no_narration_text(operation):
-    state = SimpleNamespace(narration_chunks=["Абзац, который уже накоплен."], narration_joined_sentence_continuation_count=0)
+    state = _narration_state("Абзац, который уже накоплен.")
 
     text = narration_postprocess._build_narration_text(
         context=_narration_context(operation), dependencies=None, emitters=None, state=state
@@ -180,13 +203,13 @@ def test_translate_and_edit_produce_no_narration_text(operation):
 def test_a_stale_session_flag_cannot_bring_the_pass_back():
     # The flag used to live in ``app_config``; a value left there by an old session must be inert.
     context = SimpleNamespace(processing_operation="edit", runtime=None, app_config={"audiobook_postprocess_enabled": True})
-    state = SimpleNamespace(narration_chunks=["Абзац."], narration_joined_sentence_continuation_count=0)
+    state = _narration_state("Абзац.")
 
     assert narration_postprocess._build_narration_text(context=context, dependencies=None, emitters=None, state=state) is None
 
 
 def test_the_standalone_audiobook_still_produces_its_narration_text():
-    state = SimpleNamespace(narration_chunks=["Первый абзац.", "Второй абзац."], narration_joined_sentence_continuation_count=0)
+    state = _narration_state("Первый абзац.", "Второй абзац.")
 
     text = narration_postprocess._build_narration_text(
         context=_narration_context("audiobook"), dependencies=None, emitters=None, state=state

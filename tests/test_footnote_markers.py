@@ -331,8 +331,6 @@ def test_process_single_block_commits_the_restored_text() -> None:
     preview and, through the registry built from the same value, the DOCX — carries it."""
     state = SimpleNamespace(
         processed_chunks=[],
-        narration_chunks=[],
-        excluded_narration_block_count=0,
         generated_paragraph_registry=[],
         started_at=0.0,
     )

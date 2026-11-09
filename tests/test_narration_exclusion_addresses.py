@@ -14,6 +14,12 @@ Everything here is read off the run's own record — ``artifacts/audio_path_run_
 distilled from ``runtime.state.processed_paragraph_registry`` of the 97 MB report — and
 asserted structurally: counts, set relations, catalog presence. Not one word of the book is
 a rule (Constitution VII).
+
+Spec 070 (research R7) changed what the audio channel reports. The audiobook no longer
+withholds an empty answer or a restored paragraph — it narrates the paragraph's own source and
+marks it ``needs_review`` — so the two loss families are gone and the audio notice is
+``result.audiobook_needs_review``. The address machinery, its floor and the anti-duplication
+rule against the document notice are the same and are tested here on the same recorded run.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ import ast
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,11 +125,11 @@ def _anchors(notice: Mapping[str, object]) -> list[str]:
 # ---------------------------------------------------------------------------------------
 
 
-def test_recorded_run_narration_notice_names_the_paragraphs_it_lost() -> None:
-    """The measured message. 8 paragraphs / 4 455 characters left the audiobook, and until
-    this spec that was the whole of it. The addresses exist — four of the eight give a
-    searchable fragment and four are two characters long — so the message owes the reader
-    both numbers and the four fragments."""
+def test_recorded_run_narration_notice_names_the_paragraphs_to_check() -> None:
+    """The measured message. 8 paragraphs / 4 455 characters left the audiobook then, with no
+    address. Under spec 070 the same paragraphs are narrated and marked ``needs_review``, and
+    the notice owes the reader the addresses — four of the eight give a searchable fragment and
+    four are two characters long."""
     records = _narration_records("omitted")
     assert len(records) == 8
     assert sum(len(record["text"]) for record in records) == 4455
@@ -139,7 +146,7 @@ def test_recorded_run_narration_notice_names_the_paragraphs_it_lost() -> None:
 
     notice = quality_gate.build_narration_exclusion_notice(
         facts,
-        message_key_family="result.narration_omitted_paragraphs_excluded",
+        message_key_family=quality_gate.AUDIOBOOK_NEEDS_REVIEW_MESSAGE_KEY_FAMILY,
         count=8,
         chars=4455,
     )
@@ -147,7 +154,7 @@ def test_recorded_run_narration_notice_names_the_paragraphs_it_lost() -> None:
     assert notice is not None
     assert notice["kind"] == "narration"
     assert notice["level"] == "warning"
-    assert notice["message_key"] == "result.narration_omitted_paragraphs_excluded_with_unanchored"
+    assert notice["message_key"] == "result.audiobook_needs_review_with_unanchored"
     assert _params(notice) == {"count": 8, "chars": 4455, "unanchored": 4}
     assert len(_anchors(notice)) == 4
 
@@ -182,67 +189,83 @@ def test_recorded_run_document_notice_hands_the_audio_addresses_over() -> None:
     )
 
     assert notice is not None
-    assert notice["message_key"] == "result.source_text_delivered_with_addresses_in_narration"
+    # Spec 070 FR-001: the audiobook does not change the language, so a paragraph the model
+    # gave back unchanged is UNEDITED, not untranslated -- the same family ``edit`` uses.
+    assert notice["message_key"] == "result.unedited_text_delivered_with_addresses_in_narration"
     assert _params(notice) == {"count": 10, "blocks": 4, "chars": 5050, "elsewhere": 8}
 
 
-def _replayed_narration_withholding(operation: str) -> list[dict[str, str]]:
-    """The recorded blocks put through the PRODUCTION projection, as the block loop does."""
-    from docxaicorrector.pipeline.block_execution import narration_projection_for_processed_block
+def _replayed_audiobook_records() -> list[object]:
+    """The recorded blocks put through the PRODUCTION audiobook finalization (spec 070).
 
-    withheld: list[dict[str, str]] = []
-    for block in _recorded_blocks():
-        withheld.extend(
-            narration_projection_for_processed_block(block, processing_operation=operation)[1]
-        )
-    return withheld
-
-
-def test_recorded_run_replayed_withholds_the_two_restored_paragraphs_with_their_addresses() -> None:
-    """Spec 061 FR-006/008 on the run that measured the defect.
-
-    ``20260809T_059_audio_money`` spoke its two ``source_restored`` paragraphs — 587
-    characters of English in a Russian audiobook — while the audio notice counted only the
-    eight ``omitted`` ones. Replayed through today's projection on ``audiobook``, the audio
-    notice counts all ten, and the two restored paragraphs carry the two addresses the
-    DOCUMENT message used to print for them — the same address rule, now owned by the
-    message about the artifact nobody edits. Its numbers become the document's numbers:
-    10 paragraphs, 5 050 characters.
+    Each block is rebuilt as the document layer would hand it over: its source per paragraph
+    and the FR-003 reason of each paragraph by the real form rule (the two-digit page numbers
+    are fragments without connected text). No repair call is possible offline, so a paragraph
+    with residue also carries ``repair_failed`` -- the first reason is the one asserted.
     """
-    withheld = _replayed_narration_withholding("audiobook")
+    from docxaicorrector.document.narration_exclusion import is_fragment_without_connected_text
+    from docxaicorrector.pipeline.audiobook_pass import (
+        audiobook_block_paragraph_inputs,
+        finalize_audiobook_block,
+    )
 
-    assert [record["status"] for record in withheld].count("omitted") == 8
-    assert [record["status"] for record in withheld].count("source_restored") == 2
-    restored_ids = {
-        record["paragraph_id"] for record in _narration_records("source_restored")
+    records: list[object] = []
+    for block_index, block in enumerate(_recorded_blocks(), start=1):
+        dispositions = block.paragraph_dispositions
+        payload = SimpleNamespace(
+            paragraph_ids=[item.paragraph_id for item in dispositions],
+            target_text_with_markers="\n\n".join(
+                f"[[DOCX_PARA_{item.paragraph_id}]]\n{item.text}" for item in dispositions
+            ),
+            narration_exclusion_reasons=[
+                "fragment" if is_fragment_without_connected_text(item.text) else None for item in dispositions
+            ],
+        )
+        finalized = finalize_audiobook_block(
+            block_index=block_index,
+            paragraphs=audiobook_block_paragraph_inputs(payload=payload, processed_chunk=block),
+            repair=None,
+        )
+        records.extend(finalized.records)
+    return records
+
+
+def test_recorded_run_replayed_narrates_every_paragraph_it_used_to_withhold() -> None:
+    """Spec 061 FR-006/008 and spec 070 R7 on the run that measured the defect.
+
+    ``20260809T_059_audio_money`` withheld eight ``omitted`` paragraphs and spoke two
+    ``source_restored`` ones. Replayed through today's audiobook pass, the four two-digit page
+    numbers are ``fragment`` exclusions decided BEFORE the model (FR-003) and the other six are
+    narrated from their own text, each with ``needs_review`` naming why, and each addressed
+    once -- by the audio message, which the document message then defers to.
+    """
+    from docxaicorrector.document.narration_exclusion import is_fragment_without_connected_text
+
+    records = _replayed_audiobook_records()
+
+    first_reasons = [record.needs_review_reasons[0] for record in records]  # type: ignore[attr-defined]
+    assert sorted(first_reasons) == sorted(["empty_answer"] * 4 + ["source_restored"] * 2)
+    recorded_ids = {
+        str(record["paragraph_id"])
+        for record in _recorded_paragraphs()
+        if not is_fragment_without_connected_text(str(record["text"]))
     }
-    assert {r["paragraph_id"] for r in withheld if r["status"] == "source_restored"} == restored_ids
+    assert {record.paragraph_id for record in records} == recorded_ids  # type: ignore[attr-defined]
 
-    delivered = _recorded_delivered_markdown()
-    facts = quality_gate.build_narration_exclusion_facts(withheld, delivered_markdown=delivered)
-    assert facts["paragraph_count"] == 10
-    assert facts["chars"] == 5050
+    paragraphs = [{"paragraph_id": r.paragraph_id, "text": r.text} for r in records]  # type: ignore[attr-defined]
+    delivered = "\n\n".join(item["text"] for item in paragraphs)
+    facts = quality_gate.build_narration_exclusion_facts(paragraphs, delivered_markdown=delivered)
+    assert facts["paragraph_count"] == 6
     assert len(facts["anchors"]) == 6  # type: ignore[arg-type]
-    assert facts["unanchored_paragraph_count"] == 4
 
     document_facts = quality_gate.build_source_text_delivery_facts(
         _recorded_blocks(),
-        delivered_markdown=delivered,
-        paragraph_ids_reported_in_narration={record["paragraph_id"] for record in withheld},
+        delivered_markdown=_recorded_delivered_markdown(),
+        paragraph_ids_reported_in_narration={item["paragraph_id"] for item in paragraphs},
     )
-    # Every address is printed exactly once, and now all of them by the audio message.
-    assert document_facts["reported_in_narration_paragraph_count"] == 10
-    assert document_facts["anchors"] == []
+    # The document fact is still counted whole; its addresses defer to the audio message.
     assert document_facts["paragraph_count"] == 10
-
-
-def test_recorded_run_replayed_on_edit_still_withholds_only_the_omissions() -> None:
-    """FR-007, the other direction on the same material: on ``edit`` nothing moved."""
-    withheld = _replayed_narration_withholding("edit")
-
-    assert {record["status"] for record in withheld} == {"omitted"}
-    assert len(withheld) == 8
-    assert sum(len(record["text"]) for record in withheld) == 4455
+    assert document_facts["reported_in_narration_paragraph_count"] == 6
 
 
 def test_the_two_messages_never_print_the_same_fragment_twice() -> None:
@@ -318,7 +341,7 @@ def test_nothing_left_the_audiobook_means_no_message_at_all() -> None:
     assert (
         quality_gate.build_narration_exclusion_notice(
             facts,
-            message_key_family="result.narration_source_fallback_excluded",
+            message_key_family=quality_gate.AUDIOBOOK_NEEDS_REVIEW_MESSAGE_KEY_FAMILY,
             count=0,
             chars=0,
         )
@@ -343,13 +366,13 @@ def test_a_lost_paragraph_with_no_usable_fragment_is_counted_not_printed() -> No
 
     notice = quality_gate.build_narration_exclusion_notice(
         facts,
-        message_key_family="result.narration_omitted_paragraphs_excluded",
+        message_key_family=quality_gate.AUDIOBOOK_NEEDS_REVIEW_MESSAGE_KEY_FAMILY,
         count=2,
         chars=7,
     )
 
     assert notice is not None
-    assert notice["message_key"] == "result.narration_omitted_paragraphs_excluded_without_anchors"
+    assert notice["message_key"] == "result.audiobook_needs_review_without_anchors"
     assert _params(notice) == {"count": 2, "chars": 7, "unanchored": 2}
     assert _anchors(notice) == []
 
@@ -648,7 +671,7 @@ def test_every_message_key_the_two_channels_can_emit_exists_in_both_catalogs() -
     families and the suffixes are a closed enumeration owned by ``quality_gate``; the guard
     enumerates them from there (same shape as the acceptance-check guard, FR-B3)."""
     expected = set(quality_gate.result_notice_message_keys())
-    assert len(expected) == 20, sorted(expected)
+    assert len(expected) == 17, sorted(expected)
 
     ru = _catalog("ru.json")
     en = _catalog("en.json")

@@ -762,20 +762,16 @@ def test_the_invariant_stops_working_without_either_half_it_stands_on() -> None:
 
 
 # ---------------------------------------------------------------------------
-# FR-A9 -- the narration branch that throws text away
+# FR-A9 -- the narration branch of the controlled fallback, after spec 070
 # ---------------------------------------------------------------------------
 #
-# ``continue_controlled_processed_block_rejection`` has one ``narration_chunks.append``, and
-# it sits in the ``else``. The branch above it -- "the fallback delivered the block's own
-# source" -- appends nothing at all: the text is DISCARDED, not merely skipped. On the
-# 2026-08-06 Money & Sustainability run that branch removed 5 581 characters from the
-# audiobook.
-#
-# Spec 054 decided that source-language text must not reach the narration, and that stands.
-# What did not stand is that the branch asked the pair rule WITHOUT asking whether the job
-# changes language at all: on a ru->ru literary edit, 65.0% of deliveries are byte-identical
-# to their source and every one of them is correct (measurement section 5), so the branch
-# would have discarded two thirds of the book from the narration.
+# Spec 059 FR-A9 found that the branch "the fallback delivered the block's own source" threw
+# the block out of the narration WITHOUT asking whether the job changes language at all: on a
+# ru->ru literary edit, 65.0% of deliveries are byte-identical to their source and correct.
+# Spec 070 removed the narration from ``translate``/``edit`` (FR-002) and made the audiobook a
+# same-language pass that narrates a fallback from its source (R7), so that branch is gone.
+# What remains of FR-A9 is the per-paragraph registry mark of spec 054
+# (``narration_excluded_by_source_fallback``): it still asks ``languages_differ`` first.
 
 
 def _marker_block(*pairs):
@@ -791,16 +787,10 @@ def _marker_block(*pairs):
 
 
 def _narration_harness():
-    state = SimpleNamespace(
-        processed_chunks=[],
-        narration_chunks=[],
-        excluded_narration_block_count=0,
-        narration_excluded_source_fallback_block_count=0,
-        narration_excluded_source_fallback_chars=0,
-        narration_excluded_omitted_paragraph_count=0,
-        narration_excluded_omitted_chars=0,
-        generated_paragraph_registry=[],
-    )
+    from docxaicorrector.pipeline.contracts import ProcessingState
+
+    state = ProcessingState()
+    events: list[tuple[str, dict]] = []
     context = SimpleNamespace(
         uploaded_filename="book.docx",
         runtime=object(),
@@ -808,19 +798,19 @@ def _narration_harness():
         source_language="en",
         target_language="ru",
     )
-    dependencies = SimpleNamespace(log_event=lambda *_args, **_kwargs: None)
+    dependencies = SimpleNamespace(log_event=lambda _level, event, _message, **ctx: events.append((event, ctx)))
     emitters = SimpleNamespace(
         emit_state=lambda *_args, **_kwargs: None,
         emit_status=lambda *_args, **_kwargs: None,
         emit_log=lambda *_args, **_kwargs: None,
     )
-    return state, context, dependencies, emitters
+    return state, context, dependencies, emitters, events
 
 
 def _continue_fallback(*, target_text, processed_chunk, languages_differ, monkeypatch, narration_include=True):
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
     monkeypatch.setattr(block_execution, "persist_terminal_job_result", lambda **_kwargs: None)
-    state, context, dependencies, emitters = _narration_harness()
+    state, context, dependencies, emitters, events = _narration_harness()
     payload = SimpleNamespace(
         job_kind="llm",
         target_text=target_text,
@@ -844,142 +834,91 @@ def _continue_fallback(*, target_text, processed_chunk, languages_differ, monkey
         append_marker_registry_entries_fn=lambda **_kwargs: None,
         languages_differ=languages_differ,
     )
-    return state
+    fallback = [ctx for event, ctx in events if event == "block_controlled_fallback"]
+    assert len(fallback) == 1
+    return state, bool(fallback[0]["narration_excluded_by_source_fallback"])
 
 
-def test_a_same_language_job_no_longer_loses_an_unchanged_block_from_the_narration(monkeypatch) -> None:
+def test_a_same_language_job_does_not_mark_an_unchanged_block_as_kept_out(monkeypatch) -> None:
     """FR-A9 + FR-A5. The measured case: a literary edit that legitimately left a paragraph
-    alone. Before this, the branch read "delivered == source" as "untranslated" and dropped
-    the paragraph out of the audiobook without anyone asking what the job was."""
+    alone. "Delivered == source" is not "untranslated" on a job that keeps the language."""
     unchanged = "Это уже хороший абзац, и правка его не улучшит."
-    state = _continue_fallback(
+    state, marked = _continue_fallback(
         target_text=unchanged,
         processed_chunk=unchanged,
         languages_differ=False,
         monkeypatch=monkeypatch,
     )
-    assert state.narration_chunks == [unchanged]
-    assert state.narration_excluded_source_fallback_block_count == 0
-    assert state.narration_excluded_source_fallback_chars == 0
+    assert marked is False
+    assert state.processed_chunks == [unchanged]
+    # Spec 070 FR-002: no operation but the audiobook narrates; nothing is recorded here.
+    assert state.narration_paragraphs == []
 
 
-def test_apparatus_delivered_in_the_source_language_is_still_kept_out_of_the_narration(monkeypatch) -> None:
-    """The anti-vacuum half, and spec 054's rule intact: where the job DOES change language,
-    a block delivered in the source language still does not reach the audiobook, and the
-    characters are still counted. Nothing sits between the audio and the listener."""
+def test_apparatus_delivered_in_the_source_language_is_still_marked(monkeypatch) -> None:
+    """The anti-vacuum half: where the job DOES change language, the block delivered in the
+    source language carries the spec 054 mark the assembly and reader cleanup honour."""
     english = "Notes and references for chapter four."
-    state = _continue_fallback(
+    state, marked = _continue_fallback(
         target_text=english,
         processed_chunk=english,
         languages_differ=True,
         monkeypatch=monkeypatch,
     )
-    assert state.narration_chunks == []
-    assert state.narration_excluded_source_fallback_block_count == 1
-    assert state.narration_excluded_source_fallback_chars == len(english)
+    assert marked is True
+    assert state.processed_chunks == [english]
 
 
-def test_a_block_the_region_excludes_is_counted_as_a_region_exclusion(monkeypatch) -> None:
-    """The first branch is untouched: a block the document region keeps out of the narration
-    is counted there, not as a source-fallback exclusion. The two answer different questions
-    and a run report that mixes them cannot be read."""
+def test_a_block_the_region_excludes_is_not_marked_as_a_source_fallback(monkeypatch) -> None:
+    """The document layer's own exclusion wins: such a block is not a source-fallback mark."""
     english = "Notes and references for chapter four."
-    state = _continue_fallback(
+    _state, marked = _continue_fallback(
         target_text=english,
         processed_chunk=english,
         languages_differ=True,
         monkeypatch=monkeypatch,
         narration_include=False,
     )
-    assert state.narration_chunks == []
-    assert state.excluded_narration_block_count == 1
-    assert state.narration_excluded_source_fallback_block_count == 0
+    assert marked is False
 
 
-@pytest.mark.parametrize("operation", ["translate"])
-def test_source_text_is_never_spoken_in_a_language_changing_operation(operation) -> None:
-    """Anti-regression 11 as rewritten by spec 061 FR-009 — and ANTI-VACUUM for FR-006.
-
-    "A paragraph carrying source text is not spoken in a translating operation; ``accepted``
-    is always spoken." Both statuses that mean "this is the paragraph's own SOURCE" are held,
-    each with its address and its status in the record; the ``accepted`` Russian paragraph
-    beside them is spoken, so the rule is shown not to subtract everything.
-
-    The previous wording — ``omitted`` held, ``source_restored`` spoken — protected a
-    partial-rescue argument and is what read two English paragraphs (587 characters,
-    target-alphabet share 0.000) into the Russian audiobook of ``20260809T_059_audio_money``.
-    """
+def test_the_audiobook_narrates_every_status_with_its_reason() -> None:
+    """Spec 070 R7, replacing spec 061 FR-006/FR-007 and anti-regression 11: the audiobook input
+    is already in the book's language, so a paragraph's SOURCE is a real paragraph of the book.
+    ``source_restored`` and ``omitted`` are narrated from it, each with its ``needs_review``
+    reason; ``accepted`` is narrated unmarked. (``translate``/``edit`` narrate nothing at all.)"""
     from docxaicorrector.generation._generation import (
         PARAGRAPH_STATUS_ACCEPTED,
         PARAGRAPH_STATUS_OMITTED,
         PARAGRAPH_STATUS_SOURCE_RESTORED,
     )
-
-    spoken, withheld = block_execution.narration_projection_for_processed_block(
-        _marker_block(
-            ("p1", "Этот абзац переведён на русский.", PARAGRAPH_STATUS_ACCEPTED),
-            ("p2", "English restored after a merge.", PARAGRAPH_STATUS_SOURCE_RESTORED),
-            ("p3", "English the model returned nothing for.", PARAGRAPH_STATUS_OMITTED),
-        ),
-        processing_operation=operation,
+    from docxaicorrector.pipeline.audiobook_pass import (
+        audiobook_block_paragraph_inputs,
+        finalize_audiobook_block,
     )
 
-    assert spoken == "Этот абзац переведён на русский."
-    assert withheld == [
-        {"paragraph_id": "p2", "text": "English restored after a merge.", "status": "source_restored"},
-        {"paragraph_id": "p3", "text": "English the model returned nothing for.", "status": "omitted"},
-    ]
-
-
-
-def test_audiobook_speaks_a_restored_source_paragraph_but_still_withholds_an_omitted_one() -> None:
-    """Spec 070 FR-001: the audiobook input is already in its final language, so the SOURCE of a
-    paragraph is a real paragraph of the book (as on ``edit``); ``omitted`` stays withheld.
-    Counter-proof: on ``translate`` the same record withholds both."""
-    from docxaicorrector.generation._generation import (
-        PARAGRAPH_STATUS_ACCEPTED,
-        PARAGRAPH_STATUS_OMITTED,
-        PARAGRAPH_STATUS_SOURCE_RESTORED,
-    )
-
+    sources = ("Первый абзац источника.", "Восстановленный из источника абзац.", "Абзац без ответа модели.")
     block = _marker_block(
         ("p1", "Первый абзац.", PARAGRAPH_STATUS_ACCEPTED),
-        ("p2", "Восстановленный из источника абзац.", PARAGRAPH_STATUS_SOURCE_RESTORED),
-        ("p3", "Абзац без ответа модели.", PARAGRAPH_STATUS_OMITTED),
+        ("p2", sources[1], PARAGRAPH_STATUS_SOURCE_RESTORED),
+        ("p3", sources[2], PARAGRAPH_STATUS_OMITTED),
     )
-    spoken, withheld = block_execution.narration_projection_for_processed_block(block, processing_operation="audiobook")
-    translate_spoken, translate_withheld = block_execution.narration_projection_for_processed_block(
-        block, processing_operation="translate"
-    )
-
-    assert "Восстановленный из источника абзац." in spoken
-    assert [entry["paragraph_id"] for entry in withheld] == ["p3"]
-    assert "Восстановленный из источника абзац." not in translate_spoken
-    assert [entry["paragraph_id"] for entry in translate_withheld] == ["p2", "p3"]
-
-def test_on_edit_a_restored_paragraph_is_spoken_and_an_omitted_one_is_still_held() -> None:
-    """FR-007: on ``edit`` nothing changes — ``source_restored`` is a real paragraph of the book.
-
-    And the omission rule spec 056 E introduced keeps holding on every operation it held on.
-    """
-    from docxaicorrector.generation._generation import (
-        PARAGRAPH_STATUS_ACCEPTED,
-        PARAGRAPH_STATUS_OMITTED,
-        PARAGRAPH_STATUS_SOURCE_RESTORED,
+    payload = SimpleNamespace(
+        paragraph_ids=["p1", "p2", "p3"],
+        target_text_with_markers="\n\n".join(f"[[DOCX_PARA_p{i}]]\n{text}" for i, text in enumerate(sources, 1)),
     )
 
-    spoken, withheld = block_execution.narration_projection_for_processed_block(
-        _marker_block(
-            ("p1", "Отредактированный абзац.", PARAGRAPH_STATUS_ACCEPTED),
-            ("p2", "Исходный абзац, восстановленный после слияния.", PARAGRAPH_STATUS_SOURCE_RESTORED),
-            ("p3", "14", PARAGRAPH_STATUS_OMITTED),
-        ),
-        processing_operation="edit",
+    finalized = finalize_audiobook_block(
+        block_index=1,
+        paragraphs=audiobook_block_paragraph_inputs(payload=payload, processed_chunk=block),
+        repair=None,
     )
 
-    assert spoken == "Отредактированный абзац.\n\nИсходный абзац, восстановленный после слияния."
-    assert withheld == [{"paragraph_id": "p3", "text": "14", "status": "omitted"}]
-
+    assert [(record.paragraph_id, record.text, record.needs_review_reasons) for record in finalized.records] == [
+        ("p1", "Первый абзац.", ()),
+        ("p2", sources[1], ("source_restored",)),
+        ("p3", sources[2], ("empty_answer",)),
+    ]
 
 # ---------------------------------------------------------------------------
 # The wiring: the invariant has to be reachable from the block loop, not only callable
@@ -991,12 +930,6 @@ def _run_block_through_the_loop(*, payload, classification, processed_chunk, con
 
     state = SimpleNamespace(
         processed_chunks=[],
-        narration_chunks=[],
-        excluded_narration_block_count=0,
-        narration_excluded_source_fallback_block_count=0,
-        narration_excluded_source_fallback_chars=0,
-        narration_excluded_omitted_paragraph_count=0,
-        narration_excluded_omitted_chars=0,
         generated_paragraph_registry=[],
         untranslated_prose_delivered_paragraphs=[],
         started_at=0.0,
@@ -1266,7 +1199,7 @@ def test_the_default_edit_run_keeps_an_unchanged_prose_block_instead_of_dying(mo
     above would have passed even while the pipeline computed the flag from codes alone.
 
     A literary edit that legitimately left a paragraph of prose alone: the run continues,
-    the text is delivered, and the narration keeps it.
+    the text is delivered (spec 070: ``edit`` builds no narration).
     """
     from docxaicorrector.core import model_accounting
 
@@ -1303,7 +1236,8 @@ def test_the_default_edit_run_keeps_an_unchanged_prose_block_instead_of_dying(mo
     assert outcome is None
     assert rejections == []
     assert state.processed_chunks == [unchanged]
-    assert state.narration_chunks == [unchanged]
+    # Spec 070 FR-002: ``edit`` narrates nothing any more; the DOCX keeps the paragraph above.
+    assert not getattr(state, "narration_paragraphs", None)
     assert not [event for _level, event, _ctx in events if event == "block_untranslated_prose_delivered"]
     assert (
         model_accounting.get_run_model_accounting_ledger().snapshot()[

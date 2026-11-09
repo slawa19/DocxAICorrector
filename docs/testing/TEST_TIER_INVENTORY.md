@@ -13,6 +13,7 @@ This inventory is intentionally pragmatic:
 ## Unit-Contract
 
 - `tests/test_audiobook_repair.py`
+- `tests/test_audiobook_pass.py`
 - `tests/test_acceptance_verdict_on_screen.py`
 - `tests/test_app.py`
 - `tests/test_app_preparation.py`

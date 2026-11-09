@@ -23,11 +23,27 @@ from docxaicorrector.core.models import (
 )
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_ACCEPTED,
-    PARAGRAPH_STATUS_OMITTED,
-    PARAGRAPH_STATUS_SOURCE_RESTORED,
     MarkerPreservedBlockText,
     ParagraphDisposition,
     marker_paragraph_dispositions,
+)
+from docxaicorrector.pipeline.audiobook_pass import (
+    NEEDS_REVIEW_SOURCE_FALLBACK,
+    audiobook_block_narrates,
+    audiobook_block_paragraph_inputs,
+    finalize_audiobook_block,
+    is_audiobook_operation,
+    rebuild_block_with_narration_texts,
+    record_repair_outcome,
+    register_audiobook_block,
+    residue_classes_by_paragraph_count,
+)
+from docxaicorrector.pipeline.audiobook_plan import build_audiobook_block_plan, merge_audiobook_dispositions
+from docxaicorrector.pipeline.audiobook_repair import (
+    RepairItem,
+    RepairOutcome,
+    load_repair_system_prompt,
+    repair_block_residue,
 )
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 from docxaicorrector.pipeline.footnote_markers import preserve_footnote_markers_for_block
@@ -52,6 +68,8 @@ from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 # Spec 069 FR-004 (2): the system prompt variant of the second pass.
 LITERARY_POLISH_PROMPT_VARIANT = "literary_polish"
+# Spec 070 FR-006: the system prompt variant of the audiobook residue repair (research R5).
+AUDIOBOOK_REPAIR_PROMPT_VARIANT = "repair"
 TOC_VALIDATION_RETRY_BUDGET = 2
 TOC_RETRY_HARDENING_ATTEMPT = 2
 CONTROLLED_BLOCK_FAILURE_POLICY: dict[str, dict[str, str]] = {
@@ -1276,15 +1294,33 @@ def _generate_block_chunk(
     # ``audiobook`` pass no keyword at all, so their request is the one of before (SC-006).
     request_profile = first_pass_request_profile(context)
     profile_kwargs: dict[str, Any] = {} if request_profile is None else {"request_profile": request_profile}
-    return dependencies.generate_markdown_block(
+    # Spec 070 FR-003 / research R2: the audiobook sends the model ONLY the paragraphs it
+    # narrates. The plan is ``None`` when nothing of the block is excluded -- the request is then
+    # the whole block, exactly as before; the generator's marker check sees the ids it was sent.
+    audiobook_plan = (
+        build_audiobook_block_plan(payload)
+        if marker_mode_enabled and is_audiobook_operation(getattr(context, "processing_operation", None))
+        else None
+    )
+    if audiobook_plan is not None and not audiobook_plan.send_ids:
+        # Every paragraph is excluded: nothing to ask the model (the document layer makes such a
+        # block a passthrough; this keeps the merge well-defined if one arrives here anyway).
+        return merge_audiobook_dispositions(audiobook_plan, MarkerPreservedBlockText("", ()))
+    if audiobook_plan is not None:
+        target_text = audiobook_plan.send_text_with_markers
+        expected_paragraph_ids: list[str] | None = list(audiobook_plan.send_ids)
+    else:
+        target_text = payload.target_text_with_markers if marker_mode_enabled else payload.target_text
+        expected_paragraph_ids = payload.paragraph_ids if marker_mode_enabled else None
+    generated = dependencies.generate_markdown_block(
         client=client,
         model=model_id,
         system_prompt=block_system_prompt,
-        target_text=payload.target_text_with_markers if marker_mode_enabled else payload.target_text,
+        target_text=target_text,
         context_before=payload.context_before,
         context_after=payload.context_after,
         max_retries=context.max_retries,
-        expected_paragraph_ids=payload.paragraph_ids if marker_mode_enabled else None,
+        expected_paragraph_ids=expected_paragraph_ids,
         marker_mode=marker_mode_enabled,
         # Names the block in the rejected-attempt capture (spec 056 D'). The generator has
         # no other way to say WHICH block an artifact under ``.run/marker_attempts/``
@@ -1299,6 +1335,11 @@ def _generate_block_chunk(
         detect_short_source_absorption=_is_translate_job(context),
         **profile_kwargs,
     )
+    if audiobook_plan is None:
+        return generated
+    # Every paragraph of the block again, in source order; the excluded ones as their own source
+    # with ``policy_kept_source`` -- in the DOCX, never in the narration (R2).
+    return merge_audiobook_dispositions(audiobook_plan, generated)
 
 
 def _validate_toc_chunk_with_retries(
@@ -1456,127 +1497,126 @@ def build_processed_paragraph_registry_entries(
     ]
 
 
-def excluded_narration_paragraph_records(processed_chunk: str) -> list[dict[str, str]]:
-    """One ``{paragraph_id, text}`` record per paragraph of a block kept OUT of the narration.
+def _audiobook_repair_system_prompt(*, context: Any, dependencies: Any, state: Any) -> str:
+    """The ``repair`` variant of the audiobook prompt, built once per run (research R5).
 
-    The address half of the audio warning, built at the point of the decision for the same
-    reason ``_delivered_prose_paragraph_records`` is: only here is it known that this block
-    was headed for the narration at all. Re-deriving the set at finalization would sweep in
-    the blocks the DOCUMENT layer excluded (59 of 338 on the recorded 20260809T_059_audio_money
-    run) and report them as an audio loss.
-
-    A block with no per-paragraph record still yields ONE record carrying the whole block —
-    it is the block that was excluded, and the sanitiser downstream decides whether that text
-    gives a searchable fragment. An empty ``paragraph_id`` is a paragraph nothing else can
-    name, never a paragraph that can be silently matched against another message's ids.
-    """
-    dispositions = marker_paragraph_dispositions(processed_chunk)
-    if dispositions is None:
-        return [{"paragraph_id": "", "text": str(processed_chunk)}]
-    return [
-        {"paragraph_id": str(disposition.paragraph_id), "text": disposition.text}
-        for disposition in dispositions
-    ]
+    Through the run's own loader when it has one, so the injected loader of a run serves both
+    of the run's audiobook prompts; the packaged loader otherwise."""
+    cached = getattr(state, "audiobook_repair_system_prompt", None)
+    if isinstance(cached, str) and cached:
+        return cached
+    loader = getattr(dependencies, "load_system_prompt", None)
+    if callable(loader):
+        prompt = _resolve_system_prompt_default(
+            loader, **_build_system_prompt_arguments(context=context, prompt_variant=AUDIOBOOK_REPAIR_PROMPT_VARIANT)
+        )
+    else:
+        prompt = load_repair_system_prompt()
+    state.audiobook_repair_system_prompt = prompt
+    return prompt
 
 
-def narration_projection_for_processed_block(
-    processed_chunk: str,
-    *,
-    processing_operation: Any,
-) -> tuple[str, list[dict[str, str]]]:
-    """What of this block is READ ALOUD, and what was left out doing it.
+def _audiobook_repair_call(*, context: Any, dependencies: Any, state: Any, initialization: Any, index: int):
+    """The block's one repair call (FR-006): the same client and model as its main call (R6)."""
 
-    Spec 056 E: a paragraph the model returned nothing for keeps its own SOURCE text in the
-    document — losing it there would break the paragraph-per-marker mapping the formatting
-    restorer depends on, and a human editing a DOCX can see and fix an untranslated line.
-    Nothing sits between the audio and the listener, so the narration drops it instead.
-    That is spec 054's rule applied one level down: source-language text does not reach the
-    narration artifact, and the DOCX/narration asymmetry is deliberate.
+    log_event = getattr(dependencies, "log_event", None)
+    emit = log_event if callable(log_event) else (lambda *_args, **_kwargs: None)
+    stop_predicate = getattr(dependencies, "should_stop_processing", None)
 
-    Returns the narratable text together with a RECORD of every withheld paragraph rather
-    than a pair of counters. The counters are still published — spec 054's own metric is a
-    share of source-language characters in the artifact, and a rule that subtracts from the
-    artifact and reports only "1 paragraph" cannot be compared against the metric it serves;
-    on block 174 of the 2026-08-04 run that one line stood for 1 378 characters — but they
-    are now derived from the records at the call site, so the quantity on the screen and the
-    addresses under it can never describe two different sets of paragraphs. The recorded
-    20260809T_059_audio_money run is why: it published "8 paragraphs, 4 455 characters" and
-    no address at all.
+    def should_stop() -> bool:
+        return bool(stop_predicate(getattr(context, "runtime", None))) if callable(stop_predicate) else False
 
-    A block with no per-paragraph record is returned untouched with nothing withheld, so
-    passthrough blocks and controlled fallbacks whose substrate is a plain string behave
-    exactly as before.
-
-    WHICH paragraphs are withheld is decided by the OPERATION, not by the status alone
-    (spec 061 FR-006/007). Both ``omitted`` and ``source_restored`` mean the same thing about
-    the text — it is the paragraph's own SOURCE — and in an operation that changes the
-    language (``core.models.LANGUAGE_CHANGING_OPERATIONS``) that is source-language text,
-    which a listener must not hear under either label. Until 2026-11-06 only ``omitted`` was
-    withheld and ``source_restored`` was spoken; on ``20260809T_059_audio_money`` that read
-    two English paragraphs (587 characters, target-alphabet share 0.000) into a Russian
-    audiobook. On ``edit`` the source IS in the target language, so a restored paragraph is
-    a real paragraph of the book and is spoken, as before; ``omitted`` stays withheld on
-    every operation, as before. ``accepted`` is always spoken.
-
-    ``processing_operation`` has no default for the reason ``job_changes_language`` gives:
-    a default is a guess that fails silently in one of the two directions. The record
-    carries the status so the notice built from it can tell the two causes apart.
-    """
-
-    dispositions = marker_paragraph_dispositions(processed_chunk)
-    if dispositions is None:
-        return processed_chunk, []
-    withheld_statuses = (
-        {PARAGRAPH_STATUS_OMITTED, PARAGRAPH_STATUS_SOURCE_RESTORED}
-        if str(processing_operation or "").strip().casefold() in LANGUAGE_CHANGING_OPERATIONS
-        else {PARAGRAPH_STATUS_OMITTED}
-    )
-    spoken: list[str] = []
-    withheld: list[dict[str, str]] = []
-    for disposition in dispositions:
-        # Spec 063 FR-011: a reference-list entry kept in the source language by policy is
-        # apparatus by region -- never read aloud, and not an audio LOSS either (spec 054
-        # never narrates the back matter), so it is neither spoken nor booked as withheld.
-        if disposition.status == PARAGRAPH_STATUS_POLICY_KEPT_SOURCE:
-            continue
-        if disposition.status in withheld_statuses:
-            withheld.append(
-                {
-                    "paragraph_id": str(disposition.paragraph_id),
-                    "text": disposition.text,
-                    "status": str(disposition.status),
-                }
+    def call(items: Sequence[RepairItem], context_before: str, context_after: str) -> RepairOutcome:
+        try:
+            system_prompt = _audiobook_repair_system_prompt(context=context, dependencies=dependencies, state=state)
+        except Exception as exc:  # noqa: BLE001 - no prompt, no call: the previous text stays
+            emit(
+                logging.WARNING,
+                "audiobook_repair_failed",
+                "Исправление остатка озвучки не принято; оставлен прежний текст.",
+                filename=getattr(context, "uploaded_filename", None),
+                block_index=index,
+                paragraph_ids=[item.paragraph_id for item in items],
+                reason="error",
+                error_class=type(exc).__name__,
+                call_made=False,
             )
-            continue
-        if disposition.text.strip():
-            spoken.append(disposition.text)
-    return "\n\n".join(spoken), withheld
+            return RepairOutcome(
+                status="failed",
+                reason="error",
+                texts={item.paragraph_id: item.text for item in items},
+                error_class=type(exc).__name__,
+                call_made=False,
+            )
+        return repair_block_residue(
+            client=getattr(initialization, "text_client", None) or getattr(initialization, "client", None),
+            model_id=str(
+                getattr(context, "model_id", None)
+                or getattr(initialization, "text_model_id", None)
+                or getattr(context, "model", "")
+            ),
+            system_prompt=system_prompt,
+            items=items,
+            context_before=context_before,
+            context_after=context_after,
+            should_stop=should_stop,
+            log_event=emit,
+            block_index=index,
+            filename=str(getattr(context, "uploaded_filename", "") or ""),
+            residue_after_by_class=residue_classes_by_paragraph_count,
+        )
+
+    return call
 
 
-def narration_text_for_processed_block(processed_chunk: str, *, processing_operation: Any) -> str:
-    """The narratable text alone. See ``narration_projection_for_processed_block``."""
+def finalize_audiobook_block_for_delivery(
+    *,
+    context: Any,
+    dependencies: Any,
+    state: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    processed_chunk: str,
+    source_fallback: bool = False,
+) -> str:
+    """Spec 070 FR-005…FR-007: finalize the narrated paragraphs of an ``audiobook`` block.
 
-    return narration_projection_for_processed_block(
-        processed_chunk, processing_operation=processing_operation
-    )[0]
-
-
-def _record_narration_omitted_paragraphs(state: Any, withheld: Sequence[Mapping[str, str]]) -> None:
-    """Book the per-paragraph audio loss ONCE, for both call sites.
-
-    The count, the characters and the addresses come from the same list, so the warning
-    cannot say "8 paragraphs" while pointing at a different set. Written as one function
-    because the two branches that withhold paragraphs (the ordinary path and the controlled
-    fallback beside it) drifted apart once already: the fallback path had no per-paragraph
-    filter at all, and the block it delivered was read aloud in English.
+    Replaces the narration projection of specs 054/056/061. Every narrated paragraph leaves a
+    record in ``state.narration_paragraphs`` (cleanup, residue, at most one repair call for the
+    block, coverage); the returned block carries the final narration text under each narrated
+    id, so the DOCX, the Markdown and the ``needs_review`` addresses all show what the listener
+    hears (R4). ``source_fallback`` is the controlled-fallback branch: every narrated paragraph
+    starts from its OWN source, with ``needs_review`` ``source_fallback`` (R7).
     """
-    if not withheld:
-        return
-    state.narration_excluded_omitted_paragraph_count += len(withheld)
-    state.narration_excluded_omitted_chars += sum(len(record["text"]) for record in withheld)
-    recorded = getattr(state, "narration_excluded_omitted_paragraphs", None)
-    if isinstance(recorded, list):
-        recorded.extend(dict(record) for record in withheld)
+
+    if not audiobook_block_narrates(payload):
+        return processed_chunk
+    paragraphs = audiobook_block_paragraph_inputs(
+        payload=payload, processed_chunk=processed_chunk, source_fallback=source_fallback
+    )
+    if not any(item.exclusion_reason is None for item in paragraphs):
+        return processed_chunk
+    finalized = finalize_audiobook_block(
+        block_index=index,
+        paragraphs=paragraphs,
+        repair=_audiobook_repair_call(
+            context=context, dependencies=dependencies, state=state, initialization=initialization, index=index
+        ),
+        forced_reason=NEEDS_REVIEW_SOURCE_FALLBACK if source_fallback else None,
+    )
+    record_repair_outcome(state=state, outcome=finalized.repair_outcome)
+    records = getattr(state, "narration_paragraphs", None)
+    if not isinstance(records, list):
+        records = []
+        state.narration_paragraphs = records
+    records.extend(finalized.records)
+    return rebuild_block_with_narration_texts(
+        payload=payload,
+        processed_chunk=processed_chunk,
+        texts_by_id=finalized.texts_by_id,
+        source_fallback=source_fallback,
+    )
 
 
 def emit_block_started(
@@ -1761,9 +1801,9 @@ def append_controlled_fallback_registry_entries(
     for entry in state.generated_paragraph_registry[before_count:]:
         entry["controlled_fallback"] = True
         entry["controlled_fallback_kind"] = rejection_kind
-        # Carried on the paragraph, not only in ``state.narration_chunks``, so a rebuild of the
-        # narration from the FINAL registry would honour the same exclusion decision (spec 054
-        # anti-regression 3).
+        # Carried on the paragraph so the assembly and reader cleanup honour the spec 054
+        # decision (a source-language fallback of a language-changing job is never welded to a
+        # narratable neighbour; anti-regression 3).
         entry["controlled_fallback_narration_excluded"] = narration_excluded
 
 
@@ -1966,8 +2006,7 @@ def continue_controlled_processed_block_rejection(
     # for decision ``fallback_continue``, so a structural ``fail`` can never land here.
     # ``processed_chunk`` is what the block actually delivered (the caller passes
     # ``rejection_decision["fallback_markdown"]``), which is the text whose length is the
-    # cost — the same quantity and the same unit as
-    # ``state.narration_excluded_source_fallback_chars`` below.
+    # cost.
     record_controlled_block_fallback(kind=rejection_kind, chars=len(processed_chunk))
     _record_back_matter_delivery(
         context=context,
@@ -1997,64 +2036,35 @@ def continue_controlled_processed_block_rejection(
         target_text=payload.target_text,
         processed_chunk=processed_chunk,
     )
-    state.processed_chunks.append(processed_chunk)
-    # The narration artifact carries only speakable text in the TARGET language, so a block
-    # whose model output was rejected and replaced by its own SOURCE text does not go into
-    # it. The asymmetry against the DOCX is deliberate: the document is editable and a human
-    # who meets an untranslated paragraph fixes it, while nothing sits between the audio and
-    # the listener — on the 2026-08-04 Money & Sustainability run six such blocks put 20 597
-    # characters of English into the middle of a Russian audiobook. Taking the model's
-    # rejected output instead was considered and refused: the rejection means the model may
-    # have LOST a paragraph, which would trade a visible defect for an unverifiable one.
-    # The decision belongs here, not in ``_resolve_narration_include``, because only here is
-    # the block's outcome known.
-    #
-    # Spec 059 FR-A9. The branch below appends NOTHING: the text is discarded, not skipped —
-    # 5 581 characters of the 2026-08-06 Money & Sustainability run left the audiobook this
-    # way. Two things changed, and neither of them is "narrate the source anyway":
-    #
-    # * ``languages_differ`` now guards it (FR-A5). "The delivery equals its source" only
-    #   means "untranslated" where the job asked for another language. On the recorded ru->ru
-    #   literary edit 1 144 of 1 761 deliveries are byte-identical to their source and every
-    #   one is correct, so without this guard the branch would have thrown two thirds of that
-    #   book out of the narration.
-    # * PROSE can no longer reach the branch at all, because the invariant in
-    #   ``untranslated_prose_would_be_delivered`` turns exactly this situation into ``fail``
-    #   before the block gets here. What still reaches it is a block that is entirely
-    #   APPARATUS and was delivered in the source language, and keeping that out of the
-    #   audiobook is spec 054's decision, not a hole.
-    narration_excluded_by_source_fallback = False
-    if not payload.narration_include:
-        state.excluded_narration_block_count += 1
-    elif languages_differ and fallback_delivered_source_text(
-        payload=payload, processed_chunk=processed_chunk
-    ):
-        narration_excluded_by_source_fallback = True
-        state.narration_excluded_source_fallback_block_count += 1
-        state.narration_excluded_source_fallback_chars += len(processed_chunk)
-        # The block is counted in BLOCKS and addressed in PARAGRAPHS: the reader searches the
-        # DOCX for a passage, not for a block index. Same records, same sanitiser, same floor
-        # as the per-paragraph twin below and as the document warning.
-        excluded_source_fallback_paragraphs = getattr(
-            state, "narration_excluded_source_fallback_paragraphs", None
+    # Spec 070 R7: in the AUDIOBOOK a block the controlled fallback delivered is narrated from
+    # its own SOURCE -- the operation no longer changes the language, so the source is the right
+    # text in the right language -- through the same per-paragraph pass as every other block
+    # (cleanup, residue, one repair call) and with ``needs_review`` ``source_fallback`` on each
+    # narrated paragraph. The DOCX carries what is narrated (R4); ``processed_chunk`` above stays
+    # what the accounting and the diagnostic artifact describe. ``translate`` and ``edit``
+    # produce no narration at all (FR-002) and deliver the fallback exactly as before.
+    delivered_chunk = processed_chunk
+    if is_audiobook_operation(getattr(context, "processing_operation", None)):
+        delivered_chunk = finalize_audiobook_block_for_delivery(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            processed_chunk=processed_chunk,
+            source_fallback=True,
         )
-        if isinstance(excluded_source_fallback_paragraphs, list):
-            excluded_source_fallback_paragraphs.extend(
-                excluded_narration_paragraph_records(processed_chunk)
-            )
-    else:
-        # The per-paragraph filter belongs HERE too, and its absence was a hole: a block
-        # holding an ``omitted`` paragraph keeps that paragraph's SOURCE text, which makes
-        # the block likelier to be classified ``english_residual_output`` — and the rejection
-        # then routed it down this path, which appended the raw chunk and read the English
-        # aloud. The defect fed itself: the substitution caused the classification that
-        # bypassed the filter that would have removed the substitution.
-        narratable_text, withheld_paragraphs = narration_projection_for_processed_block(
-            processed_chunk, processing_operation=getattr(context, "processing_operation", None)
-        )
-        _record_narration_omitted_paragraphs(state, withheld_paragraphs)
-        if narratable_text.strip():
-            state.narration_chunks.append(narratable_text)
+    state.processed_chunks.append(delivered_chunk)
+    # Spec 054's registry mark, unchanged for ``translate``/``edit``: a fallback that delivered a
+    # block's own source in a job that changes the language is marked on its paragraphs, so the
+    # assembly and reader cleanup never weld it to a narratable neighbour. ``languages_differ``
+    # guards it (spec 059 FR-A5): on a same-language job "equals its source" is the right outcome.
+    narration_excluded_by_source_fallback = (
+        bool(payload.narration_include)
+        and languages_differ
+        and fallback_delivered_source_text(payload=payload, processed_chunk=processed_chunk)
+    )
     try:
         append_controlled_fallback_registry_entries(
             context=context,
@@ -2063,7 +2073,7 @@ def continue_controlled_processed_block_rejection(
             initialization=initialization,
             index=index,
             payload=payload,
-            processed_chunk=processed_chunk,
+            processed_chunk=delivered_chunk,
             rejection_kind=rejection_kind,
             append_marker_registry_entries_fn=append_marker_registry_entries_fn,
             narration_excluded=narration_excluded_by_source_fallback,
@@ -2317,6 +2327,11 @@ def process_single_block(
         index=index,
         payload=payload,
     )
+    audiobook = is_audiobook_operation(getattr(context, "processing_operation", None))
+    if audiobook:
+        # Spec 070 FR-003/FR-007: the narrated ids (the denominator) and every exclusion with its
+        # reason and address are recorded BEFORE the model answers, so no answer can shrink them.
+        register_audiobook_block(state=state, payload=payload, block_index=index)
     marker_mode_enabled = is_marker_mode_enabled_fn(context, payload)
     # Spec 063 FR-011: a block of reference-list entries is delivered as its own source with no
     # model call. Decided ONCE, here, so the classifier skip below reads the same answer.
@@ -2475,19 +2490,21 @@ def process_single_block(
         log_event=getattr(dependencies, "log_event", None),
         filename=getattr(context, "uploaded_filename", None),
     )
-    state.processed_chunks.append(processed_chunk)
-    if payload.narration_include:
-        # Spec 056 E: the DOCX keeps every paragraph, the narration keeps only the ones the
-        # model actually spoke for. Identical to ``processed_chunk`` for every block that
-        # carries no per-paragraph record.
-        narratable_text, withheld_paragraphs = narration_projection_for_processed_block(
-            processed_chunk, processing_operation=getattr(context, "processing_operation", None)
+    if audiobook:
+        # Spec 070 FR-005…FR-007, in place of the narration projection of specs 054/056/061: each
+        # narrated paragraph is finalized (its R7 text, cleanup, residue, at most one repair call
+        # for the block, coverage) and recorded; the block delivered to the DOCX carries the
+        # narration text under each narrated id (R4). ``translate``/``edit`` narrate nothing.
+        processed_chunk = finalize_audiobook_block_for_delivery(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            processed_chunk=processed_chunk,
         )
-        _record_narration_omitted_paragraphs(state, withheld_paragraphs)
-        if narratable_text.strip():
-            state.narration_chunks.append(narratable_text)
-    else:
-        state.excluded_narration_block_count += 1
+    state.processed_chunks.append(processed_chunk)
     if payload.job_kind == "llm" and marker_mode_enabled and payload.paragraph_ids:
         try:
             append_marker_registry_entries_fn(

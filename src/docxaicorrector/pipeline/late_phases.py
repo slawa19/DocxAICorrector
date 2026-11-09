@@ -33,12 +33,18 @@ from docxaicorrector.pipeline.formatting_diagnostics_feedback import (  # noqa: 
 from docxaicorrector.pipeline.text_call_support import (  # noqa: F401
     _resolve_text_call_target,
 )
+from docxaicorrector.pipeline.audiobook_pass import (
+    NarrationParagraphRecord,
+    audiobook_narration_summary,
+    fragment_samples,
+    is_audiobook_operation,
+    needs_review_event_records,
+)
 from docxaicorrector.pipeline.narration_postprocess import (  # noqa: F401
     _NARRATION_DISALLOWED_PATTERNS,
     _build_narration_text,
     _collect_narration_artifact_review_findings,
     _summarize_narration_review_findings,
-    _collect_narration_chunks,
 )
 from docxaicorrector.reader_cleanup_mvp import write_reader_cleanup_diagnostics
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
@@ -186,6 +192,7 @@ from docxaicorrector.pipeline.quality_gate import (  # noqa: F401
     build_acceptance_verdict_notice,
     build_narration_exclusion_facts,
     build_narration_exclusion_notice,
+    AUDIOBOOK_NEEDS_REVIEW_MESSAGE_KEY_FAMILY,
     build_source_text_delivery_facts,
     build_source_text_delivery_notice,
 )
@@ -1185,114 +1192,84 @@ def finalize_processing_success(
         "review_match_count": 0,
         "review_rules": [],
     }
-    # A block whose model output was rejected and replaced by its own source text is kept out
-    # of the narration (``block_execution.fallback_delivered_source_text``). That loss is
-    # deliberate but it must not be silent: it travels the SAME route the narration review
-    # data already takes — a WARNING event, a user-facing notice, and counters on the record
-    # of the saved artifact — rather than a channel of its own (Constitution V,
-    # docs/LOGGING_AND_ARTIFACT_RETENTION.md §3.3/§5.5). Zero excluded blocks means no event
-    # and no notice, exactly like a clean review pass.
-    #
-    # Since 2026-08-09 both families also carry ADDRESSES, through the machinery the document
-    # warning already had (``quality_gate.build_narration_exclusion_facts`` → the one
-    # collector, one sanitiser, one usability floor, one delivered-text check). The measured
-    # reason: on the recorded 20260809T_059_audio_money run this channel published
-    # "8 абзацев, 4 455 символов" and not one place, while the message beside it named six
-    # fragments for the same paragraphs. ``paragraph_ids_named_in_narration`` collects whom
-    # the audio messages named, so the document message below does not print the same
-    # fragments a second line later.
+    # Spec 070 FR-003…FR-007 (contracts/events.md): the audiobook publishes what it did NOT
+    # narrate and which narrated paragraphs are worth a human look, paragraph by paragraph and
+    # with addresses. It replaces the two loss families of specs 054/056 ("blocks/paragraphs
+    # withheld from the narration"): nothing is withheld any more -- an empty answer, a restored
+    # paragraph and a controlled fallback are narrated from the paragraph's own source with
+    # ``needs_review`` (research R7). ``paragraph_ids_named_in_narration`` collects whom the
+    # audio notice names, so the document notice below does not print the same fragments a
+    # second line later; the document fact itself is still counted whole.
     paragraph_ids_named_in_narration: set[str] = set()
-
-    def _publish_narration_exclusion(
-        *,
-        event_id: str,
-        event_message: str,
-        message_key_family: str,
-        summary: Mapping[str, object],
-        count: int,
-        chars: int,
-        paragraph_records: Sequence[Mapping[str, str]],
-    ) -> None:
-        """One route for both audio-exclusion families (Constitution V, §3.3/§5.5).
-
-        WARNING event + user-facing notice + the counters already on the saved-artifact
-        record. Nothing excluded means NO event and NO notice — a message that is always on
-        the screen is noise, and a notice reading zero is the same defect written down.
-        """
-        if narration_text is None or count <= 0:
-            return
-        facts = build_narration_exclusion_facts(
-            paragraph_records, delivered_markdown=runtime_display_markdown
-        )
-        notice = build_narration_exclusion_notice(
-            facts, message_key_family=message_key_family, count=count, chars=chars
-        )
-        if notice is None:
-            return
-        paragraph_ids_named_in_narration.update(
-            str(paragraph_id)
-            for paragraph_id in cast(Sequence[object], facts.get("paragraph_ids") or ())
-            if str(paragraph_id)
-        )
+    audiobook_summary: dict[str, object] | None = None
+    if is_audiobook_operation(getattr(context, "processing_operation", None)):
+        audiobook_summary = audiobook_narration_summary(state)
+        excluded_count = int(cast(int, audiobook_summary["excluded_count"]))
+        # Once per audiobook run, also at zero: zero is the statement "nothing was excluded".
         dependencies.log_event(
-            logging.WARNING,
-            event_id,
-            event_message,
+            logging.INFO,
+            "audiobook_narration_exclusions",
+            "Абзацы, не вошедшие в озвучку по роли, региону или форме (FR-003).",
             filename=context.uploaded_filename,
-            processing_operation=context.processing_operation,
-            review_data=True,
-            advisory=True,
-            narration_chars=len(narration_text),
-            excluded_anchor_count=len(cast(Sequence[object], facts.get("anchors") or ())),
-            excluded_unanchored_paragraph_count=facts["unanchored_paragraph_count"],
-            excluded_anchors_dropped_not_in_delivered=facts["anchors_dropped_not_in_delivered"],
-            **summary,
+            run_id=getattr(context, "run_id", None),
+            expected_paragraph_count=audiobook_summary["expected_paragraph_count"],
+            excluded_count=excluded_count,
+            excluded_by_reason=audiobook_summary["excluded_by_reason"],
+            excluded_paragraph_ids_by_reason=audiobook_summary["excluded_paragraph_ids_by_reason"],
+            fragment_samples=fragment_samples(state),
         )
-        result_notices.append(notice)
-
-    narration_source_fallback_summary: dict[str, object] = {
-        "excluded_source_fallback_block_count": int(
-            getattr(state, "narration_excluded_source_fallback_block_count", 0) or 0
-        ),
-        "excluded_source_fallback_chars": int(
-            getattr(state, "narration_excluded_source_fallback_chars", 0) or 0
-        ),
-    }
-    _publish_narration_exclusion(
-        event_id="narration_source_fallback_excluded",
-        event_message="Блоки, для которых модель не дала принятого вывода, исключены из narration; в DOCX исходный текст сохранён.",
-        message_key_family="result.narration_source_fallback_excluded",
-        summary=narration_source_fallback_summary,
-        count=int(cast(int, narration_source_fallback_summary["excluded_source_fallback_block_count"])),
-        chars=int(cast(int, narration_source_fallback_summary["excluded_source_fallback_chars"])),
-        paragraph_records=tuple(
-            getattr(state, "narration_excluded_source_fallback_paragraphs", None) or ()
-        ),
-    )
-    # Spec 056 E's per-PARAGRAPH twin of the block-level exclusion above, published the same
-    # way. It was shipped reporting a paragraph count in one WARNING and nothing else: no
-    # characters, so it could not be read against spec 054's metric, and no notice, so the
-    # per-paragraph remedy was quieter than the block-level failure it replaced. A remedy
-    # that makes a loss smaller must not also make it less visible.
-    narration_omitted_paragraph_summary: dict[str, object] = {
-        "excluded_omitted_paragraph_count": int(
-            getattr(state, "narration_excluded_omitted_paragraph_count", 0) or 0
-        ),
-        "excluded_omitted_paragraph_chars": int(
-            getattr(state, "narration_excluded_omitted_chars", 0) or 0
-        ),
-    }
-    _publish_narration_exclusion(
-        event_id="narration_omitted_paragraphs_excluded",
-        event_message="Абзацы, для которых модель не дала принятого перевода, исключены из narration; в DOCX исходный текст сохранён.",
-        message_key_family="result.narration_omitted_paragraphs_excluded",
-        summary=narration_omitted_paragraph_summary,
-        count=int(cast(int, narration_omitted_paragraph_summary["excluded_omitted_paragraph_count"])),
-        chars=int(cast(int, narration_omitted_paragraph_summary["excluded_omitted_paragraph_chars"])),
-        paragraph_records=tuple(
-            getattr(state, "narration_excluded_omitted_paragraphs", None) or ()
-        ),
-    )
+        if narration_text is not None and excluded_count > 0:
+            excluded_by_reason = cast(Mapping[str, int], audiobook_summary["excluded_by_reason"])
+            result_notices.append(
+                {
+                    "kind": "narration",
+                    "level": "info",
+                    "message_key": "result.audiobook_excluded",
+                    "params": {
+                        "count": excluded_count,
+                        "reasons": ", ".join(f"{reason}: {count}" for reason, count in excluded_by_reason.items()),
+                    },
+                }
+            )
+        needs_review_records = needs_review_event_records(state)
+        if needs_review_records:
+            dependencies.log_event(
+                logging.WARNING,
+                "audiobook_needs_review",
+                "Абзацы озвучки, которые стоит проверить; текст озвучки доставлен.",
+                filename=context.uploaded_filename,
+                run_id=getattr(context, "run_id", None),
+                review_data=True,
+                advisory=True,
+                needs_review_paragraph_count=audiobook_summary["needs_review_paragraph_count"],
+                needs_review_by_reason=audiobook_summary["needs_review_by_reason"],
+                records=needs_review_records,
+            )
+        if narration_text is not None and needs_review_records:
+            # The addresses go through the one anchor machinery the document notice uses (one
+            # sanitiser, one usability floor, one "still in the delivered text" check). The text
+            # of a record IS what the DOCX carries for that paragraph (R4), so it is findable.
+            needs_review_paragraphs = [
+                {"paragraph_id": str(record.paragraph_id), "text": str(record.text)}
+                for record in (getattr(state, "narration_paragraphs", None) or ())
+                if isinstance(record, NarrationParagraphRecord) and record.needs_review_reasons
+            ]
+            facts = build_narration_exclusion_facts(
+                needs_review_paragraphs, delivered_markdown=runtime_display_markdown
+            )
+            notice = build_narration_exclusion_notice(
+                facts,
+                message_key_family=AUDIOBOOK_NEEDS_REVIEW_MESSAGE_KEY_FAMILY,
+                count=len(needs_review_paragraphs),
+                chars=sum(len(item["text"]) for item in needs_review_paragraphs),
+            )
+            if notice is not None:
+                paragraph_ids_named_in_narration.update(
+                    str(paragraph_id)
+                    for paragraph_id in cast(Sequence[object], facts.get("paragraph_ids") or ())
+                    if str(paragraph_id)
+                )
+                result_notices.append(notice)
     if narration_text is not None:
         narration_review_findings = _collect_narration_artifact_review_findings(narration_text)
         narration_review_summary = _summarize_narration_review_findings(narration_review_findings)
@@ -1574,27 +1551,16 @@ def finalize_processing_success(
                     artifact_paths=result_artifact_paths,
                     tts_text_path=result_artifact_paths["tts_text_path"],
                     char_count=len(narration_text),
-                    excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
-                    # Same rule as the review counters below: zero is the positive statement
-                    # "no block was dropped for this reason", never an absent field.
-                    **narration_source_fallback_summary,
-                    # Spec 056 E's per-paragraph twin of the two counters above, on the same
-                    # record and under the same rule: a zero states that no paragraph was
-                    # withheld, it is never an absent field.
-                    **narration_omitted_paragraph_summary,
+                    # Spec 070 data-model §6: the denominator and what was delivered against it,
+                    # the boundary check, the deterministic joins with their id pairs, the
+                    # exclusions by reason, the residue before/after repair, ``needs_review`` and
+                    # the repair counters. Every key always present: zero is a statement.
+                    **(audiobook_summary if audiobook_summary is not None else audiobook_narration_summary(state)),
                     # spec 054 Finding 4: the review counters travel with the record of the
                     # SAVED file, so the artifact on disk and the reason to inspect it are
                     # findable from one log line. Zero here is a positive statement that the
                     # text was reviewed and nothing matched — not an absent field.
                     **narration_review_summary,
-                    # spec 054, 2026-08-06: the only counter on this record that reports a
-                    # REPAIR — paragraph boundaries the assembly closed because the sentence
-                    # ran across them. Same rule as every counter above: zero states that
-                    # this book's narration had no sentence broken by a paragraph break, it
-                    # is never an absent field.
-                    joined_sentence_continuation_count=int(
-                        getattr(state, "narration_joined_sentence_continuation_count", 0) or 0
-                    ),
                 )
         except Exception as exc:
             _log_post_delivery_secondary_failure(

@@ -2343,7 +2343,7 @@ def build_acceptance_verdict_notice(
 # out here rather than only spelled at the call sites because the i18n guard collects keys
 # with a regex over ``t("literal")`` and cannot see a key the pipeline assembles from a
 # family and a suffix: it would stay green while the screen printed
-# ``result.narration_omitted_paragraphs_excluded_with_unanchored`` verbatim. Same shape as
+# ``result.audiobook_needs_review_with_unanchored`` verbatim. Same shape as
 # ``ACCEPTANCE_CHECK_KEY_PREFIX`` (FR-B3) — the enumeration lives with the code that emits
 # it, and the guard reads it from there.
 SOURCE_TEXT_DELIVERY_MESSAGE_KEY_FAMILIES: tuple[str, ...] = (
@@ -2359,10 +2359,13 @@ SOURCE_TEXT_DELIVERY_MESSAGE_KEY_SUFFIXES: tuple[str, ...] = (
     "_without_anchors_and_addresses_in_narration",
     "_all_addresses_in_narration",
 )
-NARRATION_EXCLUSION_MESSAGE_KEY_FAMILIES: tuple[str, ...] = (
-    "result.narration_omitted_paragraphs_excluded",
-    "result.narration_source_fallback_excluded",
-)
+# Spec 070 (research R7): the audio channel no longer reports a LOSS. The two families of specs
+# 054/056 ("blocks / paragraphs withheld from the narration") lost their only producer -- the
+# audiobook narrates an empty answer, a restored paragraph and a controlled fallback from the
+# paragraph's own source -- and were removed. What the channel names now is the paragraphs of
+# the narration worth a human look (``needs_review``), through the same anchor machinery.
+AUDIOBOOK_NEEDS_REVIEW_MESSAGE_KEY_FAMILY = "result.audiobook_needs_review"
+NARRATION_EXCLUSION_MESSAGE_KEY_FAMILIES: tuple[str, ...] = (AUDIOBOOK_NEEDS_REVIEW_MESSAGE_KEY_FAMILY,)
 NARRATION_EXCLUSION_MESSAGE_KEY_SUFFIXES: tuple[str, ...] = (
     "",
     "_with_unanchored",
@@ -2494,7 +2497,7 @@ def build_narration_exclusion_facts(
     anchor_limit: int = 8,
     delivered_markdown: str | None = None,
 ) -> dict[str, object]:
-    """Where the paragraphs that never reached the AUDIOBOOK stand in the document.
+    """Where the audiobook paragraphs a reader has to look at stand in the document.
 
     The audio warnings used to publish a quantity and nothing else: the recorded
     ``20260809T_059_audio_money`` run said "8 paragraphs, 4 455 characters" and left the
@@ -2502,17 +2505,13 @@ def build_narration_exclusion_facts(
     whole time — the message next to it, about the DOCX, carried six of them, because the
     same paragraphs are the same paragraphs.
 
-    The records are collected where the exclusion is DECIDED
-    (``block_execution.narration_projection_for_processed_block`` and the controlled-fallback
-    branch beside it), not re-derived here, for the same reason
-    ``_delivered_prose_paragraph_records`` is built there: only that scope knows whether the
-    block was going to the narration at all. Re-deriving the set at finalization would sweep
-    in the 59 blocks the DOCUMENT layer had already excluded on the recorded run and report
-    them as an audio loss.
+    Spec 070 (research R7): the audiobook withholds nothing any more, so the records are the
+    narrated paragraphs marked ``needs_review`` (``pipeline.audiobook_pass``), collected where
+    each paragraph was finalized -- not re-derived here. No loss family feeds this any more.
 
-    ``delivered_markdown`` is the DOCX text, not the narration text, and that is not a slip:
-    the reader is being sent to the document to find what the audio is missing, so the
-    address has to exist THERE.
+    ``delivered_markdown`` is the DOCX text, and that is not a slip: the DOCX of the audiobook
+    carries the narration text of every narrated paragraph (R4), so the address of a paragraph
+    to check exists THERE.
     """
     return _collect_paragraph_anchor_facts(
         (
@@ -2531,16 +2530,14 @@ def build_narration_exclusion_notice(
     count: int,
     chars: int,
 ) -> dict[str, object] | None:
-    """The audiobook loss as a result notice, or ``None`` when nothing left the audiobook.
+    """The audiobook paragraphs to check as a result notice, or ``None`` when there are none.
 
-    ``count`` and ``chars`` are passed in rather than read off ``facts`` because the two
-    families count different UNITS: ``narration_source_fallback_excluded`` counts BLOCKS
-    (a whole block was replaced by its own source and kept out) while its per-paragraph twin
-    counts paragraphs. The anchors are per paragraph in both, which is what the reader
-    searches for; the quantity stays the quantity the run's own counter published, so the
-    number on the screen and the number in ``narration_artifact`` cannot drift apart.
+    ``count`` and ``chars`` are passed in rather than read off ``facts`` so the quantity on the
+    screen is the quantity the run's own counter published (``needs_review_paragraph_count``)
+    and the two cannot drift apart; the anchors are per paragraph, which is what the reader
+    searches for.
 
-    Anti-vacuum, both ways: nothing excluded means NO notice (not a notice reading zero), and
+    Anti-vacuum, both ways: nothing to check means NO notice (not a notice reading zero), and
     a paragraph with no usable fragment is counted in ``{unanchored}`` instead of printed as
     an empty «» — the three templates exist so that neither a zero nor an empty quote is ever
     rendered, exactly as in the document family.

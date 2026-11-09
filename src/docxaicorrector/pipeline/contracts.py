@@ -2,7 +2,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias
 
 from docxaicorrector.document.segments import DocumentSegment
 
@@ -263,46 +263,30 @@ class ProcessingState:
     # itself lives in the block prompt and in its ``.run/run_glossaries/`` artifact.
     run_glossary_status: str = "not_applicable"
     run_glossary_term_count: int = 0
-    narration_chunks: list[str] = field(default_factory=list)
-    excluded_narration_block_count: int = 0
-    # Blocks kept OUT of the narration for a reason the document layer could not know:
-    # the model's output was rejected and the controlled fallback delivered the block's own
-    # SOURCE text instead (``pipeline/block_execution.py``). The DOCX keeps that source —
-    # a human reading a document sees an untranslated paragraph and fixes it — but nothing
-    # stands between the narration artifact and the listener, so it does not go to audio.
-    # Counted separately from ``excluded_narration_block_count`` (the document-layer
-    # ``narration_include`` decision) because the two answer different questions and the
-    # spec-054 exclusion measurements are keyed on the latter.
-    narration_excluded_source_fallback_block_count: int = 0
-    narration_excluded_source_fallback_chars: int = 0
-    # Spec 056 E, the same loss one level down: individual PARAGRAPHS the model returned
-    # nothing for. Their source stands in the DOCX and is kept out of the narration. The
-    # characters are counted, not only the paragraphs, because spec 054's metric is the
-    # share of source-language CHARACTERS in the artifact and a paragraph count cannot be
-    # compared against it — one omitted paragraph stood for 1 378 characters on the
-    # 2026-08-04 run.
-    narration_excluded_omitted_paragraph_count: int = 0
-    narration_excluded_omitted_chars: int = 0
-    # 2026-08-09: the two families above, ADDRESSABLY. A quantity without a place is still a
-    # hunt — the recorded 20260809T_059_audio_money run published "8 paragraphs, 4 455
-    # characters" against a 512 458-character book — so each excluded paragraph keeps its
-    # ``{paragraph_id, text}``. The blocks family is counted in BLOCKS and addressed in
-    # PARAGRAPHS: the reader searches the DOCX for a passage, never for a block index. Both
-    # lists are written where the exclusion is DECIDED (``block_execution``), because only
-    # there is it known that the block was headed for the narration at all — re-deriving them
-    # at finalization would sweep in the 59 blocks the document layer had already excluded on
-    # that run. Read once, by ``quality_gate.build_narration_exclusion_facts``.
-    narration_excluded_source_fallback_paragraphs: list[dict[str, str]] = field(
-        default_factory=list
-    )
-    narration_excluded_omitted_paragraphs: list[dict[str, str]] = field(default_factory=list)
+    # Spec 070 FR-003…FR-007 (data-model §5): the audiobook narration, paragraph by paragraph.
+    # ``translate`` and ``edit`` never write any of these -- they produce no narration (FR-002).
+    # One record per narrated paragraph (``pipeline.audiobook_pass.NarrationParagraphRecord``), in
+    # block and paragraph order; the ``.tts.txt`` is assembled from them by id and role.
+    narration_paragraphs: list[Any] = field(default_factory=list)
+    # The denominator of FR-007: the narrated ids, written BEFORE the model answers, so an empty
+    # answer can never shrink it.
+    narration_expected_paragraph_ids: list[str] = field(default_factory=list)
+    # Every FR-003 exclusion with its address: ``{paragraph_id, block_index, reason, sample}``.
+    narration_exclusions: list[dict[str, object]] = field(default_factory=list)
+    # The one-call repair of FR-006, totalled over the run (``audiobook_pass.record_repair_outcome``).
+    narration_repair_counters: dict[str, int] = field(default_factory=dict)
     # Spec 054, 2026-08-06: paragraph boundaries the assembly closed because the sentence
     # ran ON across them — 81 of the 83 measured on the four-book corpus arrive that way
     # from IMPORT, where a PDF line wrap became a paragraph break. Nothing is added or lost,
-    # only a ``\n\n`` becomes a space, so this is the one narration counter that reports a
-    # REPAIR rather than a loss. It is published all the same, and a zero is the statement
-    # "this run found no sentence running across a paragraph break".
+    # only a ``\n\n`` becomes a space. Since spec 070 FR-007 each join also keeps the PAIR of
+    # paragraph ids it closed, and a zero is the statement "no sentence ran across a break".
     narration_joined_sentence_continuation_count: int = 0
+    narration_joined_paragraph_id_pairs: list[tuple[str, str]] = field(default_factory=list)
+    # ``"ok"`` / ``"mismatch"`` once the ``.tts.txt`` was assembled and parsed back into its
+    # records (``narration_postprocess.assemble_narration_records``); ``None`` before.
+    narration_paragraph_boundary_check: str | None = None
+    # The ``repair`` variant of the audiobook system prompt, built once per run.
+    audiobook_repair_system_prompt: str | None = None
     # Spec 059 FR-A8, revised 2026-08-09: one entry per DELIVERED block that shipped prose in
     # the source language, each entry a list of ``{paragraph_id, text}`` for the block's prose
     # paragraphs. It exists because the alarm channel cannot see this class any other way:

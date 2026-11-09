@@ -177,7 +177,6 @@ def _make_state():
         processed_chunks=["текст"],
         generated_paragraph_registry=[],
         started_at=time.perf_counter(),
-        excluded_narration_block_count=0,
     )
 
 

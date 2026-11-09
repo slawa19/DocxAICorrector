@@ -229,14 +229,6 @@ def _run(payload: SimpleNamespace, *, model_answer: str | None = None, classific
     dependencies, emitters, events = _harness()
     state = SimpleNamespace(
         processed_chunks=[],
-        narration_chunks=[],
-        excluded_narration_block_count=0,
-        narration_excluded_source_fallback_block_count=0,
-        narration_excluded_source_fallback_chars=0,
-        narration_excluded_source_fallback_paragraphs=[],
-        narration_excluded_omitted_paragraph_count=0,
-        narration_excluded_omitted_chars=0,
-        narration_excluded_omitted_paragraphs=[],
         untranslated_prose_delivered_paragraphs=[],
         generated_paragraph_registry=[],
         started_at=0.0,
@@ -323,9 +315,8 @@ def test_a_reference_list_block_costs_no_model_call_and_is_no_fallback(monkeypat
     assert run.snapshot["back_matter_source_paragraph_counts"] == {"references": 2}
     assert run.snapshot["back_matter_translated_paragraph_counts"] == {}
     assert run.snapshot["back_matter_mixed_block_count"] == 0
-    # The back matter is outside the narration by the document layer (spec 054), as before.
-    assert run.state.narration_chunks == []
-    assert run.state.excluded_narration_block_count == 1
+    # Spec 070 FR-002: ``translate`` builds no narration at all.
+    assert not getattr(run.state, "narration_paragraphs", None)
 
 
 def test_anti_vacuum_a_prose_paragraph_sends_the_block_to_the_model_and_its_loss_is_announced(monkeypatch) -> None:
@@ -484,12 +475,26 @@ def test_the_source_text_delivery_channel_does_not_count_a_policy_kept_entry() -
     assert sum(status_counts.values()) == 0
 
 
-def test_the_standalone_narration_projection_neither_speaks_nor_books_it_as_a_loss() -> None:
-    text, withheld = block_execution.narration_projection_for_processed_block(
-        _kept_chunk(), processing_operation="translate"
+def _audiobook_records_of(chunk: MarkerPreservedBlockText) -> tuple[object, ...]:
+    """Spec 070: the audiobook pass is the only narration left; feed it the delivered block."""
+    from docxaicorrector.pipeline.audiobook_pass import audiobook_block_paragraph_inputs, finalize_audiobook_block
+
+    dispositions = chunk.paragraph_dispositions
+    payload = SimpleNamespace(
+        paragraph_ids=[item.paragraph_id for item in dispositions],
+        target_text_with_markers="\n\n".join(f"[[DOCX_PARA_{item.paragraph_id}]]\n{item.text}" for item in dispositions),
     )
-    assert text == ""
-    assert withheld == []
+    return finalize_audiobook_block(
+        block_index=1,
+        paragraphs=audiobook_block_paragraph_inputs(payload=payload, processed_chunk=chunk),
+        repair=None,
+    ).records
+
+
+def test_a_paragraph_kept_by_policy_is_never_narrated_nor_booked_as_a_loss() -> None:
+    """``policy_kept_source`` means "in the DOCX, never in the narration, not a loss": the
+    audiobook pass leaves it out, and no ``needs_review`` record is made for it."""
+    assert _audiobook_records_of(_kept_chunk()) == ()
 
 
 # --- replay over the recorded 2026-11-07 runs (opt-in evidence, not a CI test) -----------------
@@ -876,7 +881,7 @@ def test_without_markers_the_decision_is_per_block(monkeypatch, narration_includ
     assert len(written) == expected_fallbacks
     assert run.snapshot["controlled_block_fallback_block_count"] == expected_fallbacks
     assert run.snapshot["back_matter_model_kept_fallback_block_count"] == 1 - expected_fallbacks
-    assert run.state.narration_chunks == []
+    assert not getattr(run.state, "narration_paragraphs", None)
 
 
 def test_a_model_kept_reference_is_neither_narrated_nor_a_loss_in_either_channel() -> None:
@@ -884,10 +889,8 @@ def test_a_model_kept_reference_is_neither_narrated_nor_a_loss_in_either_channel
     kept = block_execution.model_kept_apparatus(context=_TRANSLATE, payload=payload, processed_chunk=_echo(payload))
     assert kept is not None
 
-    text, withheld = block_execution.narration_projection_for_processed_block(
-        kept.processed_chunk, processing_operation="translate"
-    )
-    assert (text, withheld) == ("", [])
+    assert isinstance(kept.processed_chunk, MarkerPreservedBlockText)
+    assert _audiobook_records_of(kept.processed_chunk) == ()
     facts = quality_gate.build_source_text_delivery_facts([kept.processed_chunk])
     assert facts["block_count"] == 0
 
