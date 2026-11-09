@@ -167,6 +167,9 @@ _ALLOWED_SET_STATE_EVENT_KEYS = {
     "last_background_error",
     "last_error",
     "latest_controlled_block_fallback_artifact",
+    # Spec 069 FR-007: the run's actual text-stage cost, written once by the pipeline next to
+    # the estimate-vs-actual event. The snapshot it is read against is frozen by the UI at Start.
+    "latest_cost_actual",
     "latest_docx_bytes",
     "latest_delivery_disposition",
     "latest_markdown",
@@ -1694,6 +1697,8 @@ def build_result_bundle(
     delivery_disposition: Mapping[str, object] | None = None,
     result_notices: Sequence[Mapping[str, object]] | None = None,
     controlled_block_fallback_artifact: str | None = None,
+    cost_estimate_snapshot: Mapping[str, object] | None = None,
+    cost_actual: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     resolved_notices = [dict(notice) for notice in result_notices or ()]
     if delivery_disposition is None:
@@ -1723,7 +1728,31 @@ def build_result_bundle(
         # by ``block_execution`` and read by nothing. It travels with the bundle so the
         # result screen can point at it — and only when there is a reason to.
         "controlled_block_fallback_artifact": controlled_block_fallback_artifact,
+        # spec 069 FR-007: the estimate FROZEN at Start and the actual of the same run. A
+        # bundle without a snapshot (an older result, or a run that was never estimated)
+        # carries None and the result screen shows no estimate -- never the current one.
+        "cost_estimate_snapshot": dict(cost_estimate_snapshot) if cost_estimate_snapshot is not None else None,
+        "cost_actual": dict(cost_actual) if cost_actual is not None else None,
     }
+
+
+def _cost_estimate_for_result(
+    *, processing_operation: str, source_token: str
+) -> tuple[Mapping[str, object] | None, Mapping[str, object] | None]:
+    """The frozen snapshot and actual of the run that produced the current result, or (None, None).
+
+    The UI writes the snapshot into session state at Start and clears the actual; the pipeline
+    writes the actual when the run ends. Both are dropped when the snapshot belongs to another
+    source or the result is not a translation, so a stale value can never decorate a result.
+    """
+    snapshot = st.session_state.get("latest_cost_estimate_snapshot")
+    if processing_operation != "translate" or not isinstance(snapshot, Mapping):
+        return None, None
+    document = snapshot.get("document")
+    if not isinstance(document, Mapping) or str(document.get("source_token") or "") != source_token:
+        return None, None
+    actual = st.session_state.get("latest_cost_actual")
+    return snapshot, actual if isinstance(actual, Mapping) else None
 
 
 def should_cache_completed_source(*, source_bytes: bytes) -> bool:
@@ -1775,8 +1804,14 @@ def get_current_result_bundle() -> dict[str, object] | None:
             cast(Mapping[str, object] | None, quality_warning),
         ):
             result_notices = [dict(latest_result_notice)]
+    cost_estimate_snapshot, cost_actual = _cost_estimate_for_result(
+        processing_operation=processing_operation, source_token=get_latest_source_token()
+    )
+
     def _render_bundle(disposition: Mapping[str, object] | None) -> dict[str, object]:
         return build_result_bundle(
+            cost_estimate_snapshot=cost_estimate_snapshot,
+            cost_actual=cost_actual,
             source_name=get_latest_source_name(),
             source_token=get_latest_source_token(),
             docx_bytes=latest_docx_bytes,

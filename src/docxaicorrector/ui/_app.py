@@ -1,3 +1,4 @@
+import copy
 import logging
 import threading
 import time
@@ -45,6 +46,21 @@ from docxaicorrector.ui.app_runtime import (
     start_background_processing,
 )
 from docxaicorrector.core.logger import fail_critical, log_event, present_error
+from docxaicorrector.core.translation_modes import (
+    EffectiveTranslationConfig,
+    apply_effective_translation_config,
+    resolve_effective_translation_config,
+)
+from docxaicorrector.pipeline.cost_estimate import (
+    STAGE_GLOSSARY,
+    STAGE_POLISH,
+    STAGE_TEXT,
+    EstimateInput,
+    PassSpec,
+    estimate_text_stages,
+    load_coefficient_table,
+)
+from docxaicorrector.pipeline.price_list import PriceList, get_price_list
 from docxaicorrector.processing.preparation import resolve_prepared_cache_client_identity
 from docxaicorrector.processing.processing_runtime import (
     freeze_uploaded_file,
@@ -91,6 +107,8 @@ from docxaicorrector.runtime.state import (
 )
 from docxaicorrector.text.transform_assessment import TextTransformAssessment, assess_text_transform_excerpt, build_text_transform_warnings
 from docxaicorrector.ui._ui import (
+    TRANSLATION_COST_ESTIMATES_KEY,
+    TRANSLATION_MODE_OPTIONS,
     get_source_language_widget_value,
     get_target_language_label,
     get_text_operation_label,
@@ -122,7 +140,12 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
     time_fn=time.monotonic,
 )
 
-SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool, str, str, str]
+SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool, str, str, str, str]
+
+# How long a looked-up price list (or the lack of one) is reused by the estimate before
+# ``get_price_list`` is asked again: it may reach for the network, a rerun must not.
+_PRICE_LIST_RECHECK_SECONDS = 300.0
+_PRICE_LIST_SESSION_KEY = "translation_price_list_lookup"
 
 
 def _cached_load_app_config():
@@ -304,21 +327,173 @@ def _start_background_processing(
     )
 
 
+def _priced_model_id(model: str) -> str:
+    """The OpenRouter model id the coefficient table and the price list are keyed by."""
+    return model[len("openrouter:"):] if model.startswith("openrouter:") else model
+
+
+def _translation_mode_passes(effective: EffectiveTranslationConfig) -> list[PassSpec]:
+    """Priced passes of a mode: glossary + translation on the first-pass model, then the polish."""
+    first = effective.first_pass
+    first_model = _priced_model_id(first.model)
+    passes = [
+        PassSpec("first", first_model, STAGE_GLOSSARY, first.reasoning_effort, None),
+        PassSpec("first", first_model, STAGE_TEXT, first.reasoning_effort, first.editorial_intensity),
+    ]
+    polish = effective.polish_pass
+    if polish is not None:
+        passes.append(
+            PassSpec(
+                "polish",
+                _priced_model_id(polish.model),
+                STAGE_POLISH,
+                polish.reasoning_effort,
+                polish.editorial_intensity,
+            )
+        )
+    return passes
+
+
+def _lookup_price_list() -> PriceList | None:
+    """The price list, looked up at most once per ``_PRICE_LIST_RECHECK_SECONDS`` per session.
+
+    ``get_price_list`` may reach the network (5 s timeout) when its cache is stale and offline;
+    a Streamlit rerun must never pay that on every interaction, a missing list included.
+    """
+    now = time.monotonic()
+    remembered = st.session_state.get(_PRICE_LIST_SESSION_KEY)
+    if isinstance(remembered, dict) and now - float(remembered.get("checked_at", 0.0)) < _PRICE_LIST_RECHECK_SECONDS:
+        return cast(PriceList | None, remembered.get("value"))
+    try:
+        value = get_price_list()
+    except Exception as exc:  # noqa: BLE001 - an unreadable list is "price unknown", not a crash
+        log_event(logging.WARNING, "price_list_lookup_failed", "Прайс-лист недоступен для оценки.", error=str(exc))
+        value = None
+    st.session_state[_PRICE_LIST_SESSION_KEY] = {"checked_at": now, "value": value}
+    return value
+
+
+def _discard_translation_cost_estimates() -> bool:
+    """Forget the session estimates (a new or missing document); True when there were any."""
+    return st.session_state.pop(TRANSLATION_COST_ESTIMATES_KEY, None) is not None
+
+
+def _refresh_translation_cost_estimates(
+    *,
+    app_config: Mapping[str, object],
+    prepared_run_context: object,
+    uploaded_file_token: str,
+    source_language: str,
+    target_language: str,
+    source_text: str,
+) -> bool:
+    """(Re)compute the estimate of every translate mode for the prepared document; True if it changed.
+
+    The session entry is keyed by ``(file_token, prepared_source_key, source->target,
+    coefficients_version, price_list_date)``: a change of any component recomputes it, an unchanged
+    key does no work. The sidebar (drawn BEFORE the document is known) reads the entry on the next
+    rerun, which the caller triggers when this returns True.
+    """
+    table = load_coefficient_table()
+    price_list = _lookup_price_list()
+    prepared_source_key = str(getattr(prepared_run_context, "prepared_source_key", "") or "")
+    key = [
+        uploaded_file_token,
+        prepared_source_key,
+        f"{source_language}->{target_language}",
+        table.version,
+        price_list.fetched_at if price_list is not None else None,
+    ]
+    existing = st.session_state.get(TRANSLATION_COST_ESTIMATES_KEY)
+    if isinstance(existing, dict) and existing.get("key") == key:
+        return False
+
+    jobs = cast(list[Mapping[str, object]], list(getattr(prepared_run_context, "jobs", []) or []))
+    llm_job_count = sum(1 for job in jobs if str(job.get("job_kind", "llm") or "llm") == "llm")
+    paragraph_count = len(getattr(prepared_run_context, "paragraphs", []) or [])
+    snapshots: dict[str, dict[str, object]] = {}
+    for mode in TRANSLATION_MODE_OPTIONS:
+        effective = resolve_effective_translation_config(
+            app_config,
+            processing_operation="translate",
+            requested_mode=mode,
+            requested_model=None,
+            requested_intensity=None,
+            origin="ui",
+        )
+        if effective is None:
+            continue
+        estimate = estimate_text_stages(
+            EstimateInput(
+                mode=effective.mode,
+                passes=_translation_mode_passes(effective),
+                llm_job_count=llm_job_count,
+                paragraph_count=paragraph_count,
+                source_chars=len(source_text),
+                source_language=source_language,
+                target_language=target_language,
+                source_token=uploaded_file_token,
+                prepared_source_key=prepared_source_key or None,
+            ),
+            table,
+            price_list,
+        )
+        snapshots[mode] = estimate.to_snapshot()
+    st.session_state[TRANSLATION_COST_ESTIMATES_KEY] = {"key": key, "snapshots": snapshots}
+    log_event(
+        logging.DEBUG,
+        "cost_estimate_computed",
+        "Посчитана оценка цены режимов перевода.",
+        source_token=uploaded_file_token,
+        coefficients_version=table.version,
+        price_list_date=key[4],
+        modes={
+            mode: {"upper": item.get("total_upper_usd"), "lower": item.get("total_lower_usd")}
+            for mode, item in snapshots.items()
+        },
+    )
+    return True
+
+
+def _freeze_cost_estimate_snapshot(
+    effective: EffectiveTranslationConfig | None, uploaded_file_token: str
+) -> dict[str, object] | None:
+    """The estimate of the chosen mode, copied out of the session at Start (FR-007).
+
+    ``None`` when the run is not a translation or no estimate exists for THIS document; a run
+    never inherits an estimate computed for another file.
+    """
+    if effective is None:
+        return None
+    state = st.session_state.get(TRANSLATION_COST_ESTIMATES_KEY)
+    if not isinstance(state, dict):
+        return None
+    key = state.get("key")
+    if not isinstance(key, list) or not key or key[0] != uploaded_file_token:
+        return None
+    snapshots = state.get("snapshots")
+    snapshot = snapshots.get(effective.mode) if isinstance(snapshots, dict) else None
+    return copy.deepcopy(snapshot) if isinstance(snapshot, dict) else None
+
+
 def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
-    # Legacy (shorter) contracts get an empty editorial_intensity and empty image-model
-    # choices (spec 062), which the caller reads as "not chosen in the sidebar" and
-    # therefore leaves the loaded config defaults alone.
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 12:
+    # Legacy (shorter) contracts get an empty editorial_intensity, empty image-model
+    # choices (spec 062) and an empty translation mode (spec 069), which the caller reads
+    # as "not chosen in the sidebar" and therefore leaves the loaded config defaults alone
+    # (an empty mode resolves to ``translation_mode_default``).
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 13:
         return sidebar_result
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 12:
+        return (*sidebar_result, "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 10:
-        return (*sidebar_result, "", "")
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
         return (*sidebar_result, "", "", "")
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
+        return (*sidebar_result, "", "", "", "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
-        return (*sidebar_result, False, "", "", "")
+        return (*sidebar_result, False, "", "", "", "")
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 5:
         model, chunk_size, max_retries, image_mode, keep_all_image_variants = sidebar_result
-        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False, "", "", ""
+        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False, "", "", "", ""
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
@@ -715,6 +890,10 @@ def _render_completed_result_view(result: Mapping[str, object]) -> None:
         controlled_block_fallback_artifact=cast(
             str | None, result.get("controlled_block_fallback_artifact")
         ),
+        # The estimate FROZEN at Start and the actual of the same run, both from the bundle: the
+        # current sidebar estimate is deliberately not an input here.
+        cost_estimate_snapshot=cast(Mapping[str, object] | None, result.get("cost_estimate_snapshot")),
+        cost_actual=cast(Mapping[str, object] | None, result.get("cost_actual")),
     )
 
 
@@ -825,6 +1004,7 @@ def main() -> None:
         editorial_intensity,
         image_vision_model,
         image_draw_model,
+        translation_mode,
     ) = _resolve_sidebar_settings(render_sidebar(app_config))
     # Spec 062: the two image-model selectors set the six image roles for this run; a
     # per-role pin from .env / config.toml still wins (core.config.resolve_image_role_models).
@@ -843,6 +1023,21 @@ def main() -> None:
     app_config["audiobook_postprocess_enabled"] = audiobook_postprocess_enabled
     if editorial_intensity:
         app_config["editorial_intensity_default"] = editorial_intensity
+    # Spec 069 FR-001: for "translate" the mode wins over the model and depth, through the SAME
+    # resolver the runner uses; no explicit model/intensity is requested because the UI no longer
+    # offers them for translation. Edit / audiobook resolve to None and keep their config as is
+    # (the sidebar model and intensity above), so a mode never leaks into them.
+    effective_translation = resolve_effective_translation_config(
+        app_config,
+        processing_operation=processing_operation,
+        requested_mode=translation_mode or None,
+        requested_model=None,
+        requested_intensity=None,
+        origin="ui",
+    )
+    app_config = apply_effective_translation_config(app_config, effective_translation)
+    if effective_translation is not None:
+        model = effective_translation.first_pass.model
 
     processing_active = _processing_worker_is_active()
     processing_outcome = get_processing_outcome()
@@ -903,6 +1098,9 @@ def main() -> None:
         and current_result is None
         and not has_persisted_source()
     ):
+        if _discard_translation_cost_estimates():
+            # The sidebar above was drawn with the price of a document that is gone.
+            st.rerun()
         render_run_log()
         render_image_validation_summary()
         render_partial_result()
@@ -948,6 +1146,9 @@ def main() -> None:
                 processing_operation=processing_operation,
                 app_config=app_config,
             )
+            if _discard_translation_cost_estimates():
+                # A new document: the price shown in the sidebar belongs to the previous one.
+                st.rerun()
             render_preparation_panel()
             return
         if is_preparation_failed_for_marker(preparation_request_marker):
@@ -1054,6 +1255,32 @@ def main() -> None:
     image_assets = prepared_run_context.image_assets
     jobs = prepared_run_context.jobs
     source_text = prepared_run_context.source_text
+    if processing_operation == "translate":
+        # The sidebar is drawn before the document is known, so the estimate computed here reaches
+        # its labels on the next run: one immediate rerun, only when the estimate actually changed.
+        # An estimate that cannot be built (a model without coefficients, an unreadable list) must
+        # not take the screen down: the labels then say "цена неизвестна".
+        try:
+            estimates_changed = _refresh_translation_cost_estimates(
+                app_config=app_config,
+                prepared_run_context=prepared_run_context,
+                uploaded_file_token=uploaded_file_token,
+                source_language=source_language,
+                target_language=target_language,
+                source_text=source_text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                logging.WARNING,
+                "cost_estimate_failed",
+                "Оценка цены режимов перевода не построена.",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            estimates_changed = _discard_translation_cost_estimates()
+        if estimates_changed:
+            st.rerun()
+    else:
+        _discard_translation_cost_estimates()
     assessment = _assess_text_transform(
         source_text=source_text,
         target_language=target_language,
@@ -1145,6 +1372,15 @@ def main() -> None:
     )
     document_context_prompt = _build_document_context_prompt(prepared_run_context=prepared_run_context)
     if action == "start":
+        # Spec 069 FR-007: Start FREEZES the estimate of the chosen mode. The pipeline compares the
+        # run's actual with this snapshot, and the result screen shows it next to the actual; a
+        # later change of mode, file or price list cannot rewrite it. A start without a snapshot
+        # clears the previous one, so an old estimate never decorates this run's result.
+        cost_estimate_snapshot = _freeze_cost_estimate_snapshot(effective_translation, uploaded_file_token)
+        if cost_estimate_snapshot is not None:
+            app_config["cost_estimate_snapshot"] = cost_estimate_snapshot
+        st.session_state["latest_cost_estimate_snapshot"] = cost_estimate_snapshot
+        st.session_state["latest_cost_actual"] = None
         _start_background_processing(
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,

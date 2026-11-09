@@ -209,6 +209,38 @@ def test_render_markdown_preview_hides_placeholder_only_content(monkeypatch):
     assert selectbox_calls == []
 
 
+def _with_translate_modes(monkeypatch, config):
+    """Spec 069: "translate" draws a mode radio and resolves the mode through the config tables.
+
+    Adds the two mode tables to a plain-dict sidebar config and patches ``st.sidebar.radio``
+    to return the first option (``standard``); returns the recorded radio calls.
+    """
+    from docxaicorrector.core.translation_modes import TranslationModeSpec, TranslationPassSpec
+
+    config["translation_mode_default"] = "standard"
+    config["translation_modes"] = {
+        "standard": TranslationModeSpec(
+            name="standard",
+            first_pass=TranslationPassSpec(model="openrouter:google/gemini-3.1-flash-lite-preview", editorial_intensity="literary"),
+            polish_pass=TranslationPassSpec(model="openrouter:anthropic/claude-haiku-5.5"),
+        ),
+        "quality": TranslationModeSpec(
+            name="quality",
+            first_pass=TranslationPassSpec(
+                model="openrouter:google/gemini-3.7-flash", editorial_intensity="conservative", reasoning_effort="low"
+            ),
+        ),
+    }
+    radio_calls = []
+
+    def fake_radio(label, options, index=0, format_func=None, help=None, key=None, **kwargs):
+        radio_calls.append({"label": label, "options": tuple(options), "index": index, "key": key})
+        return options[index]
+
+    monkeypatch.setattr(ui.st.sidebar, "radio", fake_radio)
+    return radio_calls
+
+
 def _mirror_bare_sidebar(
     monkeypatch,
     *,
@@ -296,6 +328,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         "literary",
         "gpt-5.4-mini",
         "gpt-image-2.5-flare",
+        "",
     )
     assert sidebar_calls[:4] == [
         ("header", "Настройки"),
@@ -528,6 +561,7 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
     monkeypatch.setattr(ui.st.sidebar, "checkbox", fake_checkbox)
     _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox, checkbox=fake_checkbox)
 
+    _with_translate_modes(monkeypatch, config)
     result = ui.render_sidebar(config)
 
     assert result == (
@@ -543,6 +577,7 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
         "literary",
         "gpt-5.4-mini",
         "gpt-image-2.5-flare",
+        "standard",
     )
     assert checkbox_calls == [
         (
@@ -615,9 +650,11 @@ def test_render_sidebar_translate_mode_does_not_add_extra_caption(monkeypatch):
     monkeypatch.setattr(ui.st.sidebar, "checkbox", fake_checkbox)
     _mirror_bare_sidebar(monkeypatch, selectbox=fake_selectbox, caption=fake_caption, checkbox=fake_checkbox)
 
+    _with_translate_modes(monkeypatch, config)
     ui.render_sidebar(config)
 
-    assert captions == [ui.IMAGE_MODE_DESCRIPTIONS["safe"]]
+    # The mode radio adds exactly one caption (no price before a document is prepared); nothing else is new.
+    assert captions == [ui.t("sidebar.translation_mode_price_pending"), ui.IMAGE_MODE_DESCRIPTIONS["safe"]]
     assert checkbox_calls[0][0] == "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)"
     assert checkbox_calls[1][0] == "Сохранять все варианты изображений"
     assert selectbox_calls[0][1] == (
@@ -718,7 +755,7 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
     result = ui.render_sidebar(config)
 
     # no_change calls no image model, so neither image-model selector is drawn ("").
-    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False, "literary", "", "")
+    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False, "literary", "", "", "")
     assert checkbox_calls == [
         (
             "Сохранять все варианты изображений",
@@ -831,6 +868,8 @@ def test_render_sidebar_hides_editorial_intensity_outside_edit_and_ignores_stale
     config = _editorial_intensity_sidebar_config(processing_operation)
     selectbox_calls = _patch_editorial_intensity_sidebar(monkeypatch, session_state=session_state)
 
+    if processing_operation == "translate":
+        _with_translate_modes(monkeypatch, config)
     result = ui.render_sidebar(config)
 
     assert [call for call in selectbox_calls if call["key"] == "sidebar_editorial_intensity"] == []
@@ -2096,11 +2135,11 @@ def test_render_sidebar_image_model_selectors_follow_the_image_mode(monkeypatch)
     compare, compare_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="compare_all")
 
     assert "sidebar_image_vision_model" not in no_change_keys and "sidebar_image_draw_model" not in no_change_keys
-    assert no_change[10:] == ("", "")
+    assert no_change[10:12] == ("", "")
     assert "sidebar_image_vision_model" not in safe_keys and "sidebar_image_draw_model" not in safe_keys
-    assert safe[10:] == ("", "")
+    assert safe[10:12] == ("", "")
     assert "sidebar_image_vision_model" in compare_keys and "sidebar_image_draw_model" in compare_keys
-    assert compare[10:] == ("gpt-5.4-mini", "gpt-image-2.5-flare")
+    assert compare[10:12] == ("gpt-5.4-mini", "gpt-image-2.5-flare")
 
 
 def test_render_sidebar_returns_the_chosen_image_models_and_preselects_the_config_default(monkeypatch):
@@ -2117,7 +2156,7 @@ def test_render_sidebar_returns_the_chosen_image_models_and_preselects_the_confi
         choices={"sidebar_image_draw_model": "gpt-image-2.5-sunburst"},
     )
 
-    assert result[10:] == ("gpt-6.1-sol", "gpt-image-2.5-sunburst")
+    assert result[10:12] == ("gpt-6.1-sol", "gpt-image-2.5-sunburst")
 
 
 def test_render_sidebar_says_when_a_per_role_pin_outranks_the_selectors(monkeypatch):

@@ -1001,6 +1001,9 @@ def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(m
         # Spec 059 FR-B6: the controlled-block fallback dump is READ off session state now
         # (it used to be written by ``block_execution`` and consumed by nothing).
         "controlled_block_fallback_artifact": None,
+        # Spec 069 FR-007: no snapshot was frozen for this result, so it carries no estimate.
+        "cost_estimate_snapshot": None,
+        "cost_actual": None,
     }
 
 
@@ -1024,6 +1027,8 @@ def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
         "delivery_disposition": {"status": "accepted"},
         "result_notices": [],
         "controlled_block_fallback_artifact": None,
+        "cost_estimate_snapshot": None,
+        "cost_actual": None,
     }
 
 
@@ -3787,3 +3792,116 @@ def test_native_docx_with_the_bridge_cnf_style_value_yields_no_cell() -> None:
     assert not any(paragraph.is_pdf_table_cell for paragraph in paragraphs)
     assert paragraphs[0].text == "NORTH WING south wing"
     assert paragraphs[1].role == "heading"
+
+
+# ---- spec 069 FR-007: the estimate frozen at Start travels with the result ------------------
+
+_SNAPSHOT_FOR_TOKEN = {"mode": "quality", "total_upper_usd": 1.9, "document": {"source_token": "report.docx:3:abc"}}
+_ACTUAL = {"total_usd": 1.8, "run_complete": True, "cost_accounting_complete": True}
+
+
+def _translate_session(**overrides):
+    values = dict(
+        latest_docx_bytes=b"docx",
+        latest_markdown="md",
+        latest_processing_operation="translate",
+        latest_cost_estimate_snapshot=_SNAPSHOT_FOR_TOKEN,
+        latest_cost_actual=_ACTUAL,
+    )
+    values.update(overrides)
+    return SessionState(**values)
+
+
+def _patch_bundle_identity(monkeypatch, session_state, *, operation="translate"):
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:abc")
+    monkeypatch.setattr(processing_runtime, "get_latest_processing_operation", lambda: operation)
+
+
+def test_build_result_bundle_without_the_new_arguments_carries_no_estimate():
+    bundle = processing_runtime.build_result_bundle(
+        source_name="report.docx", source_token="tok", docx_bytes=b"d", markdown_text="m"
+    )
+
+    assert bundle["cost_estimate_snapshot"] is None and bundle["cost_actual"] is None
+
+
+def test_build_result_bundle_carries_the_snapshot_and_the_actual_as_copies():
+    snapshot = {"mode": "standard", "total_upper_usd": 1.1}
+    actual = {"total_usd": 0.9}
+
+    bundle = processing_runtime.build_result_bundle(
+        source_name="report.docx",
+        source_token="tok",
+        docx_bytes=b"d",
+        markdown_text="m",
+        cost_estimate_snapshot=snapshot,
+        cost_actual=actual,
+    )
+
+    assert bundle["cost_estimate_snapshot"] == snapshot and bundle["cost_actual"] == actual
+    snapshot["total_upper_usd"] = 99.0
+    assert cast(dict, bundle["cost_estimate_snapshot"])["total_upper_usd"] == 1.1  # frozen, not a live reference
+
+
+def test_get_current_result_bundle_reads_the_frozen_snapshot_and_the_actual_of_a_translation(monkeypatch):
+    _patch_bundle_identity(monkeypatch, _translate_session())
+
+    bundle = processing_runtime.get_current_result_bundle()
+
+    assert bundle is not None
+    assert bundle["cost_estimate_snapshot"] == _SNAPSHOT_FOR_TOKEN
+    assert bundle["cost_actual"] == _ACTUAL
+
+
+def test_a_snapshot_of_another_source_never_decorates_this_result(monkeypatch):
+    stale = {"mode": "quality", "document": {"source_token": "another.docx:9:zzz"}}
+    _patch_bundle_identity(monkeypatch, _translate_session(latest_cost_estimate_snapshot=stale))
+
+    bundle = processing_runtime.get_current_result_bundle()
+
+    assert bundle is not None
+    assert bundle["cost_estimate_snapshot"] is None and bundle["cost_actual"] is None
+
+
+def test_an_edit_result_never_carries_a_translation_estimate(monkeypatch):
+    _patch_bundle_identity(monkeypatch, _translate_session(latest_processing_operation="edit"), operation="edit")
+
+    bundle = processing_runtime.get_current_result_bundle()
+
+    assert bundle is not None
+    assert bundle["cost_estimate_snapshot"] is None and bundle["cost_actual"] is None
+
+
+def test_a_snapshot_without_an_actual_yet_is_carried_alone(monkeypatch):
+    _patch_bundle_identity(monkeypatch, _translate_session(latest_cost_actual=None))
+
+    bundle = processing_runtime.get_current_result_bundle()
+
+    assert bundle is not None
+    assert bundle["cost_estimate_snapshot"] == _SNAPSHOT_FOR_TOKEN and bundle["cost_actual"] is None
+
+
+def test_drain_processing_events_retains_the_pipelines_cost_actual(monkeypatch):
+    session_state = SessionState(
+        processing_event_queue=queue.Queue(),
+        processing_worker=object(),
+        processing_stop_event=object(),
+        processing_stop_requested=True,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    log_calls = []
+    monkeypatch.setattr(processing_runtime, "log_event", lambda *args, **kwargs: log_calls.append((args, kwargs)))
+    session_state.processing_event_queue.put(SetStateEvent(values={"latest_cost_actual": _ACTUAL}))
+    session_state.processing_event_queue.put(WorkerCompleteEvent(outcome="failed"))
+
+    processing_runtime.drain_processing_events(
+        set_processing_status=lambda **payload: None,
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: None,
+        append_log=lambda **payload: None,
+        append_image_log=lambda **payload: None,
+    )
+
+    assert session_state.latest_cost_actual == _ACTUAL
+    assert not [call for call in log_calls if call[0][1] == "state_event_unknown_keys"]
