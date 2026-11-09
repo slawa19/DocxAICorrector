@@ -590,21 +590,7 @@ def polish_block(
                 request_profile=profile,
             )
     except LatePhaseStopped:
-        # FR-004 (5): Stop during the second pass keeps the block's first pass and stops the
-        # run after it (``run_block_processing_phase`` reads the flag, on the last block too).
-        if hasattr(state, "stopped_during_polish"):
-            state.stopped_during_polish = True
-        return _block_rollback(
-            call,
-            selection=selection,
-            first_pass_chunk=processed_chunk,
-            reason=FAILURE_STOPPED,
-            artifact_reason=REASON_STOPPED,
-            details={"error_class": LatePhaseStopped.__name__},
-            candidate_text=None,
-            failed=True,
-            stopped=True,
-        )
+        return _stopped_outcome(call, state, selection, processed_chunk, dependencies, context)
     except Exception as exc:
         return _block_rollback(
             call,
@@ -616,6 +602,11 @@ def polish_block(
             candidate_text=None,
             failed=True,
         )
+
+    # FR-004 (5): Stop pressed during a request that nevertheless answered keeps the first pass
+    # too -- the answer is not checked and not accepted.
+    if dependencies.should_stop_processing(context.runtime):
+        return _stopped_outcome(call, state, selection, processed_chunk, dependencies, context)
 
     answer_text = str(answer or "")
     if not answer_text.strip():
@@ -689,6 +680,27 @@ def polish_block(
     return PolishBlockOutcome(
         processed_chunk=_assemble(selection, accepted, processed_chunk),
         paragraphs=tuple(outcomes),
+    )
+
+
+def _stopped_outcome(
+    call: Any, state: Any, selection: Any, processed_chunk: Any, dependencies: Any, context: Any
+) -> PolishBlockOutcome:
+    """FR-004 (5): Stop during the second pass keeps the block's first pass and stops the run after
+    it (``run_block_processing_phase`` reads the flag, on the last block too)."""
+
+    if hasattr(state, "stopped_during_polish"):
+        state.stopped_during_polish = True
+    return _block_rollback(
+        call,
+        selection=selection,
+        first_pass_chunk=processed_chunk,
+        reason=FAILURE_STOPPED,
+        artifact_reason=REASON_STOPPED,
+        details={"error_class": LatePhaseStopped.__name__},
+        candidate_text=None,
+        failed=True,
+        stopped=True,
     )
 
 

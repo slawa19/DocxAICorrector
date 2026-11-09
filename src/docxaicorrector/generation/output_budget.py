@@ -19,6 +19,7 @@ and the glossary builders can read it without an import cycle.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from types import MappingProxyType
 
@@ -55,6 +56,12 @@ MODEL_OUTPUT_BUDGET_MULTIPLIERS: Mapping[str, float] = MappingProxyType(
 
 _SELECTOR_PROVIDERS = ("openai", "openrouter", "anthropic")
 
+# The rule ``generation._generation._normalize_anthropic_model_id`` applies to the id it sends
+# (a dotted version ``N.M`` is written ``N-M``): a copy, because that module imports this one;
+# ``tests/test_output_budget.py`` holds the two equal. Applied to selector AND table keys, every
+# spelling of one model reaches one row.
+_DOTTED_VERSION_SEPARATOR_PATTERN = re.compile(r"(?<=\d)\.(?=\d)")
+
 
 def validate_output_budget_multiplier(multiplier: float) -> float:
     """The multiplier as a float, or ``ValueError``: a finite real number above zero."""
@@ -79,8 +86,12 @@ def scale_output_budget(base_tokens: int, multiplier: float, *, ceiling: int) ->
     return min(limit, ceiling)
 
 
+def _canonical_model_key(model: str) -> str:
+    return _DOTTED_VERSION_SEPARATOR_PATTERN.sub("-", model)
+
+
 def canonical_output_budget_model_id(model: str) -> str:
-    """The table key of a model selector: provider prefix dropped, lower case.
+    """The table key of a model selector: provider prefix dropped, lower case, dotted versions dashed.
 
     ``openrouter:google/gemini-3.7-flash`` and ``google/gemini-3.7-flash`` are one model. A
     native Anthropic selector (``anthropic:claude-haiku-5.5``) names the model without the
@@ -93,15 +104,18 @@ def canonical_output_budget_model_id(model: str) -> str:
         selector = model_id.strip()
         if provider.strip() == "anthropic" and "/" not in selector:
             selector = f"anthropic/{selector}"
-    return selector
+    return _DOTTED_VERSION_SEPARATOR_PATTERN.sub("-", selector)
+
+
+_CANONICAL_MULTIPLIERS: Mapping[str, float] = MappingProxyType(
+    {_canonical_model_key(key): value for key, value in MODEL_OUTPUT_BUDGET_MULTIPLIERS.items()}
+)
 
 
 def output_budget_multiplier_for_model(model: str) -> float:
     """The multiplier of a model selector; a model nobody measured keeps today's budget (1.0)."""
 
-    return MODEL_OUTPUT_BUDGET_MULTIPLIERS.get(
-        canonical_output_budget_model_id(model), DEFAULT_OUTPUT_BUDGET_MULTIPLIER
-    )
+    return _CANONICAL_MULTIPLIERS.get(canonical_output_budget_model_id(model), DEFAULT_OUTPUT_BUDGET_MULTIPLIER)
 
 
 __all__ = [

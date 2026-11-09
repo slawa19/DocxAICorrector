@@ -119,3 +119,43 @@ def test_invalid_multiplier_is_refused():
             output_budget.validate_output_budget_multiplier(bad)  # type: ignore[arg-type]
         with pytest.raises(ValueError):
             generation._estimate_max_output_tokens("x", bad)  # type: ignore[arg-type]
+
+
+_HAIKU_ALIASES = [
+    "anthropic:claude-haiku-5.5",
+    "anthropic:claude-haiku-5-5",
+    "anthropic:anthropic/claude-haiku-5.5",
+    "anthropic:anthropic/claude-haiku-5-5",
+    "openrouter:anthropic/claude-haiku-5.5",
+    "openrouter:anthropic/claude-haiku-5-5",
+    "anthropic/claude-haiku-5.5",
+    "anthropic/claude-haiku-5-5",
+    "  OpenRouter:Anthropic/Claude-Haiku-5-5  ",
+]
+
+
+@pytest.mark.parametrize("alias", _HAIKU_ALIASES)
+def test_every_spelling_of_one_native_model_gets_the_same_multiplier_and_floor(alias):
+    """Codex acceptance review of spec 069, finding 6: dotted and dashed ids are one model."""
+
+    from docxaicorrector.generation import output_budget
+
+    multiplier = output_budget.output_budget_multiplier_for_model(alias)
+    assert multiplier == 3.0
+    assert generation._estimate_max_output_tokens("x", multiplier) == 1536
+
+
+def test_unmeasured_dotted_models_still_keep_the_budget_of_today():
+    from docxaicorrector.generation import output_budget
+
+    for selector in ("openrouter:vendor/model-1.2", "openrouter:vendor/model-1-2", "anthropic:claude-opus-9.9"):
+        assert output_budget.output_budget_multiplier_for_model(selector) == 1.0
+
+
+def test_budget_dotted_version_rule_is_the_generators_rule():
+    from docxaicorrector.generation import output_budget
+
+    assert output_budget._DOTTED_VERSION_SEPARATOR_PATTERN.pattern == generation._DOTTED_VERSION_SEPARATOR_PATTERN.pattern
+    # Both spellings reach the same API id, so they must reach the same budget row.
+    for selector in ("anthropic:claude-haiku-5.5", "anthropic:claude-haiku-5-5", "anthropic/claude-haiku-5.5"):
+        assert generation._normalize_anthropic_model_id(selector) == "claude-haiku-5-5"
