@@ -62,7 +62,7 @@ def _select_mode(at: AppTest, image_mode: str) -> AppTest:
 
 def _pair(at: AppTest) -> tuple[str, str]:
     result = at.session_state["_sidebar_result"]
-    return result[10], result[11]
+    return result[9], result[10]
 
 
 def _selector_keys(at: AppTest) -> list[str]:

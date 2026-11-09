@@ -1665,7 +1665,6 @@ def test_background_handoff_persists_result_bundle_and_ui_artifacts(tmp_path, mo
         uploaded_token=prepared.uploaded_file_token,
         image_mode="safe",
         processing_operation="edit",
-        audiobook_postprocess_enabled=False,
         worker=object(),
         event_queue=processing_events,
         stop_event=stop_event,

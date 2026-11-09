@@ -11,7 +11,6 @@ Current default mapping:
 - full run profile: `ui-parity-default`
 - soak run profile: `ui-parity-soak-3x`
 - structural run profile: `ui-parity-translate-benchmark-advisory`
-- audiobook postprocess run profile: `ui-parity-translate-audiobook-postprocess`
 - benchmark-only advisory run profile: `ui-parity-translate-benchmark-advisory`
 
 NOTE (2026-06-22): the AI structure-recognition stage (#2) and its profiles

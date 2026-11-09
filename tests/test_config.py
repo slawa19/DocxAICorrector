@@ -280,7 +280,7 @@ def test_load_app_config_resolves_audiobook_defaults_from_text_model(monkeypatch
 
     app_config = config.load_app_config()
 
-    assert app_config["audiobook_postprocess_default"] is False
+    assert "audiobook_postprocess_default" not in app_config
     assert app_config["audiobook_model"] == app_config["default_model"]
 
 
@@ -398,7 +398,6 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         source_language_default="en",
         target_language_default="ru",
         editorial_intensity_default="literary",
-        audiobook_postprocess_default=False,
         audiobook_model="gpt-5.4-mini",
         supported_languages=tuple(),
         enable_paragraph_markers=False,
@@ -497,7 +496,6 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
         source_language_default="en",
         target_language_default="ru",
         editorial_intensity_default="literary",
-        audiobook_postprocess_default=False,
         audiobook_model="gpt-5.4-mini",
         supported_languages=tuple(),
         enable_paragraph_markers=False,
@@ -573,15 +571,6 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
 
     assert availability.has_api_key is True
     assert availability.error_message is None
-
-
-def test_load_app_config_applies_audiobook_postprocess_env_override(monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
-    monkeypatch.setenv("DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT", "true")
-
-    app_config = config.load_app_config()
-
-    assert app_config["audiobook_postprocess_default"] is True
 
 
 def test_load_system_prompt_varies_by_editorial_intensity():
@@ -2510,7 +2499,9 @@ def test_env_example_documents_the_glossary_overrides():
 # existing value. A change of the digest is a change of behaviour, not of this test.
 # Re-pinned 2026-11-09 (spec 062): [models.text].options trimmed to the two measured models and
 # the per-mode image-model defaults added (owner request); nothing else moved.
-_PRE_TRANSLATION_MODES_CONFIG_DIGEST = "5c216cb67a9b6caed68ad13db2d26e1c8f77951e282ce1fda3c06fb41105a533"
+# Re-pinned 2026-11-09 (spec 070 WP-A): only the removed `audiobook_postprocess_default` key left the
+# dict (digest of the old dict minus that key equals this value).
+_PRE_TRANSLATION_MODES_CONFIG_DIGEST = "97c46e7e73a7991e7091563dc185f6d7556475dc13d85e5ef716a5b3a523afa7"
 
 
 def _config_digest_without_translation_fields(app_config) -> str:

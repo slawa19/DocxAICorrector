@@ -97,7 +97,6 @@ def _resolve_result_download_labels(
     original_filename: str,
     narration_text: str | None,
     processing_operation: str = "edit",
-    audiobook_postprocess_enabled: bool = False,
 ) -> tuple[str, str, str | None]:
     operation = str(processing_operation or "edit").strip().lower() or "edit"
 
@@ -111,7 +110,7 @@ def _resolve_result_download_labels(
         markdown_label = t("result.markdown_edited")
         docx_label = t("result.docx_edited")
 
-    narration_label = t("result.narration_elevenlabs") if narration_text is not None and (audiobook_postprocess_enabled or operation == "audiobook") else None
+    narration_label = t("result.narration_elevenlabs") if narration_text is not None and operation == "audiobook" else None
     return markdown_label, docx_label, narration_label
 
 
@@ -714,7 +713,7 @@ def render_cost_estimate_comparison(
 
 def render_sidebar(
     config: Mapping[str, Any],
-) -> tuple[str, int, int, str, bool, str, str, str, bool, str, str, str, str]:
+) -> tuple[str, int, int, str, bool, str, str, str, str, str, str, str]:
     st.sidebar.header(t("sidebar.settings_header"))
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -787,15 +786,6 @@ def render_sidebar(
         source_language = "auto" if selected_source_label == auto_label else code_by_label.get(selected_source_label, source_language)
         if processing_operation == "translate" and source_language != "auto" and source_language == target_language:
             st.sidebar.warning(t("sidebar.same_language_warning"))
-
-    audiobook_postprocess_enabled = False
-    if processing_operation in {"edit", "translate"}:
-        audiobook_postprocess_enabled = st.sidebar.checkbox(
-            t("sidebar.audiobook_postprocess_label"),
-            value=bool(config.get("audiobook_postprocess_default", False)),
-            help=t("sidebar.audiobook_postprocess_help"),
-            key="sidebar_audiobook_postprocess",
-        )
 
     # §10: chunk_size / max_retries are no longer user-facing sliders; source them
     # from the config defaults that were the slider defaults so a default run is
@@ -909,7 +899,6 @@ def render_sidebar(
         processing_operation,
         source_language,
         target_language,
-        audiobook_postprocess_enabled,
         editorial_intensity,
         image_vision_model,
         image_draw_model,
@@ -1051,7 +1040,6 @@ def render_result_bundle(
     original_filename: str,
     narration_text: str | None = None,
     processing_operation: str = "edit",
-    audiobook_postprocess_enabled: bool = False,
     success_message: str | None = None,
     quality_warning: Mapping[str, object] | None = None,
     delivery_disposition: Mapping[str, object] | None = None,
@@ -1154,7 +1142,6 @@ def render_result_bundle(
         original_filename=original_filename,
         narration_text=narration_text,
         processing_operation=processing_operation,
-        audiobook_postprocess_enabled=audiobook_postprocess_enabled,
     )
     if blocked:
         markdown_label = t("result.blocked_download_markdown")

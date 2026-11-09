@@ -96,7 +96,6 @@ def test_same_source_rerun_forwards_blocked_delivery_contract_to_shared_renderer
         "markdown_text": "blocked markdown",
         "narration_text": None,
         "processing_operation": "translate",
-        "audiobook_postprocess_enabled": False,
         "quality_warning": None,
         "delivery_disposition": {
             "status": "blocked",

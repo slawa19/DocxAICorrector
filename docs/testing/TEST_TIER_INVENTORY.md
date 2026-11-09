@@ -83,6 +83,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_067_apparatus_in_body.py`
 - `tests/test_spec_069_notes_apparatus.py`
 - `tests/test_spec_069_notes_gate.py`
+- `tests/test_spec_070_postpass_removed.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`

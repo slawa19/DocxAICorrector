@@ -111,7 +111,7 @@ options = [
   "openrouter:google/gemini-3.7-flash",
 ]
 
-# Optional override for the dedicated audiobook post-pass / standalone audiobook mode.
+# Optional override for the standalone audiobook mode.
 # When omitted, the app falls back to [models.text].default.
 # [models.audiobook]
 # default = "gpt-5.4"

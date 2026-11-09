@@ -994,7 +994,6 @@ def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(m
         "markdown_text": "md",
         "narration_text": None,
         "processing_operation": "edit",
-        "audiobook_postprocess_enabled": False,
         "quality_warning": None,
         "delivery_disposition": {"status": "accepted"},
         "result_notices": [],
@@ -1022,7 +1021,6 @@ def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
         "markdown_text": "md",
         "narration_text": "[thoughtful] text",
         "processing_operation": "edit",
-        "audiobook_postprocess_enabled": False,
         "quality_warning": None,
         "delivery_disposition": {"status": "accepted"},
         "result_notices": [],
@@ -1048,11 +1046,9 @@ def test_build_result_bundle_preserves_explicit_mode_metadata():
         markdown_text="md",
         narration_text="[thoughtful] narration",
         processing_operation="translate",
-        audiobook_postprocess_enabled=True,
     )
 
     assert result["processing_operation"] == "translate"
-    assert result["audiobook_postprocess_enabled"] is True
 
 
 @pytest.mark.parametrize(

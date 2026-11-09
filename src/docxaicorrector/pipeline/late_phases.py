@@ -31,22 +31,14 @@ from docxaicorrector.pipeline.formatting_diagnostics_feedback import (  # noqa: 
     build_formatting_diagnostics_user_feedback,
 )
 from docxaicorrector.pipeline.text_call_support import (  # noqa: F401
-    _require_group_int,
     _resolve_text_call_target,
 )
 from docxaicorrector.pipeline.narration_postprocess import (  # noqa: F401
-    _ELEVENLABS_TAG_PATTERN,
-    _NARRATION_ANY_TAG_PATTERN,
     _NARRATION_DISALLOWED_PATTERNS,
     _build_narration_text,
     _collect_narration_artifact_review_findings,
     _summarize_narration_review_findings,
-    _should_run_audiobook_postprocess,
     _collect_narration_chunks,
-    _resolve_audiobook_postprocess_model,
-    _resolve_audiobook_postprocess_chunk_size,
-    _build_narration_postprocess_groups,
-    _run_audiobook_postprocess,
 )
 from docxaicorrector.reader_cleanup_mvp import write_reader_cleanup_diagnostics
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
@@ -809,7 +801,6 @@ def finalize_processing_success(
             context_chars=0,
             log_details=error_message,
         )
-    narration_error_message = ""
     reader_cleanup_report: dict[str, object] | None = None
     reader_cleanup_raw_markdown: str | None = None
     reader_cleanup_result_notice: dict[str, str] | None = None
@@ -1151,63 +1142,35 @@ def finalize_processing_success(
         stopped_result = _stop_at_late_boundary("Обработка остановлена во время подготовки narration.")
         return stopped_result or "stopped"
     except Exception as exc:
+        # Narration text exists only for the standalone ``audiobook`` operation (spec 070
+        # removed the optional second pass over translate/edit), so a failure here is the
+        # operation's own failure and takes the failed-result branch.
         error_message = dependencies.present_error(
-            "audiobook_postprocess_failed",
+            "audiobook_narration_failed",
             exc,
-            "Ошибка подготовки текста для ElevenLabs",
+            "Ошибка подготовки текста для озвучки",
             filename=context.uploaded_filename,
             processing_operation=context.processing_operation,
         )
-        if context.processing_operation in {"edit", "translate"}:
-            narration_text = None
-            narration_error_message = error_message
-            narration_notice: dict[str, object] = {
-                "kind": "narration",
-                "level": "warning",
-                "message_key": (
-                    "result.narration_omitted"
-                    if "narration_cleanup_projection_unsafe" in str(exc)
-                    else "result.narration_failed"
-                ),
-            }
-            result_notices.append(narration_notice)
-            emitters.emit_state(
-                context.runtime,
-                latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
-                latest_markdown=runtime_display_markdown,
-                latest_narration_text=None,
-                latest_result_notice=docx_phase["latest_result_notice"],
-                latest_result_notices=result_notices,
-                last_error=error_message,
-            )
-            dependencies.log_event(
-                logging.WARNING,
-                "audiobook_postprocess_failed_base_result_preserved",
-                "Audiobook post-pass failed; base DOCX/Markdown result is preserved.",
-                filename=context.uploaded_filename,
-                processing_operation=context.processing_operation,
-                error_message=str(exc),
-            )
-        else:
-            emitters.emit_state(
-                context.runtime,
-                latest_markdown=runtime_display_markdown,
-                latest_docx_bytes=None,
-                latest_narration_text=None,
-                last_error=error_message,
-            )
-            return emit_failed_result(
-                emitters=emitters,
-                runtime=context.runtime,
-                finalize_stage="Ошибка подготовки narration",
-                detail=error_message,
-                progress=1.0,
-                block_index=job_count,
-                block_count=job_count,
-                target_chars=len(runtime_display_markdown),
-                context_chars=0,
-                log_details=error_message,
-            )
+        emitters.emit_state(
+            context.runtime,
+            latest_markdown=runtime_display_markdown,
+            latest_docx_bytes=None,
+            latest_narration_text=None,
+            last_error=error_message,
+        )
+        return emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Ошибка подготовки narration",
+            detail=error_message,
+            progress=1.0,
+            block_index=job_count,
+            block_count=job_count,
+            target_chars=len(runtime_display_markdown),
+            context_chars=0,
+            log_details=error_message,
+        )
 
     # spec 054 Finding 4 / Constitution VII: the narration artifact check is REVIEW DATA, not
     # a verdict gate. It used to raise, and a single match anywhere in a whole book's
@@ -1277,7 +1240,6 @@ def finalize_processing_success(
             event_message,
             filename=context.uploaded_filename,
             processing_operation=context.processing_operation,
-            narration_mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
             review_data=True,
             advisory=True,
             narration_chars=len(narration_text),
@@ -1331,25 +1293,6 @@ def finalize_processing_success(
             getattr(state, "narration_excluded_omitted_paragraphs", None) or ()
         ),
     )
-    # Spec 061 FR-017 (narrowed): post-pass groups answered with FEWER paragraphs than were
-    # sent. The WARNING event is written per group where it is detected
-    # (``narration_postprocess._record_postprocess_paragraph_shortfall``); the reader gets one
-    # notice for the run. Zero groups means no notice, like every other narration message.
-    postprocess_shortfall_group_count = int(
-        getattr(state, "narration_postprocess_paragraph_shortfall_group_count", 0) or 0
-    )
-    if narration_text is not None and postprocess_shortfall_group_count > 0:
-        result_notices.append({
-            "kind": "narration",
-            "level": "warning",
-            "message_key": "result.narration_postprocess_paragraph_shortfall",
-            "params": {
-                "count": postprocess_shortfall_group_count,
-                "paragraphs": int(
-                    getattr(state, "narration_postprocess_paragraph_shortfall_paragraph_count", 0) or 0
-                ),
-            },
-        })
     if narration_text is not None:
         narration_review_findings = _collect_narration_artifact_review_findings(narration_text)
         narration_review_summary = _summarize_narration_review_findings(narration_review_findings)
@@ -1361,7 +1304,6 @@ def finalize_processing_success(
                 "Narration artifact carries passages worth a human review; the artifact is delivered.",
                 filename=context.uploaded_filename,
                 processing_operation=context.processing_operation,
-                narration_mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
                 review_data=True,
                 advisory=True,
                 narration_chars=len(narration_text),
@@ -1468,7 +1410,7 @@ def finalize_processing_success(
         },
         latest_result_notice=docx_phase["latest_result_notice"],
         latest_result_notices=result_notices,
-        last_error=narration_error_message,
+        last_error="",
     )
     # F4 + F12: track the persistence of the PRIMARY result artifacts
     # (``.result.md``/``.result.docx`` via ``write_ui_result_artifacts``) SEPARATELY
@@ -1632,9 +1574,7 @@ def finalize_processing_success(
                     artifact_paths=result_artifact_paths,
                     tts_text_path=result_artifact_paths["tts_text_path"],
                     char_count=len(narration_text),
-                    tag_count=len(_ELEVENLABS_TAG_PATTERN.findall(narration_text)),
                     excluded_blocks=int(getattr(state, "excluded_narration_block_count", 0) or 0),
-                    mode="standalone" if context.processing_operation == "audiobook" else "postprocess",
                     # Same rule as the review counters below: zero is the positive statement
                     # "no block was dropped for this reason", never an absent field.
                     **narration_source_fallback_summary,
@@ -1654,15 +1594,6 @@ def finalize_processing_success(
                     # is never an absent field.
                     joined_sentence_continuation_count=int(
                         getattr(state, "narration_joined_sentence_continuation_count", 0) or 0
-                    ),
-                    # Spec 061 FR-017 (narrowed): post-pass groups whose answer came back
-                    # with fewer paragraphs than were sent — delivered, marked for review,
-                    # and counted here under the same zero-is-a-statement rule.
-                    postprocess_paragraph_shortfall_group_count=int(
-                        getattr(state, "narration_postprocess_paragraph_shortfall_group_count", 0) or 0
-                    ),
-                    postprocess_paragraph_shortfall_paragraph_count=int(
-                        getattr(state, "narration_postprocess_paragraph_shortfall_paragraph_count", 0) or 0
                     ),
                 )
         except Exception as exc:
@@ -1722,7 +1653,6 @@ def finalize_processing_success(
         final_markdown_chars=len(runtime_display_markdown),
         narration_chars=len(narration_text or ""),
         elapsed_seconds=round(time.perf_counter() - state.started_at, 2),
-        audiobook_postprocess_enabled=_should_run_audiobook_postprocess(context=context),
         reader_cleanup_enabled=_should_run_reader_cleanup(context=context),
     )
     if primary_artifacts_persisted:

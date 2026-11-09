@@ -19,7 +19,6 @@ DocxAICorrector — это Streamlit-приложение для литерат�
 - Последовательная обработка блоков через OpenAI Responses API.
 - Retry для временных API-сбоев.
 - Отдельный режим `audiobook` для подготовки текста под ElevenLabs Audiobooks.
-- Опциональный post-pass `audiobook_postprocess` для `edit` и `translate`, который добавляет narration artifact без мутации основного DOCX/Markdown.
 - Живой статус обработки и журнал по блокам (`run_log`) в UI. Отдельной ленты активности больше нет: её не читал ни один экран, и весь канал за ней удалён 2026-08-08.
 - Сохранение промежуточного Markdown при частичном сбое.
 - Placeholder-based pipeline для inline-изображений в `.docx`.
@@ -260,7 +259,6 @@ OPENAI_API_KEY=sk-...
 - `DOCX_AI_CHUNK_SIZE` — размер целевого блока документа.
 - `DOCX_AI_MAX_RETRIES` — число retry для текстовых вызовов.
 - `DOCX_AI_EDITORIAL_INTENSITY_DEFAULT` — дефолтная стилистическая интенсивность для текстовой обработки: `literary` или `conservative`. В текущем Slice 1 влияет только на prompt contract и не меняет `temperature`.
-- `DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT` — включает подготовку отдельного narration text для ElevenLabs по умолчанию для `edit` и `translate`.
 - `DOCX_AI_LOG_LEVEL` — уровень логирования приложения: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; по умолчанию `INFO`, некорректное значение безопасно откатывается к `INFO` с warning-записью в лог.
 - `DOCX_AI_RUN_DIR` — корень всех runtime-артефактов (`app.log`, `app.ready`, `ui_results/`, `quality_reports/` и остальные семейства `.run/<family>/`); по умолчанию `<корень проекта>/.run`. Одно имя и одно правило читают Python-сторона, `scripts/project-control-wsl.sh`, `scripts/clean-stale-run-artifacts.sh`, `scripts/_run_cleanup_now.py` и `scripts/_shared.ps1`: пробелы по краям обрезаются, пустое значение означает умолчание. Если переменная задана на стороне Windows (для PowerShell-обёрток `start-project.ps1`, `status-project.ps1` и т. п.), это должен быть Windows-путь: обёртка перед каждым вызовом `wsl.exe` добавляет `DOCX_AI_RUN_DIR/p` в `WSLENV`, и WSL-скрипты и приложение получают тот же каталог в виде `/mnt/...`. **Исключение из этого списка: через `.env` её задать нельзя.** Python читает её из окружения процесса при импорте, раньше, чем подгружается `.env`, поэтому переменную нужно экспортировать в окружение запуска. Тестовая суита так и делает: `tests/conftest.py` направляет её во временный каталог, чтобы прогон не писал в `.run` оператора.
 - `DOCX_AI_IMAGE_MODE_DEFAULT` — режим изображений по умолчанию: `no_change`, `safe`, `semantic_redraw_direct`, `semantic_redraw_structured`, `compare_all`.
@@ -286,7 +284,6 @@ DOCX_AI_MODELS_TEXT_OPTIONS=openrouter:google/gemini-3.1-flash-lite-preview,open
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
 DOCX_AI_EDITORIAL_INTENSITY_DEFAULT=literary
-DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT=false
 # Optional override for the paragraph-boundary AI review role. When omitted, it inherits DOCX_AI_MODELS_TEXT_DEFAULT.
 # DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
 DOCX_AI_STRUCTURE_VALIDATION_MIN_PARAGRAPHS_FOR_AUTO_GATE=40
@@ -511,7 +508,6 @@ bash scripts/test.sh tests/test_config.py::test_name -vv -x
 
 - Режим `Литературное редактирование` показывает `Отредактированный DOCX` и `Отредактированный Markdown`.
 - Режим `Перевод` показывает `Переведённый DOCX` и `Переведённый Markdown`.
-- Для `edit` и `translate` доступен checkbox `Подготовить для ElevenLabs аудиокниги`. Он добавляет третий download: `Текст для ElevenLabs (.txt)`.
 - Режим `Подготовка аудиокниги (ElevenLabs)` делает narration artifact основным результатом. В UI доступны `Текст для ElevenLabs (.txt)`, `Markdown (для инспекции)` и `DOCX (для инспекции)`.
 - Narration artifact сохраняется как `.run/ui_results/<timestamp>_<stem>.result.tts.txt` рядом со стандартными `.result.md` и `.result.docx`.
 - В standalone audiobook effective `image_mode` всегда принудительно становится `no_change` на runtime-уровне.
@@ -528,8 +524,6 @@ Corpus покрывает четыре полнокнижных PDF-профил
 - `extraction` — быстрые corpus checks на extractability и coarse structure;
 - `structural` — deterministic passthrough через Pandoc + formatting restore без API-вызовов;
 - `full` — model-backed UI-parity validation и exceptional quality gate.
-
-Run profile `ui-parity-translate-audiobook-postprocess` остаётся доступным для sanity-проверки сценария `translate + audiobook_postprocess` поверх любого book-профиля corpus.
 
 Предпочтительный пользовательский путь в VS Code:
 

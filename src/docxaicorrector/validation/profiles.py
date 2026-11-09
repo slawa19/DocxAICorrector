@@ -102,7 +102,6 @@ class RunProfile:
     # Spec 069: "standard" | "quality" | "single" (the pre-069 single pass). None resolves to
     # translation_mode_default, like the UI; only meaningful for processing_operation=translate.
     translation_mode: str | None = None
-    audiobook_postprocess_enabled: bool | None = None
     reader_cleanup_enabled: bool | None = None
     reader_verifier_enabled: bool | None = None
     reader_cleanup_model: str | None = None
@@ -161,7 +160,6 @@ class ResolvedRuntimeConfig:
     source_language: str
     target_language: str
     editorial_intensity: str
-    audiobook_postprocess_enabled: bool
     reader_cleanup_enabled: bool
     enable_paragraph_markers: bool
     keep_all_image_variants: bool
@@ -187,7 +185,6 @@ class ResolvedRuntimeConfig:
             "source_language": self.source_language,
             "target_language": self.target_language,
             "editorial_intensity": self.editorial_intensity,
-            "audiobook_postprocess_enabled": self.audiobook_postprocess_enabled,
             "reader_cleanup_enabled": self.reader_cleanup_enabled,
             "enable_paragraph_markers": self.enable_paragraph_markers,
             "keep_all_image_variants": self.keep_all_image_variants,
@@ -282,7 +279,6 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         source_language=str(getattr(app_config, "source_language_default", "en") or "en"),
         target_language=str(getattr(app_config, "target_language_default", "ru") or "ru"),
         editorial_intensity=str(getattr(app_config, "editorial_intensity_default", "literary") or "literary"),
-        audiobook_postprocess_enabled=bool(getattr(app_config, "audiobook_postprocess_default", False)),
         reader_cleanup_enabled=bool(getattr(app_config, "reader_cleanup_default", False)),
         enable_paragraph_markers=bool(app_config.enable_paragraph_markers),
         keep_all_image_variants=bool(app_config.keep_all_image_variants),
@@ -314,12 +310,6 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         source_language=str(_resolve_run_profile_field(run_profile.source_language, ui_defaults.source_language)),
         target_language=str(_resolve_run_profile_field(run_profile.target_language, ui_defaults.target_language)),
         editorial_intensity=str(_resolve_run_profile_field(run_profile.editorial_intensity, general_defaults.editorial_intensity)),
-        audiobook_postprocess_enabled=bool(
-            _resolve_run_profile_field(
-                run_profile.audiobook_postprocess_enabled,
-                ui_defaults.audiobook_postprocess_enabled,
-            )
-        ),
         reader_cleanup_enabled=bool(
             _resolve_run_profile_field(
                 run_profile.reader_cleanup_enabled,
@@ -371,7 +361,6 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "source_language": run_profile.source_language,
         "target_language": run_profile.target_language,
         "editorial_intensity": run_profile.editorial_intensity,
-        "audiobook_postprocess_enabled": run_profile.audiobook_postprocess_enabled,
         "reader_cleanup_enabled": run_profile.reader_cleanup_enabled,
         "reader_verifier_enabled": run_profile.reader_verifier_enabled,
         "reader_cleanup_model": run_profile.reader_cleanup_model,
@@ -453,7 +442,6 @@ def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolu
     # The pipeline reads `editorial_intensity_default`, so the run-profile value has to
     # land on that key (the plain `editorial_intensity` copy is only for reporting).
     app_config_dict["editorial_intensity_default"] = resolution.effective.editorial_intensity
-    app_config_dict["audiobook_postprocess_enabled"] = resolution.effective.audiobook_postprocess_enabled
     app_config_dict["reader_cleanup_enabled"] = resolution.effective.reader_cleanup_enabled
     app_config_dict["keep_all_image_variants"] = resolution.effective.keep_all_image_variants
     app_config_dict["enable_paragraph_markers"] = resolution.effective.enable_paragraph_markers
@@ -585,7 +573,6 @@ def _build_run_profile(payload: Any) -> RunProfile:
         target_language=_optional_str(payload, "target_language"),
         editorial_intensity=_optional_editorial_intensity(payload, "editorial_intensity"),
         translation_mode=_optional_translation_mode(payload, "translation_mode"),
-        audiobook_postprocess_enabled=_optional_bool(payload, "audiobook_postprocess_enabled"),
         reader_cleanup_enabled=_optional_bool(payload, "reader_cleanup_enabled"),
         reader_verifier_enabled=_optional_bool(payload, "reader_verifier_enabled"),
         reader_cleanup_model=_optional_str(payload, "reader_cleanup_model"),

@@ -324,7 +324,6 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         "edit",
         "en",
         "ru",
-        False,
         "literary",
         "gpt-5.4-mini",
         "gpt-image-2.5-flare",
@@ -383,12 +382,6 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         ),
     ]
     assert checkbox_calls == [
-        (
-            "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)",
-            False,
-            "sidebar_audiobook_postprocess",
-            "Готовит отдельный narration text для ElevenLabs без изменения основного DOCX/Markdown результата.",
-        ),
         (
             "Сохранять все варианты изображений",
             False,
@@ -573,19 +566,12 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
         "translate",
         "en",
         "en",
-        False,
         "literary",
         "gpt-5.4-mini",
         "gpt-image-2.5-flare",
         "standard",
     )
     assert checkbox_calls == [
-        (
-            "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)",
-            False,
-            "sidebar_audiobook_postprocess",
-            "Готовит отдельный narration text для ElevenLabs без изменения основного DOCX/Markdown результата.",
-        ),
         (
             "Сохранять все варианты изображений",
             False,
@@ -655,8 +641,7 @@ def test_render_sidebar_translate_mode_does_not_add_extra_caption(monkeypatch):
 
     # The mode radio adds exactly one caption (no price before a document is prepared); nothing else is new.
     assert captions == [ui.t("sidebar.translation_mode_price_pending"), ui.IMAGE_MODE_DESCRIPTIONS["safe"]]
-    assert checkbox_calls[0][0] == "Дополнительно: подготовить текст для ElevenLabs (не меняя основной результат)"
-    assert checkbox_calls[1][0] == "Сохранять все варианты изображений"
+    assert checkbox_calls[0][0] == "Сохранять все варианты изображений"
     assert selectbox_calls[0][1] == (
         "Литературное редактирование улучшает уже готовый текст на выбранном языке. "
         "Перевод используйте для текста, который ещё не на целевом языке. "
@@ -755,7 +740,7 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
     result = ui.render_sidebar(config)
 
     # no_change calls no image model, so neither image-model selector is drawn ("").
-    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", False, "literary", "", "", "")
+    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", "literary", "", "", "")
     assert checkbox_calls == [
         (
             "Сохранять все варианты изображений",
@@ -841,7 +826,7 @@ def test_render_sidebar_exposes_editorial_intensity_selector_for_edit_mode(monke
     assert intensity_calls[0]["options"] == tuple(ui.EDITORIAL_INTENSITY_LABELS.values())
     # The knob sits next to the operation selector, not buried in the advanced expander.
     assert selectbox_calls.index(intensity_calls[0]) == 1
-    assert result[9] == "conservative"
+    assert result[8] == "conservative"
 
 
 def test_render_sidebar_editorial_intensity_defaults_to_the_configured_value(monkeypatch):
@@ -852,7 +837,7 @@ def test_render_sidebar_editorial_intensity_defaults_to_the_configured_value(mon
 
     intensity_call = next(call for call in selectbox_calls if call["key"] == "sidebar_editorial_intensity")
     assert intensity_call["index"] == list(ui.EDITORIAL_INTENSITY_LABELS).index("conservative")
-    assert result[9] == "conservative"
+    assert result[8] == "conservative"
 
 
 @pytest.mark.parametrize("processing_operation", ["translate", "audiobook"])
@@ -874,7 +859,7 @@ def test_render_sidebar_hides_editorial_intensity_outside_edit_and_ignores_stale
 
     assert [call for call in selectbox_calls if call["key"] == "sidebar_editorial_intensity"] == []
     assert result[5] == processing_operation
-    assert result[9] == "literary"
+    assert result[8] == "literary"
 
 
 def test_render_sidebar_does_not_add_recommendation_apply_button(monkeypatch):
@@ -1580,7 +1565,7 @@ def test_render_result_bundle_uses_manual_preview_mode(monkeypatch):
     monkeypatch.setattr(
         ui.st,
         "session_state",
-        SessionState(latest_processing_operation="edit", latest_audiobook_postprocess_enabled=False),
+        SessionState(latest_processing_operation="edit"),
     )
     monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
 
@@ -1611,7 +1596,7 @@ def test_render_result_bundle_renders_narration_download_when_present(monkeypatc
     monkeypatch.setattr(
         ui.st,
         "session_state",
-        SessionState(latest_processing_operation="audiobook", latest_audiobook_postprocess_enabled=False),
+        SessionState(latest_processing_operation="audiobook"),
     )
     monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
 
@@ -1642,7 +1627,7 @@ def test_render_result_bundle_uses_inspection_labels_for_audiobook_without_narra
     monkeypatch.setattr(
         ui.st,
         "session_state",
-        SessionState(latest_processing_operation="audiobook", latest_audiobook_postprocess_enabled=False),
+        SessionState(latest_processing_operation="audiobook"),
     )
     monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
 
@@ -1673,7 +1658,7 @@ def test_render_result_bundle_shows_downloads_in_columns(monkeypatch):
     monkeypatch.setattr(
         ui.st,
         "session_state",
-        SessionState(latest_processing_operation="edit", latest_audiobook_postprocess_enabled=False),
+        SessionState(latest_processing_operation="edit"),
     )
     monkeypatch.setattr(ui.st, "success", lambda msg: success_calls.append(msg))
 
@@ -1701,43 +1686,11 @@ def test_render_result_bundle_shows_downloads_in_columns(monkeypatch):
     assert cols[1].calls[0]["label"] == "Отредактированный Markdown"
 
 
-def test_render_result_bundle_uses_translate_postprocess_labels(monkeypatch):
-    monkeypatch.setattr(
-        ui.st,
-        "session_state",
-        SessionState(latest_processing_operation="translate", latest_audiobook_postprocess_enabled=True),
-    )
-    monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
-
-    class FakeColumn:
-        def __init__(self):
-            self.calls = []
-
-        def download_button(self, *args, **kwargs):
-            self.calls.append(kwargs)
-
-    cols = [FakeColumn(), FakeColumn(), FakeColumn()]
-    monkeypatch.setattr(ui.st, "columns", lambda n: cols)
-
-    ui.render_result_bundle(
-        docx_bytes=b"docx",
-        markdown_text="markdown",
-        narration_text="[thoughtful] narration",
-        original_filename="report.docx",
-        processing_operation="translate",
-        audiobook_postprocess_enabled=True,
-    )
-
-    assert cols[0].calls[0]["label"] == "Переведённый DOCX"
-    assert cols[1].calls[0]["label"] == "Переведённый Markdown"
-    assert cols[2].calls[0]["label"] == "Текст для ElevenLabs (.txt)"
-
-
 def test_render_result_bundle_uses_explicit_mode_metadata_instead_of_session_flags(monkeypatch):
     monkeypatch.setattr(
         ui.st,
         "session_state",
-        SessionState(latest_processing_operation="edit", latest_audiobook_postprocess_enabled=False),
+        SessionState(latest_processing_operation="edit"),
     )
     monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
 
@@ -1757,7 +1710,6 @@ def test_render_result_bundle_uses_explicit_mode_metadata_instead_of_session_fla
         narration_text="[thoughtful] narration",
         original_filename="report.docx",
         processing_operation="translate",
-        audiobook_postprocess_enabled=True,
     )
 
     assert cols[0].calls[0]["label"] == "Переведённый DOCX"
@@ -2139,13 +2091,13 @@ def test_render_sidebar_image_model_selectors_follow_the_image_mode(monkeypatch)
 
     assert not has_selector(no_change_keys, "sidebar_image_vision_model")
     assert not has_selector(no_change_keys, "sidebar_image_draw_model")
-    assert no_change[10:12] == ("", "")
+    assert no_change[9:11] == ("", "")
     assert not has_selector(safe_keys, "sidebar_image_vision_model")
     assert not has_selector(safe_keys, "sidebar_image_draw_model")
-    assert safe[10:12] == ("", "")
+    assert safe[9:11] == ("", "")
     assert "sidebar_image_vision_model__compare_all" in compare_keys
     assert "sidebar_image_draw_model__compare_all" in compare_keys
-    assert compare[10:12] == ("gpt-5.4-mini", "gpt-image-2.5-flare")
+    assert compare[9:11] == ("gpt-5.4-mini", "gpt-image-2.5-flare")
 
 
 def test_render_sidebar_returns_the_chosen_image_models_and_preselects_the_config_default(monkeypatch):
@@ -2162,7 +2114,7 @@ def test_render_sidebar_returns_the_chosen_image_models_and_preselects_the_confi
         choices={"sidebar_image_draw_model__semantic_redraw_structured": "gpt-image-2.5-sunburst"},
     )
 
-    assert result[10:12] == ("gpt-6.1-sol", "gpt-image-2.5-sunburst")
+    assert result[9:11] == ("gpt-6.1-sol", "gpt-image-2.5-sunburst")
 
 
 def test_render_sidebar_says_when_a_per_role_pin_outranks_the_selectors(monkeypatch):

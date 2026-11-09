@@ -177,7 +177,6 @@ def build_app_config_payload(
         "source_language_default": text_runtime_defaults["source_language_default"],
         "target_language_default": text_runtime_defaults["target_language_default"],
         "editorial_intensity_default": text_runtime_defaults["editorial_intensity_default"],
-        "audiobook_postprocess_default": text_runtime_defaults["audiobook_postprocess_default"],
         "audiobook_model": text_runtime_defaults["audiobook_model"],
         "supported_languages": text_runtime_defaults["supported_languages"],
         "enable_paragraph_markers": text_runtime_defaults["enable_paragraph_markers"],

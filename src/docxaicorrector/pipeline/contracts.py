@@ -303,13 +303,6 @@ class ProcessingState:
     # REPAIR rather than a loss. It is published all the same, and a zero is the statement
     # "this run found no sentence running across a paragraph break".
     narration_joined_sentence_continuation_count: int = 0
-    # Spec 061 FR-017 (narrowed): audiobook post-pass groups whose answer came back with
-    # FEWER paragraphs than were sent, and how many paragraphs short they were in total.
-    # The answer is delivered and marked for review
-    # (``narration_postprocess._record_postprocess_paragraph_shortfall``); these feed the
-    # ``ui_audiobook_artifact_saved`` record and the result notice. Zero is a statement.
-    narration_postprocess_paragraph_shortfall_group_count: int = 0
-    narration_postprocess_paragraph_shortfall_paragraph_count: int = 0
     # Spec 059 FR-A8, revised 2026-08-09: one entry per DELIVERED block that shipped prose in
     # the source language, each entry a list of ``{paragraph_id, text}`` for the block's prose
     # paragraphs. It exists because the alarm channel cannot see this class any other way:

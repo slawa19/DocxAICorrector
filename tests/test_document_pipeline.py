@@ -1052,7 +1052,6 @@ def test_run_document_processing_builds_standalone_audiobook_artifact_and_coerce
     assert captured["artifact_kwargs"]["narration_text"] == "Title\n\n[thoughtful] Body text"
     info_events = [event for event in events if event["level"] == logging.INFO]
     saved_event = next(event for event in info_events if event["event_id"] == "ui_audiobook_artifact_saved")
-    assert saved_event["context"]["mode"] == "standalone"
     assert saved_event["context"]["filename"] == "report.docx"
     assert saved_event["context"]["artifact_paths"] == {
         "markdown_path": "/tmp/report.result.md",
@@ -1124,7 +1123,7 @@ def test_run_document_processing_keeps_a_mathematical_exponent_in_the_narration_
     findings = document_pipeline_narration_postprocess._collect_narration_artifact_review_findings(
         "[serious] См.: doi:10.5194/sapiens-2-1 и https://example.org."
     )
-    assert [str(finding["rule"]) for finding in findings] == ["raw_url", "doi"]
+    assert [str(finding["rule"]) for finding in findings] == ["doi"]
 
 
 # Spec 054 Finding 4, measured live on 2026-08-04: ordinary prose that the narration
@@ -1253,7 +1252,6 @@ def test_standalone_audiobook_publishes_narration_violations_as_review_data_and_
     assert review_event["context"]["review_finding_count"] == 2
     assert review_event["context"]["review_match_count"] == 2
     assert review_event["context"]["processing_operation"] == "audiobook"
-    assert review_event["context"]["narration_mode"] == "standalone"
     samples = _as_mapping_sequence(review_event["context"]["review_findings"])
     assert {str(sample["rule"]) for sample in samples} == {"doi", "inline_citation"}
     assert all(int(cast(int, sample["match_count"])) >= 1 for sample in samples)
@@ -1410,7 +1408,6 @@ def test_standalone_audiobook_excludes_a_source_fallback_block_and_reports_the_l
     assert excluded_event["level"] == logging.WARNING
     assert excluded_event["context"]["excluded_source_fallback_block_count"] == 1
     assert excluded_event["context"]["excluded_source_fallback_chars"] == len(_UNTRANSLATED_SOURCE_BLOCK)
-    assert excluded_event["context"]["narration_mode"] == "standalone"
 
     saved_event = next(
         event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
@@ -1459,373 +1456,6 @@ def test_standalone_audiobook_without_a_source_fallback_block_reports_zero_and_n
     ]
 
 
-def test_run_document_processing_runs_audiobook_postprocess_without_mutating_base_docx_branch():
-    runtime = _build_runtime_capture()
-    events, log_event = _capture_log_events()
-    generated_calls = []
-    artifact_calls = {}
-
-    def generate_markdown_block(**kwargs):
-        generated_calls.append(dict(kwargs))
-        if kwargs["system_prompt"] == "system:translate":
-            return f"TRANSLATED::{kwargs['target_text']}"
-        return f"# Narration\n\n[thoughtful] {kwargs['target_text']}"
-
-    def write_ui_result_artifacts(**kwargs):
-        artifact_calls["kwargs"] = dict(kwargs)
-        return {
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "tts_text_path": "/tmp/report.result.tts.txt",
-        }
-
-    result = document_pipeline.run_document_processing(
-        uploaded_file="report.docx",
-        jobs=[
-            {
-                "target_text": "Chapter one text",
-                "context_before": "",
-                "context_after": "Chapter two text",
-                "target_chars": 16,
-                "context_chars": 16,
-                "narration_include": True,
-            },
-            {
-                "target_text": "Index tail",
-                "context_before": "Chapter two text",
-                "context_after": "",
-                "target_chars": 10,
-                "context_chars": 16,
-                "narration_include": False,
-            },
-            {
-                "target_text": "Chapter two text",
-                "context_before": "Chapter one text",
-                "context_after": "",
-                "target_chars": 16,
-                "context_chars": 16,
-                "narration_include": True,
-            },
-        ],
-        source_paragraphs=[],
-        image_assets=[],
-        image_mode="safe",
-        app_config={
-            "audiobook_postprocess_enabled": True,
-            "audiobook_model": "gpt-5.4-audio",
-            "chunk_size": 20,
-            "editorial_intensity_default": "literary",
-        },
-        model="gpt-5.4-translate",
-        max_retries=1,
-        processing_operation="translate",
-        source_language="en",
-        target_language="ru",
-        on_progress=lambda **kwargs: None,
-        runtime=runtime,
-        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
-        get_client=lambda: object(),
-        ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
-        log_event=log_event,
-        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
-        emit_state=_emit_state,
-        emit_finalize=_emit_finalize,
-        emit_log=_emit_log,
-        emit_status=_emit_status,
-        should_stop_processing=lambda runtime: False,
-        generate_markdown_block=generate_markdown_block,
-        process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=_inspect_placeholder_integrity,
-        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    assert runtime["state"]["latest_markdown"] == "TRANSLATED::Chapter one text\n\nTRANSLATED::Index tail\n\nTRANSLATED::Chapter two text"
-    assert runtime["state"]["latest_docx_bytes"] == runtime["state"]["latest_markdown"].encode("utf-8")
-    narration_text = runtime["state"]["latest_narration_text"]
-    assert narration_text is not None
-    assert "TRANSLATED::Chapter one text" in narration_text
-    assert "TRANSLATED::Chapter two text" in narration_text
-    assert "TRANSLATED::Index tail" not in narration_text
-    assert narration_text.count("[thoughtful]") == 1
-    assert artifact_calls["kwargs"]["markdown_text"] == runtime["state"]["latest_markdown"]
-    assert artifact_calls["kwargs"]["docx_bytes"] == runtime["state"]["latest_docx_bytes"]
-    assert artifact_calls["kwargs"]["narration_text"] == narration_text
-
-    assert [call["model"] for call in generated_calls] == [
-        "gpt-5.4-translate",
-        "gpt-5.4-translate",
-        "gpt-5.4-translate",
-        "gpt-5.4-audio",
-    ]
-    assert [call["target_text"] for call in generated_calls[3:]] == [
-        "TRANSLATED::Chapter one text\n\nTRANSLATED::Chapter two text",
-    ]
-    assert generated_calls[3]["context_before"] == ""
-    assert generated_calls[3]["context_after"] == ""
-
-    info_events = [event for event in events if event["level"] == logging.INFO]
-    saved_event = next(event for event in info_events if event["event_id"] == "ui_audiobook_artifact_saved")
-    assert saved_event["context"]["mode"] == "postprocess"
-    assert saved_event["context"]["filename"] == "report.docx"
-    assert saved_event["context"]["artifact_paths"] == {
-        "markdown_path": "/tmp/report.result.md",
-        "docx_path": "/tmp/report.result.docx",
-        "tts_text_path": "/tmp/report.result.tts.txt",
-    }
-    postprocess_started = [event for event in info_events if event["event_id"] == "audiobook_postprocess_chunk_started"]
-    postprocess_completed = [event for event in info_events if event["event_id"] == "audiobook_postprocess_chunk_completed"]
-    assert len(postprocess_started) == 1
-    assert len(postprocess_completed) == 1
-    assert all(event["context"]["operation"] == "audiobook" for event in postprocess_started)
-    assert all(event["context"]["pass"] == "postprocess" for event in postprocess_started)
-    completed_event = next(event for event in info_events if event["event_id"] == "processing_completed")
-    assert completed_event["context"]["audiobook_postprocess_enabled"] is True
-
-
-def test_edit_postprocess_joins_sentence_continuations_and_publishes_the_count():
-    """Anti-regression 3 of spec 054: what the standalone operation does, the optional
-    post-pass on ``edit``/``translate`` does too. There are two narration entry points and a
-    rule that lives on only one of them is a defect that surfaces on a translate run."""
-    runtime = _build_runtime_capture()
-    events, log_event = _capture_log_events()
-
-    def generate_markdown_block(**kwargs):
-        if kwargs["system_prompt"] == "system:audiobook":
-            return (
-                "[thoughtful] первым шагом стало формирование основной\n\n"
-                "команды, в неё вошли жители города."
-            )
-        return "EDITED::block"
-
-    result = document_pipeline.run_document_processing(
-        uploaded_file="report.docx",
-        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
-        source_paragraphs=[],
-        image_assets=[],
-        image_mode="safe",
-        app_config={"audiobook_postprocess_enabled": True},
-        model="gpt-5.4",
-        max_retries=1,
-        processing_operation="edit",
-        source_language="ru",
-        target_language="ru",
-        on_progress=lambda **kwargs: None,
-        runtime=runtime,
-        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
-        get_client=lambda: object(),
-        ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
-        log_event=log_event,
-        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
-        emit_state=_emit_state,
-        emit_finalize=_emit_finalize,
-        emit_log=_emit_log,
-        emit_status=_emit_status,
-        should_stop_processing=lambda runtime: False,
-        generate_markdown_block=generate_markdown_block,
-        process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=_inspect_placeholder_integrity,
-        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
-        write_ui_result_artifacts=lambda **kwargs: _persist_primary_artifacts_on_disk({
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "tts_text_path": "/tmp/report.result.tts.txt",
-        }),
-    )
-
-    assert result == "succeeded"
-    assert runtime["state"]["latest_narration_text"] == (
-        "[thoughtful] первым шагом стало формирование основной команды, "
-        "в неё вошли жители города."
-    )
-    saved_event = next(
-        event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"
-    )
-    assert saved_event["context"]["mode"] == "postprocess"
-    assert saved_event["context"]["joined_sentence_continuation_count"] == 1
-
-
-def test_edit_postprocess_narration_with_review_findings_is_delivered_not_dropped():
-    """The optional post-pass on ``edit``/``translate`` must not get WORSE than before.
-
-    It never lost the base result — but it did silently drop the narration the user asked
-    for, with a ``result.narration_failed`` notice that blamed a "failure" that was really
-    one regex match. Now the narration is delivered on this entry point too, with the same
-    review record the standalone run publishes, and ``result.narration_failed`` is left for
-    the case it actually describes: a post-pass that genuinely could not run.
-    """
-    runtime = _build_runtime_capture()
-    events, log_event = _capture_log_events()
-    artifact_calls = {}
-
-    def generate_markdown_block(**kwargs):
-        if kwargs["system_prompt"] == "system:audiobook":
-            return "[thoughtful] См.: doi:10.5194/sapiens-2-1 и далее."
-        return "EDITED::block"
-
-    def write_ui_result_artifacts(**kwargs):
-        artifact_calls["kwargs"] = dict(kwargs)
-        return _persist_primary_artifacts_on_disk({
-            "markdown_path": "/tmp/report.result.md",
-            "docx_path": "/tmp/report.result.docx",
-            "tts_text_path": "/tmp/report.result.tts.txt",
-        })
-
-    result = document_pipeline.run_document_processing(
-        uploaded_file="report.docx",
-        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
-        source_paragraphs=[],
-        image_assets=[],
-        image_mode="safe",
-        app_config={"audiobook_postprocess_enabled": True},
-        model="gpt-5.4",
-        max_retries=1,
-        processing_operation="edit",
-        source_language="ru",
-        target_language="ru",
-        on_progress=lambda **kwargs: None,
-        runtime=runtime,
-        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
-        get_client=lambda: object(),
-        ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
-        log_event=log_event,
-        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
-        emit_state=_emit_state,
-        emit_finalize=_emit_finalize,
-        emit_log=_emit_log,
-        emit_status=_emit_status,
-        should_stop_processing=lambda runtime: False,
-        generate_markdown_block=generate_markdown_block,
-        process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=_inspect_placeholder_integrity,
-        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    # The base result is untouched — the half that was already healthy stays healthy.
-    assert runtime["state"]["latest_markdown"] == "EDITED::block"
-    assert runtime["state"]["latest_docx_bytes"] == b"EDITED::block"
-    # …and the narration is now delivered instead of being dropped.
-    assert runtime["state"]["latest_narration_text"] == "[thoughtful] См.: doi:10.5194/sapiens-2-1 и далее."
-    assert artifact_calls["kwargs"]["narration_text"] == runtime["state"]["latest_narration_text"]
-    assert runtime["state"]["last_error"] == ""
-
-    review_event = next(
-        event for event in events if event["event_id"] == "narration_artifact_review_data"
-    )
-    assert review_event["context"]["narration_mode"] == "postprocess"
-    assert review_event["context"]["review_rules"] == ["doi"]
-
-    notices = _as_mapping_sequence(runtime["state"]["latest_result_notices"])
-    narration_notices = [notice for notice in notices if notice.get("kind") == "narration"]
-    assert [notice["message_key"] for notice in narration_notices] == ["result.narration_review_data"]
-    # The notice that used to fire here claimed a failure that did not happen.
-    assert not [
-        notice for notice in notices if notice.get("message_key") == "result.narration_failed"
-    ]
-    assert not [
-        event
-        for event in events
-        if event["event_id"] == "audiobook_artifact_validation_failed_base_result_preserved"
-    ]
-
-
-def test_run_document_processing_preserves_base_result_when_audiobook_postprocess_fails():
-    runtime = _build_runtime_capture()
-    events, log_event = _capture_log_events()
-    artifact_calls = {}
-
-    def generate_markdown_block(**kwargs):
-        if kwargs["system_prompt"] == "system:audiobook":
-            raise RuntimeError("postprocess exploded")
-        return "edited"
-
-    result = document_pipeline.run_document_processing(
-        uploaded_file="report.docx",
-        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
-        source_paragraphs=[],
-        image_assets=[],
-        image_mode="safe",
-        app_config={"audiobook_postprocess_enabled": True, "audiobook_model": "gpt-5.4-audio"},
-        model="gpt-5.4",
-        max_retries=1,
-        processing_operation="edit",
-        source_language="en",
-        target_language="ru",
-        on_progress=lambda **kwargs: None,
-        runtime=runtime,
-        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
-        get_client=lambda: object(),
-        ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
-        log_event=log_event,
-        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
-        emit_state=_emit_state,
-        emit_finalize=_emit_finalize,
-        emit_log=_emit_log,
-        emit_status=_emit_status,
-        should_stop_processing=lambda runtime: False,
-        generate_markdown_block=generate_markdown_block,
-        process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=_inspect_placeholder_integrity,
-        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
-        write_ui_result_artifacts=lambda **kwargs: artifact_calls.setdefault("kwargs", dict(kwargs)) or {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx"},
-    )
-
-    assert result == "succeeded"
-    assert runtime["state"]["latest_markdown"] == "edited"
-    assert runtime["state"]["latest_docx_bytes"] == b"edited"
-    assert runtime["state"]["latest_narration_text"] is None
-    assert "narration_text" not in artifact_calls["kwargs"]
-    warning_events = [event for event in events if event["level"] == logging.WARNING]
-    assert any(event["event_id"] == "audiobook_postprocess_failed_base_result_preserved" for event in warning_events)
-
-
-def test_standalone_audiobook_ignores_stale_postprocess_flag_and_never_runs_post_pass():
-    # Mutual-exclusion guard (defence in depth): the standalone `audiobook` operation and
-    # the additive `audiobook_postprocess` checkbox are two separate paths. If a stale
-    # session_state carries audiobook_postprocess_enabled=True while the standalone
-    # `audiobook` operation is selected, the pipeline must take the standalone narration
-    # branch (deterministic strip of narration_chunks) and MUST NOT trigger the LLM
-    # post-pass. Passing dependencies/emitters=None proves no post-pass call is attempted:
-    # _run_audiobook_postprocess would immediately AttributeError on None.
-    context = cast(
-        Any,
-        SimpleNamespace(
-            processing_operation="audiobook",
-            app_config={"audiobook_postprocess_enabled": True},
-        ),
-    )
-    state = cast(Any, SimpleNamespace(narration_chunks=["# Heading\n\nSpoken line."]))
-
-    assert document_pipeline_late_phases._should_run_audiobook_postprocess(context=context) is False
-
-    narration_text = document_pipeline_late_phases._build_narration_text(
-        context=context,
-        dependencies=None,
-        emitters=None,
-        state=state,
-    )
-
-    assert narration_text is not None
-    assert "Spoken line." in narration_text
-    assert "Heading" in narration_text
-    assert "#" not in narration_text  # heading marker stripped by the standalone deterministic branch
-
-
 def test_reader_cleanup_activation_is_translate_only_and_policy_off_wins():
     enabled = {"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory"}
 
@@ -1844,355 +1474,6 @@ def test_reader_cleanup_activation_is_translate_only_and_policy_off_wins():
             app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "off"},
         )
     ) is False
-
-
-def test_translation_narration_projects_final_cleanup_registry_by_block_lineage(monkeypatch):
-    captured = {}
-    context = SimpleNamespace(
-        processing_operation="translate",
-        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory", "audiobook_postprocess_enabled": True},
-        jobs=[{"narration_include": True}, {"narration_include": False}, {"narration_include": True}],
-    )
-    final_registry = [
-        {"block_index": 1, "paragraph_id": "p1", "text": "Final first"},
-        {"block_index": 2, "paragraph_id": "p2", "text": "Excluded bibliography"},
-        {"block_index": 3, "paragraph_id": "p3", "text": "Final replacement"},
-    ]
-    monkeypatch.setattr(
-        document_pipeline_narration_postprocess,
-        "_run_audiobook_postprocess",
-        lambda **kwargs: captured.setdefault("chunks", kwargs["narration_chunks_override"]) or "narration",
-    )
-
-    document_pipeline_late_phases._build_narration_text(
-        context=context,
-        dependencies=SimpleNamespace(),
-        emitters=SimpleNamespace(),
-        state=SimpleNamespace(narration_chunks=["stale first", "stale last"]),
-        final_generated_paragraph_registry=final_registry,
-    )
-
-    assert captured["chunks"] == ["Final first", "Final replacement"]
-
-
-def test_translation_narration_marker_disabled_cleanup_noop_omits_tts_and_preserves_base_result(
-    tmp_path,
-):
-    runtime = _build_runtime_capture()
-    block_outputs = iter(
-        ["Первый принятый fallback-абзац.", "Следующий принятый абзац."]
-    )
-    narration_provider_calls = []
-    artifact_calls = {}
-
-    def generate_markdown_block(**kwargs):
-        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
-            return json.dumps(
-                {"cleanup_operations": [], "warnings": []}, ensure_ascii=False
-            )
-        if len(narration_provider_calls) == 0:
-            try:
-                return next(block_outputs)
-            except StopIteration:
-                pass
-        narration_provider_calls.append(kwargs["target_text"])
-        return "Итоговая озвучка."
-
-    def write_ui_result_artifacts(**kwargs):
-        artifact_calls["kwargs"] = dict(kwargs)
-        return {
-            "markdown_path": str(tmp_path / "fallback.result.md"),
-            "docx_path": str(tmp_path / "fallback.result.docx"),
-        }
-
-    result = _run_processing(
-        runtime,
-        processing_operation="translate",
-        jobs=[
-            {
-                "target_text": "First accepted paragraph.",
-                "context_before": "",
-                "context_after": "Following accepted paragraph.",
-                "target_chars": 25,
-                "context_chars": 29,
-                "narration_include": True,
-            },
-            {
-                "target_text": "Following accepted paragraph.",
-                "context_before": "First accepted paragraph.",
-                "context_after": "",
-                "target_chars": 29,
-                "context_chars": 25,
-                "narration_include": True,
-            },
-        ],
-        app_config={
-            "enable_paragraph_markers": False,
-            "reader_cleanup_enabled": True,
-            "reader_cleanup_policy": "advisory",
-            "audiobook_postprocess_enabled": True,
-        },
-        generate_markdown_block=generate_markdown_block,
-        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
-        write_ui_result_artifacts=write_ui_result_artifacts,
-    )
-
-    assert result == "succeeded"
-    assert narration_provider_calls == []
-    assert runtime["state"]["latest_narration_text"] is None
-    assert runtime["state"]["latest_markdown"] == (
-        "Первый принятый fallback-абзац.\n\nСледующий принятый абзац."
-    )
-    assert runtime["state"]["latest_docx_bytes"] == runtime["state"][
-        "latest_markdown"
-    ].encode("utf-8")
-    assert artifact_calls["kwargs"]["markdown_text"] == runtime["state"][
-        "latest_markdown"
-    ]
-    assert artifact_calls["kwargs"]["docx_bytes"] == runtime["state"][
-        "latest_docx_bytes"
-    ]
-    assert "narration_text" not in artifact_calls["kwargs"]
-    assert {
-        "kind": "narration",
-        "level": "warning",
-        "message_key": "result.narration_omitted",
-    } in runtime["state"]["latest_result_notices"]
-
-
-def test_translation_narration_projection_skips_blank_and_image_only_valid_lineage():
-    context = SimpleNamespace(
-        processing_operation="translate",
-        jobs=[
-            {"narration_include": True},
-            {"narration_include": True},
-            {"narration_include": True},
-        ]
-    )
-
-    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-        context=context,
-        final_generated_paragraph_registry=[
-            {"block_index": 1, "text": "  \n  "},
-            {"block_index": 2, "text": "[[DOCX_IMAGE_img_001]]"},
-            {"block_index": 3, "text": "Eligible final narration."},
-        ],
-    )
-
-    assert projected == ["Eligible final narration."]
-    with pytest.raises(
-        RuntimeError,
-        match="narration_cleanup_projection_unsafe:incomplete_lineage",
-    ):
-        document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-            context=context,
-            final_generated_paragraph_registry=[
-                {"block_index": 4, "text": "[[DOCX_IMAGE_img_999]]"}
-            ],
-        )
-
-
-def test_translation_narration_projection_accepts_cleanup_delete_split_and_join_lineage():
-    context = SimpleNamespace(
-        processing_operation="translate",
-        jobs=[
-            {"narration_include": True},
-            {"narration_include": True},
-            {"narration_include": True},
-            {"narration_include": False},
-        ]
-    )
-
-    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-        context=context,
-        final_generated_paragraph_registry=[
-            {
-                "block_index": 1,
-                "text": "Joined final text",
-                "reader_cleanup_source_block_indexes": [1, 2],
-            },
-            # Block 3 was deliberately deleted by cleanup and is therefore absent.
-            {"block_index": 4, "text": "Excluded bibliography"},
-        ],
-    )
-
-    assert projected == ["Joined final text"]
-    assert document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-        context=context,
-        final_generated_paragraph_registry=[],
-    ) == []
-
-
-def test_translation_narration_projection_drops_a_source_text_fallback_paragraph():
-    """Spec 054 anti-regression 3: what the standalone operation drops, the post-pass drops.
-
-    The cleaned-translate projection rebuilds the narration from the FINAL registry instead
-    of ``state.narration_chunks``, so the exclusion has to travel on the paragraph. Without
-    it the optional ElevenLabs post-pass would narrate the untranslated source that the
-    ``audiobook`` operation keeps out.
-
-    Spec 061 FR-016: the registry is the one PRODUCTION hands the projection — written by
-    ``block_execution``, assembled into ``FinalAssemblyEntry`` objects and rebuilt by
-    ``build_generated_paragraph_registry_from_entries`` exactly as ``late_phases`` does it.
-    It used to be a list of hand-written dicts carrying the flag, which kept this test green
-    while the production builder dropped the flag and the projection never saw it.
-    """
-    source_text = "Many tides ago, in a small hamlet by the old Saltmarsh."
-    kept_model_output = "Однажды в маленькой гавани."
-    state = SimpleNamespace(generated_paragraph_registry=[])
-
-    def _append_marker_registry_entries(**kwargs):
-        block_execution.append_marker_registry_entries(
-            **kwargs,
-            build_processed_paragraph_registry_entries_fn=block_execution.build_processed_paragraph_registry_entries,
-        )
-
-    for index, paragraph_id, processed_chunk, rejection_kind, narration_excluded in (
-        (1, "p0001", source_text, "source_text_fallback", True),
-        # Anti-vacuum: a controlled fallback that KEPT the model's own output is narratable.
-        (2, "p0002", kept_model_output, "english_residual_output", False),
-    ):
-        block_execution.append_controlled_fallback_registry_entries(
-            context=SimpleNamespace(uploaded_filename="report.docx"),
-            dependencies=SimpleNamespace(log_event=lambda *args, **kwargs: None),
-            state=state,
-            initialization=SimpleNamespace(job_count=2),
-            index=index,
-            payload=SimpleNamespace(job_kind="llm", paragraph_ids=[paragraph_id]),
-            processed_chunk=processed_chunk,
-            rejection_kind=rejection_kind,
-            append_marker_registry_entries_fn=_append_marker_registry_entries,
-            narration_excluded=narration_excluded,
-        )
-    assembly_result = document_pipeline_output_validation.assemble_final_markdown(
-        processed_chunks=[source_text, kept_model_output],
-        generated_paragraph_registry=state.generated_paragraph_registry,
-        source_paragraphs=None,
-    )
-    final_registry = document_pipeline_output_validation.build_generated_paragraph_registry_from_entries(
-        assembly_result.entries
-    )
-
-    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-        context=SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}, {"narration_include": True}]),
-        final_generated_paragraph_registry=final_registry,
-    )
-
-    assert [entry.narration_excluded for entry in assembly_result.entries] == [True, False]
-    assert projected == [kept_model_output]
-
-
-def test_translation_narration_projection_drops_an_omitted_paragraph():
-    """Spec 056 E, same rule one level down: an omitted paragraph is not narratable.
-
-    The standalone ``audiobook`` operation never puts it in ``state.narration_chunks``
-    (``block_execution.narration_text_for_processed_block``); this projection rebuilds the
-    narration from the final registry and has to honour the same decision, or the two entry
-    points diverge (spec 054 anti-regression 3).
-    """
-    context = SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}, {"narration_include": True}])
-
-    projected = document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-        context=context,
-        final_generated_paragraph_registry=[
-            {"block_index": 1, "text": "14", "paragraph_status": "omitted"},
-            # Anti-vacuum: an accepted paragraph in the same block is still narrated.
-            {"block_index": 2, "text": "Почему бы не задействовать фонд?", "paragraph_status": "accepted"},
-        ],
-    )
-
-    assert projected == ["Почему бы не задействовать фонд?"]
-
-
-def test_translation_narration_projection_rejects_join_across_inclusion_boundary():
-    context = SimpleNamespace(
-        processing_operation="translate",
-        jobs=[{"narration_include": True}, {"narration_include": False}]
-    )
-
-    with pytest.raises(RuntimeError, match="narration_cleanup_projection_unsafe:mixed_join_boundary"):
-        document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-            context=context,
-            final_generated_paragraph_registry=[
-                {
-                    "block_index": 1,
-                    "text": "Ambiguous joined text",
-                    "reader_cleanup_source_block_indexes": [1, 2],
-                }
-            ],
-        )
-
-
-def test_translation_narration_projection_rejects_substantive_nonexistent_lineage():
-    context = SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}])
-
-    with pytest.raises(
-        RuntimeError,
-        match="narration_cleanup_projection_unsafe:incomplete_lineage",
-    ):
-        document_pipeline_narration_postprocess._project_final_cleanup_narration_chunks(
-            context=context,
-            final_generated_paragraph_registry=[
-                {"block_index": 2, "text": "Substantive final text."}
-            ],
-        )
-
-
-def test_translation_narration_rejects_unsafe_cleanup_projection():
-    context = SimpleNamespace(
-        processing_operation="translate",
-        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory", "audiobook_postprocess_enabled": True},
-        jobs=[{"narration_include": True}],
-    )
-
-    with pytest.raises(RuntimeError, match="narration_cleanup_projection_unsafe"):
-        document_pipeline_late_phases._build_narration_text(
-            context=context,
-            dependencies=SimpleNamespace(),
-            emitters=SimpleNamespace(),
-            state=SimpleNamespace(narration_chunks=["stale"]),
-            final_generated_paragraph_registry=None,
-        )
-
-
-def test_narration_stop_after_inflight_group_prevents_later_provider_calls():
-    stop_checks = []
-    provider_calls = []
-    dependencies = SimpleNamespace(
-        should_stop_processing=lambda runtime: (stop_checks.append(True) or len(stop_checks) >= 3),
-        load_system_prompt=lambda **kwargs: "system",
-        get_client=lambda: object(),
-        generate_markdown_block=lambda **kwargs: (provider_calls.append(kwargs["target_text"]) or kwargs["target_text"]),
-        log_event=lambda *args, **kwargs: None,
-    )
-    emitters = SimpleNamespace(
-        emit_status=lambda *args, **kwargs: None,
-    )
-    context = SimpleNamespace(
-        processing_operation="translate",
-        app_config={"audiobook_postprocess_enabled": True, "chunk_size": 3000},
-        jobs=[],
-        runtime={},
-        source_language="en",
-        target_language="ru",
-        model="gpt-5.4",
-        max_retries=1,
-        uploaded_filename="report.docx",
-    )
-    state = SimpleNamespace(
-        narration_chunks=["a" * 2000, "b" * 2000],
-        processed_chunks=["a", "b"],
-    )
-
-    with pytest.raises(document_pipeline_narration_postprocess.LatePhaseStopped):
-        document_pipeline_late_phases._build_narration_text(
-            context=context,
-            dependencies=dependencies,
-            emitters=emitters,
-            state=state,
-        )
-
-    assert len(provider_calls) == 1
 
 
 def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_report_artifacts(tmp_path: Path):
@@ -3130,7 +2411,7 @@ def test_run_document_processing_delivers_standalone_audiobook_with_narration_re
     ``latest_docx_bytes is None``, ``latest_narration_text is None`` and the finalize stage
     "Ошибка проверки narration" — one DOI anywhere in the narration destroyed the whole
     artifact of a fully paid standalone run. Spec 054 Finding 4 revoked that: the same input
-    is now DELIVERED, and the same two matches (an unmodelled ``[angry]`` tag and the DOI)
+    is now DELIVERED, and its two matches (the DOI and an inline citation; spec 070 dropped the tag rule)
     are published as review data instead.
     """
     runtime = _build_runtime_capture()
@@ -3161,7 +2442,7 @@ def test_run_document_processing_delivers_standalone_audiobook_with_narration_re
         emit_log=_emit_log,
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
-        generate_markdown_block=lambda **kwargs: "[angry] text with DOI:10.1000/xyz",
+        generate_markdown_block=lambda **kwargs: "text with DOI:10.1000/xyz and (Smith, 2019)",
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
@@ -3170,14 +2451,14 @@ def test_run_document_processing_delivers_standalone_audiobook_with_narration_re
     )
 
     assert result == "succeeded"
-    assert runtime["state"]["latest_docx_bytes"] == b"[angry] text with DOI:10.1000/xyz"
-    assert runtime["state"]["latest_narration_text"] == "[angry] text with DOI:10.1000/xyz"
+    assert runtime["state"]["latest_docx_bytes"] == b"text with DOI:10.1000/xyz and (Smith, 2019)"
+    assert runtime["state"]["latest_narration_text"] == "text with DOI:10.1000/xyz and (Smith, 2019)"
     assert runtime["finalize"][-1][0] == "Обработка завершена"
     review_event = next(
         event for event in events if event["event_id"] == "narration_artifact_review_data"
     )
     assert review_event["level"] == logging.WARNING
-    assert review_event["context"]["review_rules"] == ["doi", "disallowed_tags"]
+    assert review_event["context"]["review_rules"] == ["doi", "inline_citation"]
     assert review_event["context"]["review_match_count"] == 2
 
 
@@ -3220,66 +2501,6 @@ def test_run_document_processing_clears_stale_narration_on_docx_build_failure():
 
     assert result == "failed"
     assert runtime["state"]["latest_narration_text"] is None
-
-
-def test_run_document_processing_uses_base_model_for_audiobook_postprocess_when_configured_model_blank():
-    runtime = _build_runtime_capture()
-    generated_calls = []
-
-    result = document_pipeline.run_document_processing(
-        uploaded_file="report.docx",
-        jobs=[{
-            "target_text": "block",
-            "context_before": "",
-            "context_after": "",
-            "target_chars": 5,
-            "context_chars": 0,
-            "narration_include": True,
-        }],
-        source_paragraphs=[],
-        image_assets=[],
-        image_mode="safe",
-        app_config={
-            "audiobook_postprocess_enabled": True,
-            "audiobook_model": "   ",
-            "chunk_size": 6000,
-        },
-        model="gpt-5.4-base",
-        max_retries=1,
-        processing_operation="edit",
-        source_language="en",
-        target_language="ru",
-        on_progress=lambda **kwargs: None,
-        runtime=runtime,
-        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
-        get_client=lambda: object(),
-        ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda **kwargs: "system:audiobook" if kwargs["operation"] == "audiobook" else "system:edit",
-        log_event=lambda *args, **kwargs: None,
-        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
-        emit_state=_emit_state,
-        emit_finalize=_emit_finalize,
-        emit_log=_emit_log,
-        emit_status=_emit_status,
-        should_stop_processing=lambda runtime: False,
-        generate_markdown_block=lambda **kwargs: generated_calls.append(dict(kwargs)) or ("edited" if len(generated_calls) == 1 else "[thoughtful] edited"),
-        process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=_inspect_placeholder_integrity,
-        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
-    )
-
-    assert result == "succeeded"
-    assert len(generated_calls) == 2
-    assert generated_calls[1]["model"] == "gpt-5.4-base"
-    assert runtime["state"]["latest_narration_text"] == "[thoughtful] edited"
-
-
-def test_resolve_audiobook_postprocess_chunk_size_clamps_to_config_minimum():
-    context = type("Context", (), {"app_config": {"chunk_size": 1200}})()
-
-    assert document_pipeline_late_phases._resolve_audiobook_postprocess_chunk_size(context=context) == 3000
 
 
 def test_run_document_processing_does_not_fail_when_ui_result_artifact_save_fails():
@@ -8593,7 +7814,6 @@ def test_standalone_audiobook_reports_omitted_paragraph_characters_and_notifies(
     assert excluded_event["context"]["excluded_omitted_paragraph_chars"] == len(
         _OMITTED_ENGLISH_PARAGRAPH
     )
-    assert excluded_event["context"]["narration_mode"] == "standalone"
 
     saved_event = next(
         event for event in events if event["event_id"] == "ui_audiobook_artifact_saved"

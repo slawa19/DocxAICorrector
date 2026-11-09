@@ -19,7 +19,6 @@ tested beside the other finalize-gate tests in
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,12 +28,10 @@ import pytest
 
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.block_execution as block_execution
-import docxaicorrector.pipeline.narration_postprocess as narration_postprocess
 import docxaicorrector.pipeline.output_validation as output_validation
 import docxaicorrector.pipeline.quality_gate as quality_gate
 import docxaicorrector.pipeline.reader_cleanup_rebuild as reader_cleanup_rebuild
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
-from docxaicorrector.ui import i18n
 from docxaicorrector.generation._generation import (
     MarkerPreservedBlockText,
     ParagraphDisposition,
@@ -95,26 +92,15 @@ def _final_registry(processed_chunks: Sequence[str], state) -> tuple[tuple[outpu
     )
 
 
-def _project(
-    registry: Sequence[Mapping[str, object]], *, job_count: int, processing_operation: str = "translate"
-) -> list[str]:
-    return narration_postprocess._project_final_cleanup_narration_chunks(
-        context=SimpleNamespace(
-            processing_operation=processing_operation, jobs=[{"narration_include": True}] * job_count
-        ),
-        final_generated_paragraph_registry=list(registry),
-    )
-
-
 _SOURCE_FALLBACK_TEXT = "Many tides ago, in a small hamlet by the old Saltmarsh."
 _ACCEPTED_TEXT = "Почему бы не задействовать фонд?"
 _OMITTED_SOURCE_TEXT = "Footnote 14, see Appendix A for the full dataset."
 _PLAIN_TEXT = "Однажды в маленькой гавани моряки обменивались снастями."
 
 
-def test_production_registry_carries_both_dispositions_and_the_projection_honours_them() -> None:
-    """US4 scenario 1: a controlled-fallback block and an ``omitted`` paragraph are dropped
-    by the projection when the registry is the one production builds (FR-014, FR-015)."""
+def test_production_registry_carries_both_dispositions() -> None:
+    """US4 scenario 1: a controlled-fallback block and an ``omitted`` paragraph
+    are marked on the registry production builds (FR-014, FR-015)."""
     state = SimpleNamespace(generated_paragraph_registry=[])
     omitted_block = _block(
         ParagraphDisposition(paragraph_id="p0002", text=_ACCEPTED_TEXT, status="accepted"),
@@ -141,7 +127,6 @@ def test_production_registry_carries_both_dispositions_and_the_projection_honour
     assert by_id["p0002"]["paragraph_status"] == "accepted"
     assert by_id["p0003"]["paragraph_status"] == "omitted"
     assert [entry.paragraph_status for entry in entries] == [None, "accepted", "omitted"]
-    assert _project(registry, job_count=2) == [_ACCEPTED_TEXT]
 
 
 def test_production_builder_without_a_fallback_leaves_the_paragraph_narratable() -> None:
@@ -165,7 +150,6 @@ def test_production_builder_without_a_fallback_leaves_the_paragraph_narratable()
     assert entries[0].narration_excluded is False
     assert entries[0].paragraph_status == "accepted"
     assert "controlled_fallback_narration_excluded" not in registry[0]
-    assert _project(registry, job_count=1) == [_PLAIN_TEXT]
 
 
 def test_merge_entry_pair_keeps_the_disposition_of_two_withheld_halves() -> None:
@@ -240,8 +224,6 @@ def test_boundary_recovery_refuses_to_weld_accepted_text_to_withheld_text() -> N
     assert [decision.reason for decision in result.diagnostics.merge_decisions] == [
         "narration_admissibility_boundary"
     ]
-    registry = output_validation.build_generated_paragraph_registry_from_entries(result.entries)
-    assert _project(registry, job_count=1) == [_CONTINUED_HEAD]
 
 
 def test_boundary_recovery_still_welds_two_withheld_halves() -> None:
@@ -250,8 +232,6 @@ def test_boundary_recovery_still_welds_two_withheld_halves() -> None:
     assert len(result.entries) == 1
     assert result.entries[0].paragraph_status == "omitted"
     assert result.diagnostics.accepted_merges == 1
-    registry = output_validation.build_generated_paragraph_registry_from_entries(result.entries)
-    assert _project(registry, job_count=1) == []
 
 
 def test_boundary_recovery_still_welds_two_accepted_halves() -> None:
@@ -262,45 +242,6 @@ def test_boundary_recovery_still_welds_two_accepted_halves() -> None:
     assert len(result.entries) == 1
     assert result.entries[0].paragraph_status == "accepted"
     assert result.diagnostics.accepted_merges == 1
-    registry = output_validation.build_generated_paragraph_registry_from_entries(result.entries)
-    assert _project(registry, job_count=1) == [result.entries[0].text]
-
-
-_RESTORED_SOURCE_TEXT = "People used barter for all their transactions."
-
-
-def _restored_registry() -> list[dict[str, object]]:
-    state = SimpleNamespace(generated_paragraph_registry=[])
-    block = _block(
-        ParagraphDisposition(paragraph_id="p0001", text=_ACCEPTED_TEXT, status="accepted"),
-        ParagraphDisposition(paragraph_id="p0002", text=_RESTORED_SOURCE_TEXT, status="source_restored"),
-        ParagraphDisposition(paragraph_id="p0003", text=_OMITTED_SOURCE_TEXT, status="omitted"),
-    )
-    _write_block(
-        state,
-        index=1,
-        payload=SimpleNamespace(job_kind="llm", paragraph_ids=["p0001", "p0002", "p0003"]),
-        processed_chunk=block,
-    )
-    _entries, registry = _final_registry([block], state)
-    return registry
-
-
-def test_late_projection_withholds_source_restored_in_a_language_changing_operation() -> None:
-    """FR-006 on the cleaned-translate path: ``source_restored`` is the paragraph's own source
-    text, which in ``translate`` is the other language — withheld beside ``omitted``, exactly
-    as ``block_execution.narration_projection_for_processed_block`` does on the standalone
-    path. Anti-vacuum: the accepted paragraph is spoken."""
-    assert _project(_restored_registry(), job_count=1, processing_operation="translate") == [_ACCEPTED_TEXT]
-
-
-def test_late_projection_speaks_source_restored_on_edit() -> None:
-    """FR-007: on ``edit`` the source IS target-language text, so a restored paragraph is a real
-    paragraph of the book and is spoken; ``omitted`` stays withheld on every operation."""
-    assert _project(_restored_registry(), job_count=1, processing_operation="edit") == [
-        _ACCEPTED_TEXT,
-        _RESTORED_SOURCE_TEXT,
-    ]
 
 
 def _join(
@@ -364,7 +305,6 @@ def test_cleanup_join_refuses_to_weld_accepted_text_to_withheld_text(monkeypatch
     assert [(event_id, context["reason"]) for event_id, context in events] == [
         ("reader_cleanup_join_refused", "join_refused_narration_admissibility")
     ]
-    assert _project(derived, job_count=2) == ["First fragment"]
 
 
 def test_cleanup_join_still_welds_two_withheld_halves() -> None:
@@ -374,7 +314,6 @@ def test_cleanup_join_still_welds_two_withheld_halves() -> None:
     assert diagnostics["refused_join_narration_admissibility_count"] == 0
     assert len(derived) == 1
     assert derived[0]["paragraph_status"] == "omitted"
-    assert _project(derived, job_count=2) == []
     excluded_pair, _ = _join(_EXCLUDED_FALLBACK, {"paragraph_status": "omitted"})
     assert len(excluded_pair) == 1
     assert excluded_pair[0]["paragraph_status"] == "omitted"
@@ -390,11 +329,10 @@ def test_cleanup_join_of_two_accepted_paragraphs_stays_narratable() -> None:
     assert len(derived) == 1
     assert derived[0]["paragraph_status"] == "accepted"
     assert "controlled_fallback_narration_excluded" not in derived[0]
-    assert _project(derived, job_count=2) == ["First fragment second fragment"]
 
 
 # ---------------------------------------------------------------------------------------
-# end to end: translate + reader cleanup + the optional post-pass
+# end to end: translate + reader cleanup (spec 070 removed the optional narration post-pass)
 # ---------------------------------------------------------------------------------------
 
 
@@ -472,23 +410,18 @@ def _run(
     )
 
 
-def test_cleaned_translate_post_pass_never_receives_an_omitted_paragraph(tmp_path) -> None:
-    """US4 scenario 1 through the real late phases: the registry built at
-    ``late_phases`` from the assembly entries is the one reader cleanup returns as FINAL and
-    the projection reads. Before FR-014 it had no ``paragraph_status`` and the omitted
-    paragraph's source text went to the audiobook post-pass."""
+def test_cleaned_translate_final_registry_carries_the_omitted_paragraph_status(tmp_path) -> None:
+    """US4 scenario 1 through the real late phases: the registry built at ``late_phases`` from
+    the assembly entries is the one reader cleanup returns as FINAL. It must carry
+    ``paragraph_status`` (FR-014) so a later consumer can tell the omitted paragraph apart."""
     runtime: dict[str, object] = {"state": {}}
     events, log_event = _capture_log_events()
-    post_pass_inputs: list[str] = []
     omitted_text = "14"
 
     def generate(**kwargs):
         system_prompt = str(kwargs["system_prompt"])
         if system_prompt.startswith("You are cleaning translated book Markdown"):
             return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
-        if system_prompt == "system:audiobook":
-            post_pass_inputs.append(str(kwargs["target_text"]))
-            return "[thoughtful] Почему бы не задействовать фонд?"
         return _block(
             ParagraphDisposition(paragraph_id="p0001", text=_ACCEPTED_TEXT, status="accepted"),
             ParagraphDisposition(paragraph_id="p0002", text=omitted_text, status="omitted"),
@@ -502,7 +435,6 @@ def test_cleaned_translate_post_pass_never_receives_an_omitted_paragraph(tmp_pat
             "enable_paragraph_markers": True,
             "reader_cleanup_enabled": True,
             "reader_cleanup_policy": "advisory",
-            "audiobook_postprocess_enabled": True,
         },
         jobs=[
             {
@@ -525,281 +457,3 @@ def test_cleaned_translate_post_pass_never_receives_an_omitted_paragraph(tmp_pat
     )
 
     assert result == "succeeded"
-    assert post_pass_inputs, [event["event_id"] for event in events]
-    post_pass_text = "\n\n".join(post_pass_inputs)
-    # Anti-vacuum: the accepted paragraph IS narrated...
-    assert _ACCEPTED_TEXT in post_pass_text
-    # ...the omitted one is not, while the DOCX branch still carries it.
-    assert omitted_text not in post_pass_text.split("\n\n")
-    session_state = cast(Mapping[str, object], runtime["state"])
-    assert omitted_text in str(session_state["latest_markdown"]).split("\n\n")
-    final_registry = cast(
-        Sequence[Mapping[str, object]], session_state["final_generated_paragraph_registry"]
-    )
-    statuses = {str(entry["paragraph_id"]): entry.get("paragraph_status") for entry in final_registry}
-    assert statuses == {"p0001": "accepted", "p0002": "omitted"}
-
-
-# ---------------------------------------------------------------------------------------
-# FR-017 (narrowed): the post-pass answer with fewer paragraphs is never silent
-# ---------------------------------------------------------------------------------------
-
-
-def _run_edit_post_pass(tmp_path: Path, *, post_pass_answer: str):
-    runtime: dict[str, object] = {"state": {}}
-    events, log_event = _capture_log_events()
-
-    def generate(**kwargs):
-        if kwargs["system_prompt"] == "system:audiobook":
-            return post_pass_answer
-        return "Первый абзац главы.\n\nВторой абзац главы."
-
-    result = _run(
-        tmp_path,
-        processing_operation="edit",
-        app_config={"audiobook_postprocess_enabled": True},
-        jobs=[
-            {
-                "target_text": "block",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 5,
-                "context_chars": 0,
-                "narration_include": True,
-            }
-        ],
-        generate=generate,
-        log_event=log_event,
-        runtime=runtime,
-    )
-    return result, runtime, events
-
-
-def _saved_context(events: Sequence[Mapping[str, object]]) -> Mapping[str, object]:
-    saved = next(event for event in events if event["event_id"] == "ui_audiobook_artifact_saved")
-    context = saved["context"]
-    assert isinstance(context, Mapping)
-    return context
-
-
-def test_post_pass_answer_with_a_paragraph_missing_is_marked_for_review(tmp_path) -> None:
-    result, runtime, events = _run_edit_post_pass(
-        tmp_path, post_pass_answer="[thoughtful] Первый абзац главы."
-    )
-
-    assert result == "succeeded"
-    shortfalls = [
-        event for event in events if event["event_id"] == "audiobook_postprocess_paragraph_shortfall"
-    ]
-    assert len(shortfalls) == 1
-    assert shortfalls[0]["level"] == logging.WARNING
-    context = shortfalls[0]["context"]
-    assert isinstance(context, Mapping)
-    assert context["needs_review"] is True
-    assert context["sent_paragraph_count"] == 2
-    assert context["returned_paragraph_count"] == 1
-    assert context["missing_paragraph_count"] == 1
-    saved = _saved_context(events)
-    assert saved["postprocess_paragraph_shortfall_group_count"] == 1
-    assert saved["postprocess_paragraph_shortfall_paragraph_count"] == 1
-    # Delivered, not replaced: the check reports, it does not rewrite the answer.
-    assert "Первый абзац главы." in str(cast(Mapping[str, object], runtime["state"])["latest_narration_text"])
-    # ...and the reader is told, once, with the counts the template prints.
-    notices = _shortfall_notices(runtime)
-    assert len(notices) == 1
-    assert notices[0]["level"] == "warning"
-    assert notices[0]["params"] == {"count": 1, "paragraphs": 1}
-    for language in ("ru", "en"):
-        catalog = json.loads(
-            (Path(i18n.__file__).resolve().parent / "locales" / f"{language}.json").read_text(encoding="utf-8")
-        )
-        rendered = catalog["result.narration_postprocess_paragraph_shortfall"].format(count=1, paragraphs=1)
-        assert "{" not in rendered
-
-
-def test_post_pass_answer_with_every_paragraph_is_not_reported(tmp_path) -> None:
-    """Anti-vacuum: a full answer raises nothing, and the counters say zero."""
-    result, _runtime, events = _run_edit_post_pass(
-        tmp_path,
-        post_pass_answer="[thoughtful] Первый абзац главы.\n\nВторой абзац главы.",
-    )
-
-    assert result == "succeeded"
-    assert not [
-        event for event in events if event["event_id"] == "audiobook_postprocess_paragraph_shortfall"
-    ]
-    saved = _saved_context(events)
-    assert saved["postprocess_paragraph_shortfall_group_count"] == 0
-    assert saved["postprocess_paragraph_shortfall_paragraph_count"] == 0
-    assert _shortfall_notices(_runtime) == []
-
-
-def test_stop_pressed_during_a_post_pass_call_is_honoured_inside_it(tmp_path) -> None:
-    """FR-022 in the late passes: the post-pass hands ``generate_markdown_block`` the run's
-    Stop predicate, so a Stop pressed after the call began stops its NEXT model call. The
-    double stands in for the real generator's retry loop, which asks ``should_stop`` before
-    every attempt (``_generation._raise_if_stop_requested``)."""
-    runtime: dict[str, object] = {"state": {}}
-    _events, log_event = _capture_log_events()
-    stop_requested = {"value": False}
-    post_pass_attempts: list[int] = []
-
-    def generate(**kwargs):
-        if kwargs["system_prompt"] != "system:audiobook":
-            return "Первый абзац главы."
-        should_stop = kwargs["should_stop"]
-        for attempt in (1, 2):
-            if should_stop():
-                raise LatePhaseStopped()
-            post_pass_attempts.append(attempt)
-            stop_requested["value"] = True  # the user presses Stop during attempt 1
-        return "[thoughtful] Первый абзац главы."
-
-    result = _run(
-        tmp_path,
-        processing_operation="edit",
-        app_config={"audiobook_postprocess_enabled": True},
-        jobs=[
-            {
-                "target_text": "block",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 5,
-                "context_chars": 0,
-                "narration_include": True,
-            }
-        ],
-        generate=generate,
-        log_event=log_event,
-        runtime=runtime,
-        should_stop_processing=lambda runtime: stop_requested["value"],
-    )
-
-    assert post_pass_attempts == [1]
-    assert result == "stopped"
-
-
-def test_stop_pressed_during_a_reader_cleanup_call_is_honoured_inside_it(tmp_path) -> None:
-    runtime: dict[str, object] = {"state": {}}
-    _events, log_event = _capture_log_events()
-    stop_requested = {"value": False}
-    cleanup_attempts: list[int] = []
-
-    def generate(**kwargs):
-        if not str(kwargs["system_prompt"]).startswith("You are cleaning translated book Markdown"):
-            return "Первый абзац главы."
-        should_stop = kwargs["should_stop"]
-        for attempt in (1, 2):
-            if should_stop():
-                raise LatePhaseStopped()
-            cleanup_attempts.append(attempt)
-            stop_requested["value"] = True
-        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
-
-    result = _run(
-        tmp_path,
-        processing_operation="translate",
-        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory"},
-        jobs=[
-            {
-                "target_text": "First paragraph of the chapter.",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 31,
-                "context_chars": 0,
-                "narration_include": True,
-            }
-        ],
-        generate=generate,
-        log_event=log_event,
-        runtime=runtime,
-        should_stop_processing=lambda runtime: stop_requested["value"],
-    )
-
-    assert cleanup_attempts == [1]
-    assert result == "stopped"
-
-
-def _shortfall_notices(runtime: Mapping[str, object]) -> list[Mapping[str, object]]:
-    notices = cast(Mapping[str, object], runtime["state"]).get("latest_result_notices") or []
-    assert isinstance(notices, Sequence)
-    return [
-        notice
-        for notice in notices
-        if isinstance(notice, Mapping)
-        and notice.get("message_key") == "result.narration_postprocess_paragraph_shortfall"
-    ]
-
-
-# ---------------------------------------------------------------------------------------
-# FR-019: the production context fakes no input; the harness still judges both checks
-# ---------------------------------------------------------------------------------------
-
-
-def _checks_by_name(verdict: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
-    checks = verdict["checks"]
-    assert isinstance(checks, Sequence)
-    return {str(check["name"]): check for check in checks if isinstance(check, Mapping)}
-
-
-def _failed(verdict: Mapping[str, object]) -> list[str]:
-    failed = verdict["failed_checks"]
-    assert isinstance(failed, Sequence)
-    return [str(name) for name in failed]
-
-
-def _production_verdict(quality_report: Mapping[str, object]) -> dict[str, object]:
-    context = quality_gate._build_report_context_for_acceptance(
-        context=SimpleNamespace(processing_operation="translate"),
-        quality_report=quality_report,
-        formatting_diagnostics_payloads=[{"unmapped_source_ids": [], "caption_heading_conflicts": []}],
-        output_artifacts={"output_docx_openable": True},
-    )
-    assert "result" not in context
-    assert "reader_cleanup_evidence" not in context
-    return quality_gate.build_report_acceptance_verdict(context, require_no_toc_body_concat=True)
-
-
-def test_production_verdict_does_not_judge_inputs_it_does_not_have() -> None:
-    verdict = _production_verdict({"quality_status": "pass", "gate_reasons": []})
-
-    by_name = _checks_by_name(verdict)
-    # The enumeration is unchanged: the checks are still reported, as NOT-APPLICABLE.
-    assert set(by_name) == set(PRODUCTION_ACCEPTANCE_CHECK_NAMES)
-    assert by_name["pipeline_succeeded"]["applicable"] is False
-    assert by_name["pipeline_succeeded"]["reason"] == "pipeline_result_not_in_report"
-    assert by_name["reader_cleanup_stage_completed"]["applicable"] is False
-    assert by_name["reader_cleanup_stage_completed"]["reason"] == "reader_cleanup_evidence_not_in_report"
-    assert "pipeline_succeeded" not in _failed(verdict)
-    assert "reader_cleanup_stage_completed" not in _failed(verdict)
-
-
-def test_production_verdict_still_fails_on_a_check_it_can_measure() -> None:
-    """Anti-vacuum: excluding two checks did not quiet the verdict. A failed quality report
-    is an input production DOES have, and it still turns the verdict red."""
-    verdict = _production_verdict({"quality_status": "fail", "gate_reasons": ["untranslated_body_text_above_threshold"]})
-
-    assert verdict["passed"] is False
-    assert "translation_quality_report_not_failed" in _failed(verdict)
-
-
-def test_harness_verdict_still_judges_pipeline_result_and_reader_cleanup() -> None:
-    """The harness writes both keys from the real run, so both checks stay applicable there
-    and still fail on the evidence that should fail them."""
-    report = {
-        "result": "failed",
-        "runtime_config": {"effective": {"processing_operation": "translate"}},
-        "translation_quality_report": {"quality_status": "pass", "gate_reasons": []},
-        "formatting_diagnostics": [{"unmapped_source_ids": [], "caption_heading_conflicts": []}],
-        "output_artifacts": {"output_docx_openable": True},
-        "runtime": {},
-        "reader_cleanup_evidence": {"stage_status": "failed", "failed_chunk_count": 2, "cleanup_chunk_count": 2},
-        "preparation_diagnostic_snapshot": {},
-    }
-
-    verdict = build_acceptance_verdict(report, structural_checks_builder=None)
-
-    by_name = _checks_by_name(verdict)
-    assert by_name["pipeline_succeeded"]["applicable"] is True
-    assert by_name["reader_cleanup_stage_completed"]["applicable"] is True
-    assert {"pipeline_succeeded", "reader_cleanup_stage_completed"} <= set(_failed(verdict))

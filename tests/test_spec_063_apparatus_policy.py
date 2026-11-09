@@ -45,7 +45,7 @@ from docxaicorrector.generation._generation import (
     MarkerPreservedBlockText,
     ParagraphDisposition,
 )
-from docxaicorrector.pipeline import narration_postprocess, quality_gate
+from docxaicorrector.pipeline import quality_gate
 from docxaicorrector.pipeline.contracts import BlockExecutionPayload
 from docxaicorrector.pipeline.job_parsing import parse_processing_job
 from docxaicorrector.validation.formatting_coverage import _BACKMATTER_SECTION_TITLES
@@ -490,18 +490,6 @@ def test_the_standalone_narration_projection_neither_speaks_nor_books_it_as_a_lo
     )
     assert text == ""
     assert withheld == []
-
-
-def test_the_cleanup_narration_projection_skips_it_too() -> None:
-    context = SimpleNamespace(processing_operation="translate", jobs=[{"narration_include": True}])
-    registry = [
-        {"block_index": 1, "paragraph_id": "p0000", "text": _ENTRY_A, "paragraph_status": PARAGRAPH_STATUS_POLICY_KEPT_SOURCE},
-        {"block_index": 1, "paragraph_id": "p0001", "text": "Перевод.", "paragraph_status": PARAGRAPH_STATUS_ACCEPTED},
-    ]
-    projected = narration_postprocess._project_final_cleanup_narration_chunks(
-        context=context, final_generated_paragraph_registry=registry
-    )
-    assert projected == ["Перевод."]
 
 
 # --- replay over the recorded 2026-11-07 runs (opt-in evidence, not a CI test) -----------------

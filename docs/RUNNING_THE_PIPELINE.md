@@ -158,14 +158,9 @@ all validate).
 Two different things are easy to confuse:
 
 - **Standalone audiobook** — `processing_operation = "audiobook"`. The whole run produces narration.
-  Run profile: `ui-parity-standalone-audiobook` (`corpus_registry.toml:174`). The registry originally
+  Run profile: `ui-parity-standalone-audiobook` (`corpus_registry.toml:162`). The registry originally
   had no way to express this operation, and the profile exists so the first audiobook run is
-  reproducible — read the comment at `corpus_registry.toml:161-163` before using it.
-- **Narration as a post-pass on a translate run** — `audiobook_postprocess_enabled = true`, main
-  DOCX/Markdown result unchanged, narration written alongside. Run profile:
-  `ui-parity-translate-audiobook-postprocess` (`corpus_registry.toml:151`). Default is `false`; the
-  default is overridable via `DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT`
-  (`src/docxaicorrector/core/config_runtime_sections.py:568`).
+  reproducible — read the comment at `corpus_registry.toml:150-160` before using it.
 
 Model selection: there is **no active `[models.audiobook]` section**. `src/docxaicorrector/resources/config.toml:103-104`
 carries one only as a commented-out example, so the role inherits `[models.text]` unless you uncomment
