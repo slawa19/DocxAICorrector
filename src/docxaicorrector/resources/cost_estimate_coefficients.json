@@ -1,0 +1,39 @@
+{
+  "version": "069-v1",
+  "frozen_at": "2026-11-09",
+  "scope": "text stages only: glossary_extraction, text_generation, literary_polish; images excluded",
+  "anchor": {
+    "model": "google/gemini-3.1-flash-lite-preview",
+    "stage": "text_generation",
+    "language_pair": "en->ru",
+    "input_tokens": {"per_llm_job": 3111, "per_source_char": 1.329},
+    "output_tokens": {"per_paragraph": 48.3, "per_source_char": 0.160},
+    "provenance": "fit over rm_ch3 A, money_ch3 A (2026-11-08 bake-off) + RM sixth / Money fifth full runs (2026-11-08); in-sample books +-1 %, leave-one-book-out -25.9 % (Money) / +27.7 % (RM) (069-plan/cost_form_fit_jobs.out; J = LLM jobs of the prepared document)"
+  },
+  "glossary": {
+    "model": "google/gemini-3.1-flash-lite-preview",
+    "per_book": {"input_tokens": 31625, "output_tokens": 6745},
+    "range": {"input_tokens": [30801, 32448], "output_tokens": [4291, 9198]},
+    "provenance": "RM sixth 4 calls 32448/9198; Money fifth 3 calls 30801/4291 (2026-11-08)"
+  },
+  "ratios": [
+    {"model": "anthropic/claude-haiku-5.5", "stage": "literary_polish", "language_pair": "ru->ru over en->ru",
+     "input_vs_anchor": 1.306, "output_vs_anchor": 3.055,
+     "spread": {"input": [1.248, 1.363], "output": [2.818, 3.291]},
+     "provenance": "variant C / variant A text stage, rm_ch3 + money_ch3, 2026-11-08 (harness ran as edit: no document context, no glossary)"},
+    {"model": "google/gemini-3.7-flash", "stage": "text_generation", "language_pair": "en->ru", "reasoning_effort": "low",
+     "editorial_intensity": "conservative",
+     "input_vs_anchor": 0.995, "output_vs_anchor": 1.013,
+     "spread": {"input": [0.989, 1.000], "output": [1.009, 1.016]},
+     "provenance": "G-low-cons / A, rm_ch3 + money_ch3, 2026-11-09"},
+    {"model": "google/gemini-3.7-flash", "stage": "glossary_extraction", "language_pair": "en->ru", "reasoning_effort": "low",
+     "input_vs_anchor": 0.976, "output_vs_anchor": 0.984,
+     "spread": {"input": [0.952, 0.999], "output": [0.966, 1.002]},
+     "provenance": "G-low-cons / A glossary stage, 2026-11-09"}
+  ],
+  "discount_scenarios": [
+    {"model": "google/gemini-3.1-flash-lite-preview", "lower_bound_factor": [0.762, 0.790],
+     "label": "empirical provider discount on full books, cause unverified (no cache fields recorded)",
+     "provenance": "provider / list: RM sixth 0.790, Money fifth 0.762; chapters 0.974-0.984"}
+  ]
+}
