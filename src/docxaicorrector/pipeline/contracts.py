@@ -412,6 +412,12 @@ class BlockExecutionPayload:
     toc_dominant: bool = False
     toc_paragraph_count: int = 0
     paragraph_count: int = 0
+    # Spec 070 FR-003: one reason (``core.models.NARRATION_EXCLUSION_REASONS``) or ``None`` per
+    # paragraph, parallel to ``paragraph_ids``; a paragraph with a reason is not narrated and is
+    # not sent to the model. Produced only for the audiobook
+    # (``document.semantic_blocks.build_editing_jobs``); ``None`` means the producer did not
+    # compute it, read as "nothing is excluded" -- absence is never read as an exclusion.
+    narration_exclusion_reasons: list[str | None] | None = None
 
 
 @dataclass(frozen=True)

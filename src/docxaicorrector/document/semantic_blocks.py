@@ -5,6 +5,7 @@ from docxaicorrector.document.structure_authority import (
     normalize_structure_phase,
     phase_uses_advisory_hints,
 )
+from docxaicorrector.document.narration_exclusion import resolve_narration_exclusion_reason
 from docxaicorrector.document.relations import build_paragraph_relations, resolve_effective_relation_kinds
 from docxaicorrector.core.models import (
     BACK_MATTER_SECTION_INDEX,
@@ -321,12 +322,30 @@ def build_editing_jobs(
             or (toc_only_paragraph_count / paragraph_count) >= TOC_DOMINANCE_THRESHOLD
         )
         normalized_operation = str(processing_operation or "edit").strip().lower() or "edit"
-        narration_include = _resolve_narration_include(
-            block,
-            block_index=index,
-            reference_region_indexes=reference_region_indexes,
-            structure_phase=structure_phase,
-        )
+        narration_exclusion_reasons: list[str | None] | None = None
+        if normalized_operation == "audiobook":
+            # Spec 070 FR-003: the audiobook decides PER PARAGRAPH, so the block is narrated when
+            # at least one of its paragraphs is. Only the audiobook carries the field: the jobs
+            # of translate and edit stay byte-identical (SC-004).
+            narration_exclusion_reasons = [
+                resolve_narration_exclusion_reason(
+                    structural_role=structural_roles[paragraph_index],
+                    paragraph_role=paragraph.role,
+                    region=paragraph_regions_by_block[index][paragraph_index],
+                    back_matter_section=back_matter_sections.get(index),
+                    in_notes_in_body=fallback_paragraph_index + paragraph_index in notes_in_body_positions,
+                    text=_strip_internal_placeholders(paragraph.text),
+                )
+                for paragraph_index, paragraph in enumerate(block.paragraphs)
+            ]
+            narration_include = any(reason is None for reason in narration_exclusion_reasons)
+        else:
+            narration_include = _resolve_narration_include(
+                block,
+                block_index=index,
+                reference_region_indexes=reference_region_indexes,
+                structure_phase=structure_phase,
+            )
         job_kind = (
             "passthrough"
             if block.paragraphs
@@ -344,42 +363,44 @@ def build_editing_jobs(
             _resolve_marker_paragraph_id(paragraph, fallback_paragraph_index + paragraph_index)
             for paragraph_index, paragraph in enumerate(block.paragraphs)
         ]
-        jobs.append(
-            {
-                "job_kind": job_kind,
-                "target_text": block.text,
-                "target_text_with_markers": build_marker_wrapped_block_text(block.paragraphs, paragraph_ids=paragraph_ids),
-                "paragraph_ids": paragraph_ids,
-                "structural_roles": structural_roles,
-                # Spec 059 A-II: parallel to ``paragraph_ids``, one label per paragraph.
-                "paragraph_regions": paragraph_regions_by_block[index],
-                # Spec 063 FR-011: ``None`` outside the back-matter region.
-                "back_matter_section": back_matter_sections.get(index),
-                # Spec 067 FR-001: the paragraphs of this block that are a run of notes left
-                # in the body -- a per-PARAGRAPH apparatus mark; the region stays ``prose``.
-                "notes_in_body_paragraph_ids": [
-                    paragraph_id
-                    for paragraph_index, paragraph_id in enumerate(paragraph_ids)
-                    if fallback_paragraph_index + paragraph_index in notes_in_body_positions
-                ],
-                # Spec 067 FR-004: the heading paragraphs of this block that are a bare name.
-                "name_heading_paragraph_ids": [
-                    paragraph_id
-                    for paragraph_index, paragraph_id in enumerate(paragraph_ids)
-                    if fallback_paragraph_index + paragraph_index in name_heading_positions
-                ],
-                "narration_include": narration_include,
-                "toc_dominant": toc_dominant,
-                "toc_paragraph_count": toc_only_paragraph_count,
-                "paragraph_count": paragraph_count,
-                "context_before": context_before,
-                "context_after": context_after,
-                "target_chars": len(block.text),
-                "context_chars": len(context_before) + len(context_after),
-                "structure_phase": structure_phase,
-                "structure_source": structure_source,
-            }
-        )
+        job: dict[str, object] = {
+            "job_kind": job_kind,
+            "target_text": block.text,
+            "target_text_with_markers": build_marker_wrapped_block_text(block.paragraphs, paragraph_ids=paragraph_ids),
+            "paragraph_ids": paragraph_ids,
+            "structural_roles": structural_roles,
+            # Spec 059 A-II: parallel to ``paragraph_ids``, one label per paragraph.
+            "paragraph_regions": paragraph_regions_by_block[index],
+            # Spec 063 FR-011: ``None`` outside the back-matter region.
+            "back_matter_section": back_matter_sections.get(index),
+            # Spec 067 FR-001: the paragraphs of this block that are a run of notes left
+            # in the body -- a per-PARAGRAPH apparatus mark; the region stays ``prose``.
+            "notes_in_body_paragraph_ids": [
+                paragraph_id
+                for paragraph_index, paragraph_id in enumerate(paragraph_ids)
+                if fallback_paragraph_index + paragraph_index in notes_in_body_positions
+            ],
+            # Spec 067 FR-004: the heading paragraphs of this block that are a bare name.
+            "name_heading_paragraph_ids": [
+                paragraph_id
+                for paragraph_index, paragraph_id in enumerate(paragraph_ids)
+                if fallback_paragraph_index + paragraph_index in name_heading_positions
+            ],
+            "narration_include": narration_include,
+            "toc_dominant": toc_dominant,
+            "toc_paragraph_count": toc_only_paragraph_count,
+            "paragraph_count": paragraph_count,
+            "context_before": context_before,
+            "context_after": context_after,
+            "target_chars": len(block.text),
+            "context_chars": len(context_before) + len(context_after),
+            "structure_phase": structure_phase,
+            "structure_source": structure_source,
+        }
+        if narration_exclusion_reasons is not None:
+            # Spec 070 FR-003: parallel to ``paragraph_ids``, one reason (or ``None``) per paragraph.
+            job["narration_exclusion_reasons"] = narration_exclusion_reasons
+        jobs.append(job)
         fallback_paragraph_index += len(block.paragraphs)
 
     return jobs

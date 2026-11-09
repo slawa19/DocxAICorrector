@@ -1,6 +1,10 @@
 from typing import Any
 
-from docxaicorrector.core.models import BACK_MATTER_SECTION_VALUES, PARAGRAPH_REGION_VALUES
+from docxaicorrector.core.models import (
+    BACK_MATTER_SECTION_VALUES,
+    NARRATION_EXCLUSION_REASONS,
+    PARAGRAPH_REGION_VALUES,
+)
 
 
 def coerce_required_text_field(job: Any, field_name: str, *, allow_blank: bool = True) -> str:
@@ -63,6 +67,32 @@ def coerce_paragraph_id_subset(job: Any, field_name: str, *, paragraph_ids: list
     if unknown:
         raise ValueError(f"{field_name} names paragraphs outside the block: {unknown}")
     return values
+
+
+def coerce_narration_exclusion_reasons(job: Any, *, paragraph_ids: list[str] | None) -> list[str | None] | None:
+    """Spec 070 FR-003: the per-paragraph narration-exclusion reasons, validated.
+
+    Absent means the producer did not compute them, which is read as "nothing is excluded". When
+    present the list must be PARALLEL to ``paragraph_ids`` (a short list is the quiet failure: it
+    would exclude, or keep, the wrong paragraphs) and every entry must come from the CLOSED
+    vocabulary ``core.models.NARRATION_EXCLUSION_REASONS`` or be ``None`` -- an unknown name
+    raises instead of being read as either answer.
+    """
+    value = job.get("narration_exclusion_reasons")
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(item is None or isinstance(item, str) for item in value):
+        raise TypeError("narration_exclusion_reasons must be a list of strings or nulls")
+    expected = len(paragraph_ids or ())
+    if len(value) != expected:
+        raise ValueError(
+            "narration_exclusion_reasons must be parallel to paragraph_ids: "
+            f"{len(value)} entries against {expected} paragraphs"
+        )
+    unknown = sorted({item for item in value if item is not None and item not in NARRATION_EXCLUSION_REASONS})
+    if unknown:
+        raise ValueError(f"narration_exclusion_reasons carries unknown reasons: {unknown}")
+    return list(value)
 
 
 def coerce_optional_bool(job: Any, field_name: str) -> bool | None:
@@ -159,6 +189,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
         structural_roles=structural_roles,
         paragraph_regions=paragraph_regions,
     )
+    narration_exclusion_reasons = coerce_narration_exclusion_reasons(job, paragraph_ids=paragraph_ids)
     context_before = coerce_required_text_field(job, "context_before")
     context_after = coerce_required_text_field(job, "context_after")
     narration_include = coerce_optional_bool(job, "narration_include")
@@ -183,8 +214,14 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
         toc_dominant=bool(toc_dominant),
         toc_paragraph_count=toc_paragraph_count,
         paragraph_count=paragraph_count,
+        narration_exclusion_reasons=narration_exclusion_reasons,
     )
 
 
 def is_marker_mode_enabled(context: Any, payload: Any) -> bool:
+    # Spec 070 R12 / O-3: the audiobook is ALWAYS addressed by paragraph id -- the narration
+    # denominator (FR-007) and the subset sent to the model (FR-003) are both sets of ids, and
+    # without markers there is neither. The config key keeps its meaning for translate and edit.
+    if str(getattr(context, "processing_operation", "") or "").strip().casefold() == "audiobook":
+        return bool(payload.paragraph_ids)
     return bool(context.app_config.get("enable_paragraph_markers", False)) and bool(payload.paragraph_ids)

@@ -1,0 +1,426 @@
+{
+ "edit": [
+  {
+   "back_matter_section": null,
+   "context_after": "> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "",
+   "context_chars": 296,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": true,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 2,
+   "paragraph_ids": [
+    "p0000",
+    "p0001"
+   ],
+   "paragraph_regions": [
+    "prose",
+    "prose"
+   ],
+   "structural_roles": [
+    "heading",
+    "body"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 93,
+   "target_text": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.",
+   "target_text_with_markers": "[[DOCX_PARA_p0000]]\n# Chapter One\n\n[[DOCX_PARA_p0001]]\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": null,
+   "context_after": "Contents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.",
+   "context_chars": 343,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": true,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 2,
+   "paragraph_ids": [
+    "p0002",
+    "p0003"
+   ],
+   "paragraph_regions": [
+    "prose",
+    "prose"
+   ],
+   "structural_roles": [
+    "epigraph",
+    "attribution"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 44,
+   "target_text": "> The tide keeps no promises.\n\n> - A. Writer",
+   "target_text_with_markers": "[[DOCX_PARA_p0002]]\n> The tide keeps no promises.\n\n[[DOCX_PARA_p0003]]\n> - A. Writer",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": null,
+   "context_after": "[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer",
+   "context_chars": 366,
+   "job_kind": "passthrough",
+   "name_heading_paragraph_ids": [],
+   "narration_include": false,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 2,
+   "paragraph_ids": [
+    "p0004",
+    "p0005"
+   ],
+   "paragraph_regions": [
+    "toc",
+    "toc"
+   ],
+   "structural_roles": [
+    "toc_header",
+    "toc_entry"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 21,
+   "target_text": "Contents\n\nOne ..... 3",
+   "target_text_with_markers": "[[DOCX_PARA_p0004]]\nContents\n\n[[DOCX_PARA_p0005]]\nOne ..... 3",
+   "toc_dominant": true,
+   "toc_paragraph_count": 2
+  },
+  {
+   "back_matter_section": null,
+   "context_after": "The pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3",
+   "context_chars": 296,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": true,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 3,
+   "paragraph_ids": [
+    "p0006",
+    "p0007",
+    "p0008"
+   ],
+   "paragraph_regions": [
+    "prose",
+    "prose",
+    "prose"
+   ],
+   "structural_roles": [
+    "image",
+    "caption",
+    "table"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 91,
+   "target_text": "[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>",
+   "target_text_with_markers": "[[DOCX_PARA_p0006]]\n[[DOCX_IMAGE_img_001]]\n\n[[DOCX_PARA_p0007]]\nFigure 1. A chart of the tides.\n\n[[DOCX_PARA_p0008]]\n<table><tr><td>1</td></tr></table>",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": null,
+   "context_after": "## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>",
+   "context_chars": 289,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": true,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 3,
+   "paragraph_ids": [
+    "p0009",
+    "p0010",
+    "p0011"
+   ],
+   "paragraph_regions": [
+    "prose",
+    "prose",
+    "prose"
+   ],
+   "structural_roles": [
+    "body",
+    "body",
+    "body"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 98,
+   "target_text": "The pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv",
+   "target_text_with_markers": "[[DOCX_PARA_p0009]]\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n[[DOCX_PARA_p0010]]\n(i)\n\n[[DOCX_PARA_p0011]]\n11 vv",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": "notes",
+   "context_after": "1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv",
+   "context_chars": 379,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": false,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 1,
+   "paragraph_ids": [
+    "p0012"
+   ],
+   "paragraph_regions": [
+    "back_matter"
+   ],
+   "structural_roles": [
+    "heading"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 8,
+   "target_text": "## Notes",
+   "target_text_with_markers": "[[DOCX_PARA_p0012]]\n## Notes",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": "notes",
+   "context_after": "",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes",
+   "context_chars": 365,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": false,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 1,
+   "paragraph_ids": [
+    "p0013"
+   ],
+   "paragraph_regions": [
+    "back_matter"
+   ],
+   "structural_roles": [
+    "list"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 24,
+   "target_text": "1. Harbour Ledger, 2010.",
+   "target_text_with_markers": "[[DOCX_PARA_p0013]]\n1. Harbour Ledger, 2010.",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  }
+ ],
+ "translate": [
+  {
+   "back_matter_section": null,
+   "context_after": "> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "",
+   "context_chars": 296,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": true,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 2,
+   "paragraph_ids": [
+    "p0000",
+    "p0001"
+   ],
+   "paragraph_regions": [
+    "prose",
+    "prose"
+   ],
+   "structural_roles": [
+    "heading",
+    "body"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 93,
+   "target_text": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.",
+   "target_text_with_markers": "[[DOCX_PARA_p0000]]\n# Chapter One\n\n[[DOCX_PARA_p0001]]\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": null,
+   "context_after": "Contents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.",
+   "context_chars": 343,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": true,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 2,
+   "paragraph_ids": [
+    "p0002",
+    "p0003"
+   ],
+   "paragraph_regions": [
+    "prose",
+    "prose"
+   ],
+   "structural_roles": [
+    "epigraph",
+    "attribution"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 44,
+   "target_text": "> The tide keeps no promises.\n\n> - A. Writer",
+   "target_text_with_markers": "[[DOCX_PARA_p0002]]\n> The tide keeps no promises.\n\n[[DOCX_PARA_p0003]]\n> - A. Writer",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": null,
+   "context_after": "[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer",
+   "context_chars": 366,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": false,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 2,
+   "paragraph_ids": [
+    "p0004",
+    "p0005"
+   ],
+   "paragraph_regions": [
+    "toc",
+    "toc"
+   ],
+   "structural_roles": [
+    "toc_header",
+    "toc_entry"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 21,
+   "target_text": "Contents\n\nOne ..... 3",
+   "target_text_with_markers": "[[DOCX_PARA_p0004]]\nContents\n\n[[DOCX_PARA_p0005]]\nOne ..... 3",
+   "toc_dominant": true,
+   "toc_paragraph_count": 2
+  },
+  {
+   "back_matter_section": null,
+   "context_after": "The pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3",
+   "context_chars": 296,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": true,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 3,
+   "paragraph_ids": [
+    "p0006",
+    "p0007",
+    "p0008"
+   ],
+   "paragraph_regions": [
+    "prose",
+    "prose",
+    "prose"
+   ],
+   "structural_roles": [
+    "image",
+    "caption",
+    "table"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 91,
+   "target_text": "[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>",
+   "target_text_with_markers": "[[DOCX_PARA_p0006]]\n[[DOCX_IMAGE_img_001]]\n\n[[DOCX_PARA_p0007]]\nFigure 1. A chart of the tides.\n\n[[DOCX_PARA_p0008]]\n<table><tr><td>1</td></tr></table>",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": null,
+   "context_after": "## Notes\n\n1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>",
+   "context_chars": 289,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": true,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 3,
+   "paragraph_ids": [
+    "p0009",
+    "p0010",
+    "p0011"
+   ],
+   "paragraph_regions": [
+    "prose",
+    "prose",
+    "prose"
+   ],
+   "structural_roles": [
+    "body",
+    "body",
+    "body"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 98,
+   "target_text": "The pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv",
+   "target_text_with_markers": "[[DOCX_PARA_p0009]]\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n[[DOCX_PARA_p0010]]\n(i)\n\n[[DOCX_PARA_p0011]]\n11 vv",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": "notes",
+   "context_after": "1. Harbour Ledger, 2010.",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv",
+   "context_chars": 379,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": false,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 1,
+   "paragraph_ids": [
+    "p0012"
+   ],
+   "paragraph_regions": [
+    "back_matter"
+   ],
+   "structural_roles": [
+    "heading"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 8,
+   "target_text": "## Notes",
+   "target_text_with_markers": "[[DOCX_PARA_p0012]]\n## Notes",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  },
+  {
+   "back_matter_section": "notes",
+   "context_after": "",
+   "context_before": "# Chapter One\n\nThe harbour woke slowly under a thin grey light, and nobody on the quay spoke.\n\n> The tide keeps no promises.\n\n> - A. Writer\n\nContents\n\nOne ..... 3\n\n[[DOCX_IMAGE_img_001]]\n\nFigure 1. A chart of the tides.\n\n<table><tr><td>1</td></tr></table>\n\nThe pilots argued about the chart until the lamps were lit and the water turned black.\n\n(i)\n\n11 vv\n\n## Notes",
+   "context_chars": 365,
+   "job_kind": "llm",
+   "name_heading_paragraph_ids": [],
+   "narration_include": false,
+   "notes_in_body_paragraph_ids": [],
+   "paragraph_count": 1,
+   "paragraph_ids": [
+    "p0013"
+   ],
+   "paragraph_regions": [
+    "back_matter"
+   ],
+   "structural_roles": [
+    "list"
+   ],
+   "structure_phase": "post_ai_final",
+   "structure_source": "post_ai_final_binding",
+   "target_chars": 24,
+   "target_text": "1. Harbour Ledger, 2010.",
+   "target_text_with_markers": "[[DOCX_PARA_p0013]]\n1. Harbour Ledger, 2010.",
+   "toc_dominant": false,
+   "toc_paragraph_count": 0
+  }
+ ]
+}

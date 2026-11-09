@@ -100,6 +100,34 @@ BACK_MATTER_SECTION_VALUES = frozenset(
 #   not booked as an audio LOSS either, because spec 054 never narrates the back matter.
 PARAGRAPH_STATUS_POLICY_KEPT_SOURCE = "policy_kept_source"
 
+# Spec 070 FR-003: WHY a paragraph is not narrated (audiobook), decided per paragraph on the
+# document layer from its role, its region and the FORM of its text -- never from words
+# (Constitution VII). The vocabulary is closed, like ``PARAGRAPH_REGION_VALUES``: a producer
+# and a consumer that disagree about a name would exclude a paragraph on one side and read it
+# aloud on the other, so an unknown name raises at the contract boundary
+# (``pipeline.job_parsing.coerce_narration_exclusion_reasons``). One reason per paragraph; the
+# order below is the priority of ``document.narration_exclusion``.
+NARRATION_EXCLUSION_IMAGE = "image"
+NARRATION_EXCLUSION_TABLE = "table"
+NARRATION_EXCLUSION_CAPTION = "caption"
+NARRATION_EXCLUSION_TOC = "toc"
+NARRATION_EXCLUSION_INDEX = "index"
+NARRATION_EXCLUSION_APPARATUS = "apparatus"
+NARRATION_EXCLUSION_NOTES_IN_BODY = "notes_in_body"
+NARRATION_EXCLUSION_FRAGMENT = "fragment"
+NARRATION_EXCLUSION_REASONS = frozenset(
+    {
+        NARRATION_EXCLUSION_IMAGE,
+        NARRATION_EXCLUSION_TABLE,
+        NARRATION_EXCLUSION_CAPTION,
+        NARRATION_EXCLUSION_TOC,
+        NARRATION_EXCLUSION_INDEX,
+        NARRATION_EXCLUSION_APPARATUS,
+        NARRATION_EXCLUSION_NOTES_IN_BODY,
+        NARRATION_EXCLUSION_FRAGMENT,
+    }
+)
+
 
 class ImageMode(StrEnum):
     NO_CHANGE = "no_change"
