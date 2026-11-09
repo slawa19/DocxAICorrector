@@ -2134,11 +2134,17 @@ def test_render_sidebar_image_model_selectors_follow_the_image_mode(monkeypatch)
     safe, safe_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="safe")
     compare, compare_keys, _ = _render_sidebar_for_image_mode(monkeypatch, image_mode="compare_all")
 
-    assert "sidebar_image_vision_model" not in no_change_keys and "sidebar_image_draw_model" not in no_change_keys
+    def has_selector(keys, prefix):
+        return any(str(key).startswith(prefix) for key in keys)
+
+    assert not has_selector(no_change_keys, "sidebar_image_vision_model")
+    assert not has_selector(no_change_keys, "sidebar_image_draw_model")
     assert no_change[10:12] == ("", "")
-    assert "sidebar_image_vision_model" not in safe_keys and "sidebar_image_draw_model" not in safe_keys
+    assert not has_selector(safe_keys, "sidebar_image_vision_model")
+    assert not has_selector(safe_keys, "sidebar_image_draw_model")
     assert safe[10:12] == ("", "")
-    assert "sidebar_image_vision_model" in compare_keys and "sidebar_image_draw_model" in compare_keys
+    assert "sidebar_image_vision_model__compare_all" in compare_keys
+    assert "sidebar_image_draw_model__compare_all" in compare_keys
     assert compare[10:12] == ("gpt-5.4-mini", "gpt-image-2.5-flare")
 
 
@@ -2153,7 +2159,7 @@ def test_render_sidebar_returns_the_chosen_image_models_and_preselects_the_confi
         monkeypatch,
         image_mode="semantic_redraw_structured",
         extra_config=extra,
-        choices={"sidebar_image_draw_model": "gpt-image-2.5-sunburst"},
+        choices={"sidebar_image_draw_model__semantic_redraw_structured": "gpt-image-2.5-sunburst"},
     )
 
     assert result[10:12] == ("gpt-6.1-sol", "gpt-image-2.5-sunburst")

@@ -39,6 +39,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_image_analysis.py`
 - `tests/test_image_generation.py`
 - `tests/test_image_model_capabilities.py`
+- `tests/test_image_mode_model_defaults.py`
 - `tests/test_image_model_selection.py`
 - `tests/test_image_pipeline_compare_helpers.py`
 - `tests/test_image_pipeline_policy.py`

@@ -160,8 +160,14 @@ def build_app_config_payload(
         # Spec 062: the two image-model choices and the per-role pins that outrank them.
         "image_vision_model_default": model_registry_settings.get("image_vision_model_default", models.image_analysis),
         "image_vision_model_options": tuple(model_registry_settings.get("image_vision_model_options", ())),
+        "image_vision_model_mode_defaults": tuple(
+            sorted((model_registry_settings.get("image_vision_model_mode_defaults") or {}).items())
+        ),
         "image_draw_model_default": model_registry_settings.get("image_draw_model_default", models.image_generation),
         "image_draw_model_options": tuple(model_registry_settings.get("image_draw_model_options", ())),
+        "image_draw_model_mode_defaults": tuple(
+            sorted((model_registry_settings.get("image_draw_model_mode_defaults") or {}).items())
+        ),
         "image_model_role_overrides": tuple(
             sorted((model_registry_settings.get("image_model_role_overrides") or {}).items())
         ),

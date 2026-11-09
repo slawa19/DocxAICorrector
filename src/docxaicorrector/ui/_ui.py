@@ -262,6 +262,34 @@ _KEPT_MODEL_SELECTION_KEY = "sidebar_model_kept_selection"
 _KEPT_CUSTOM_MODEL_KEY = "sidebar_model_kept_custom"
 
 
+def _kept_image_model_key(group: str, image_mode: str) -> str:
+    return f"sidebar_image_{group}_model_kept__{image_mode}"
+
+
+def _image_model_selectbox(
+    *, group: str, label: str, help_text: str, options: tuple[str, ...], default: str, image_mode: str
+) -> str:
+    """One image-model selectbox whose choice outlives the widget (spec 062).
+
+    The selectbox is not drawn in another mode or operation, so Streamlit drops its widget
+    state; the last choice of each (group, mode) lives in a plain non-widget session key
+    (same pattern as the text model above) and seeds the widget when the mode is shown again.
+    """
+
+    kept_key = _kept_image_model_key(group, image_mode)
+    kept = st.session_state.get(kept_key)
+    chosen_index = options.index(kept) if isinstance(kept, str) and kept in options else options.index(default)
+    selected = st.selectbox(
+        label,
+        list(options),
+        index=chosen_index,
+        help=help_text,
+        key=f"sidebar_image_{group}_model__{image_mode}",
+    )
+    st.session_state[kept_key] = selected
+    return str(selected or "")
+
+
 def _resolve_model_default_index(model_options: list[str], default_model: str, config: Mapping[str, Any]) -> int:
     if default_model in model_options:
         return model_options.index(default_model)
@@ -547,8 +575,9 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-# Image modes that call the drawing model (Images API). safe only reads images, so it
-# shows the reading-model selector alone; no_change calls no image model at all.
+# Image modes that call an image model (reading + drawing). safe calls none: its analysis runs
+# without vision (image/pipeline.py, enable_vision=False for safe; spec 062 FR-033) and the
+# plan is PIL only; no_change calls none either. Neither shows a selector.
 _IMAGE_DRAW_MODES = frozenset(
     {
         ImageMode.SEMANTIC_REDRAW_DIRECT.value,
@@ -566,23 +595,28 @@ def _render_image_model_selectors(config: Mapping[str, Any], image_mode: str) ->
     expander, so it uses bare ``st.*``.
     """
 
-    vision_default, vision_options = get_image_model_choice(config, "vision")
-    vision_model = st.selectbox(
-        t("sidebar.image_vision_model_label"),
-        list(vision_options),
-        index=vision_options.index(vision_default),
-        help=t("sidebar.image_vision_model_help"),
-        key="sidebar_image_vision_model",
+    # Per-mode keys: a mode starts from its own default instead of inheriting another mode's
+    # pick, and each mode's pick is kept in non-widget session keys, so it survives switching
+    # to another mode or operation and back.
+    vision_default, vision_options = get_image_model_choice(config, "vision", image_mode)
+    vision_model = _image_model_selectbox(
+        group="vision",
+        label=t("sidebar.image_vision_model_label"),
+        help_text=t("sidebar.image_vision_model_help"),
+        options=vision_options,
+        default=vision_default,
+        image_mode=image_mode,
     )
     draw_model = ""
     if image_mode in _IMAGE_DRAW_MODES:
-        draw_default, draw_options = get_image_model_choice(config, "draw")
-        draw_model = st.selectbox(
-            t("sidebar.image_draw_model_label"),
-            list(draw_options),
-            index=draw_options.index(draw_default),
-            help=t("sidebar.image_draw_model_help"),
-            key="sidebar_image_draw_model",
+        draw_default, draw_options = get_image_model_choice(config, "draw", image_mode)
+        draw_model = _image_model_selectbox(
+            group="draw",
+            label=t("sidebar.image_draw_model_label"),
+            help_text=t("sidebar.image_draw_model_help"),
+            options=draw_options,
+            default=draw_default,
+            image_mode=image_mode,
         )
     role_overrides = get_image_model_role_overrides(config)
     if role_overrides:

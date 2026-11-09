@@ -71,9 +71,9 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     models = cast(config.ModelRegistry, app_config["models"])
 
     assert app_config["default_model"] == "gpt-5.4-mini"
-    assert app_config["model_options"] == ["gpt-5.4", "gpt-5.4-mini", "gpt-5-mini"]
+    assert app_config["model_options"] == ["gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview", "openrouter:google/gemini-3.7-flash"]
     assert models.text.default == "gpt-5.4-mini"
-    assert models.text.options == ("gpt-5.4", "gpt-5.4-mini", "gpt-5-mini")
+    assert models.text.options == ("gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview", "openrouter:google/gemini-3.7-flash")
     assert app_config["chunk_size"] == 12000
     assert app_config["max_retries"] == 1
     assert app_config["processing_operation_default"] == "edit"
@@ -135,12 +135,8 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     # (GLOBAL_PLAN 2026-06-22, PATH 2 / Task B). Restore to "auto" in config.toml to re-enable #2.
     assert models.text.default == TEST_TEXT_MODEL_DEFAULT
     assert models.text.options == (
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5-mini",
-        "anthropic:claude-sonnet-4-6",
-        "openrouter:anthropic/claude-sonnet-4.6",
         "openrouter:google/gemini-3.1-flash-lite-preview",
+        "openrouter:google/gemini-3.7-flash",
     )
     assert models.boundary_review == TEST_TEXT_MODEL_DEFAULT
     assert app_config["relation_normalization_enabled"] is True
@@ -2512,7 +2508,9 @@ def test_env_example_documents_the_glossary_overrides():
 # The digest covers every field of the shipped config except the ``translation_*`` ones, so
 # adding the new fields (and the new ``[translation_modes]`` sections) must not move any
 # existing value. A change of the digest is a change of behaviour, not of this test.
-_PRE_TRANSLATION_MODES_CONFIG_DIGEST = "d3768d762f8e37f6a1878ae5a0d7256bb2b177404997fdf7a9dd07e31184fbdc"
+# Re-pinned 2026-11-09 (spec 062): [models.text].options trimmed to the two measured models and
+# the per-mode image-model defaults added (owner request); nothing else moved.
+_PRE_TRANSLATION_MODES_CONFIG_DIGEST = "5c216cb67a9b6caed68ad13db2d26e1c8f77951e282ce1fda3c06fb41105a533"
 
 
 def _config_digest_without_translation_fields(app_config) -> str:

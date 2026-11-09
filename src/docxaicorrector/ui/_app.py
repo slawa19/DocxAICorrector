@@ -1039,6 +1039,7 @@ def main() -> None:
             app_config,
             vision_model=image_vision_model,
             draw_model=image_draw_model,
+            image_mode=image_mode,
         )
     )
     app_config["reader_cleanup_enabled"] = bool(app_config.get("reader_cleanup_default", False))

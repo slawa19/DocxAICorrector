@@ -97,9 +97,8 @@ _PROVIDER_CAPABILITIES = {
 }
 _MIGRATION_DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
 _MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS = (
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5-mini",
+    "openrouter:google/gemini-3.1-flash-lite-preview",
+    "openrouter:google/gemini-3.7-flash",
 )
 _MIGRATION_DEFAULT_MODEL_ROLES = {
     "boundary_review": _MIGRATION_DEFAULT_TEXT_MODEL,
@@ -354,8 +353,10 @@ class AppConfig(Mapping[str, Any]):
     # that win over either choice. ``models`` already carries the resolved six ids.
     image_vision_model_default: str = ""
     image_vision_model_options: tuple[str, ...] = ()
+    image_vision_model_mode_defaults: tuple[tuple[str, str], ...] = ()
     image_draw_model_default: str = ""
     image_draw_model_options: tuple[str, ...] = ()
+    image_draw_model_mode_defaults: tuple[tuple[str, str], ...] = ()
     image_model_role_overrides: tuple[tuple[str, str], ...] = ()
     # Spec 063 P2: the per-run glossary of ``translate``. The loader always sets these from
     # config.toml (enabled there). An AppConfig assembled by hand (tests, tools) gets the pass
@@ -715,8 +716,31 @@ IMAGE_MODEL_GROUP_ROLES: dict[str, tuple[str, ...]] = {
 }
 
 
-def get_image_model_choice(config_like: object | None, group: str) -> tuple[str, tuple[str, ...]]:
+def _image_mode_default(config_like: object | None, group: str, image_mode: str | None) -> str:
+    """The model ``[models.image_<group>.mode_defaults]`` names for ``image_mode``, or ""."""
+
+    if not image_mode:
+        return ""
+    raw = _resolve_config_value(config_like, f"image_{group}_model_mode_defaults")
+    if isinstance(raw, Mapping):
+        pairs: list[tuple[object, object]] = list(raw.items())
+    elif isinstance(raw, (list, tuple)):
+        pairs = [(pair[0], pair[1]) for pair in raw if isinstance(pair, (list, tuple)) and len(pair) == 2]
+    else:
+        return ""
+    for mode_name, model in pairs:
+        if str(mode_name) == str(image_mode) and isinstance(model, str):
+            return model.strip()
+    return ""
+
+
+def get_image_model_choice(
+    config_like: object | None, group: str, image_mode: str | None = None
+) -> tuple[str, tuple[str, ...]]:
     """``(default, options)`` of the ``"vision"`` or ``"draw"`` image-model choice.
+
+    With ``image_mode`` the default is that mode's entry in ``[models.image_<group>.mode_defaults]``
+    when it has one (spec 062, owner request 2026-11-09), else the plain ``default``.
 
     A config that predates spec 062 (or a test stub) carries no choice fields; the default
     then falls back to the role the group is named after, so a selector built from it
@@ -733,6 +757,7 @@ def get_image_model_choice(config_like: object | None, group: str) -> tuple[str,
             default = get_model_role_value(config_like, role_names[0])
         except RuntimeError:
             default = _BUILTIN_IMAGE_MODEL_GROUPS[group][0]
+    default = _image_mode_default(config_like, group, image_mode) or default
     options: tuple[str, ...] = ()
     if isinstance(raw_options, (list, tuple)):
         options = tuple(str(item).strip() for item in raw_options if isinstance(item, str) and item.strip())
@@ -767,8 +792,13 @@ def resolve_image_role_models(
     *,
     vision_model: str | None = None,
     draw_model: str | None = None,
+    image_mode: str | None = None,
 ) -> dict[str, str]:
     """The six image-role model ids a run will use (spec 062).
+
+    ``image_mode`` makes a selection that is not given fall back to that mode's default
+    (``[models.image_<group>.mode_defaults]``): the UI and the real-document runner both
+    resolve through here.
 
     Per role, highest first: a per-role override (env ``DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT``
     or ``[models.image_<role>].default``) > the selection passed here (UI selector or run
@@ -777,7 +807,10 @@ def resolve_image_role_models(
     """
 
     overrides = get_image_model_role_overrides(config_like)
-    selections = {"vision": (vision_model or "").strip(), "draw": (draw_model or "").strip()}
+    selections = {
+        "vision": (vision_model or "").strip() or _image_mode_default(config_like, "vision", image_mode),
+        "draw": (draw_model or "").strip() or _image_mode_default(config_like, "draw", image_mode),
+    }
     role_models: dict[str, str] = {}
     for group, role_names in IMAGE_MODEL_GROUP_ROLES.items():
         selected = selections[group]
@@ -798,17 +831,27 @@ def apply_image_model_selection(
     *,
     vision_model: str | None = None,
     draw_model: str | None = None,
+    image_mode: str | None = None,
 ) -> Any:
     """Return ``config_like`` with the six image roles set from the two selections.
+
+    A selection left empty falls back to ``image_mode``'s default, when the mode has one.
 
     Works on the loaded ``AppConfig`` and on the plain dicts the UI and the real-document
     runner pass to a run. With no selection it returns the input unchanged. The flat
     ``validation_model`` / ``reconstruction_model`` copies are kept in step with ``models``.
     """
 
-    if not (vision_model or "").strip() and not (draw_model or "").strip():
+    if (
+        not (vision_model or "").strip()
+        and not (draw_model or "").strip()
+        and not _image_mode_default(config_like, "vision", image_mode)
+        and not _image_mode_default(config_like, "draw", image_mode)
+    ):
         return config_like
-    role_models = resolve_image_role_models(config_like, vision_model=vision_model, draw_model=draw_model)
+    role_models = resolve_image_role_models(
+        config_like, vision_model=vision_model, draw_model=draw_model, image_mode=image_mode
+    )
     models_value = _resolve_config_value(config_like, "models")
     if isinstance(models_value, ModelRegistry):
         resolved_models: object = replace(models_value, **role_models)
@@ -1467,6 +1510,11 @@ def _validate_provider_model_contracts(
     for index, option in enumerate(model_registry_settings.get("image_draw_model_options", ())):
         openai_only_roles.append((f"models.image_draw.options[{index}]", option, "images_generate"))
         openai_only_roles.append((f"models.image_draw.options[{index}]", option, "images_edit"))
+    for mode_name, model in model_registry_settings.get("image_vision_model_mode_defaults", {}).items():
+        openai_only_roles.append((f"models.image_vision.mode_defaults.{mode_name}", model, "responses_vision"))
+    for mode_name, model in model_registry_settings.get("image_draw_model_mode_defaults", {}).items():
+        openai_only_roles.append((f"models.image_draw.mode_defaults.{mode_name}", model, "images_generate"))
+        openai_only_roles.append((f"models.image_draw.mode_defaults.{mode_name}", model, "images_edit"))
     for role_name, selector, required_capability in openai_only_roles:
         resolved_selector = resolve_model_selector(
             selector,
