@@ -102,6 +102,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_polish_checks.py`
 - `tests/test_price_list.py`
 - `tests/test_translation_modes.py`
+- `tests/test_ui_translation_modes.py`
 
 ## Compat-Legacy
 

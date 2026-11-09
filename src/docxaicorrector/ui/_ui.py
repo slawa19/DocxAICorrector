@@ -18,9 +18,10 @@ from docxaicorrector.core.config import (
     resolve_model_selector,
 )
 from docxaicorrector.core.logger import format_elapsed, log_event
+from docxaicorrector.core.translation_modes import resolve_effective_translation_config
 from docxaicorrector.generation.message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from docxaicorrector.core.models import ImageMode
-from docxaicorrector.ui.i18n import t
+from docxaicorrector.ui.i18n import get_ui_language, t
 from docxaicorrector.ui.review_presentation import (
     build_notice_data_params,
     build_review_presentation,
@@ -592,7 +593,90 @@ def _render_image_model_selectors(config: Mapping[str, Any], image_mode: str) ->
     return str(vision_model or ""), str(draw_model or "")
 
 
-def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool, str, str, str]:
+# Spec 069 FR-002: the two modes the UI offers for "translate". ``single`` (the pre-069 one-pass
+# behaviour) stays reachable only from a run profile, never from the sidebar.
+TRANSLATION_MODE_OPTIONS = ("standard", "quality")
+# Session key of the estimate the sidebar labels read: ``{"key": <what it was computed for>,
+# "snapshots": {mode: snapshot}}``. Written by ``ui/_app.py`` once the document is prepared.
+TRANSLATION_COST_ESTIMATES_KEY = "translation_cost_estimates"
+
+
+def _format_usd(value: float) -> str:
+    text = f"{value:.2f}"
+    return text.replace(".", ",") if get_ui_language() == "ru" else text
+
+
+def format_cost_range(snapshot: Mapping[str, object] | None) -> str:
+    """``≈ 0,82–1,10 $`` for a snapshot, ``цена неизвестна`` when the total price is unknown."""
+    upper = snapshot.get("total_upper_usd") if snapshot is not None else None
+    lower = snapshot.get("total_lower_usd") if snapshot is not None else None
+    if not isinstance(upper, (int, float)):
+        return t("sidebar.translation_mode_price_unknown")
+    lower_text = _format_usd(float(lower)) if isinstance(lower, (int, float)) else _format_usd(float(upper))
+    upper_text = _format_usd(float(upper))
+    if lower_text == upper_text:
+        return t("sidebar.translation_mode_price_single", price=upper_text)
+    return t("sidebar.translation_mode_price_range", lower=lower_text, upper=upper_text)
+
+
+def _translation_mode_snapshots() -> Mapping[str, Mapping[str, object]]:
+    state = st.session_state.get(TRANSLATION_COST_ESTIMATES_KEY)
+    snapshots = state.get("snapshots") if isinstance(state, Mapping) else None
+    return snapshots if isinstance(snapshots, Mapping) else {}
+
+
+def _render_translation_mode_radio(config: Mapping[str, Any]) -> str:
+    snapshots = _translation_mode_snapshots()
+    default_mode = str(config.get("translation_mode_default") or TRANSLATION_MODE_OPTIONS[0])
+    default_index = TRANSLATION_MODE_OPTIONS.index(default_mode) if default_mode in TRANSLATION_MODE_OPTIONS else 0
+    mode_names = {
+        "standard": t("sidebar.translation_mode_standard"),
+        "quality": t("sidebar.translation_mode_quality"),
+    }
+
+    def _format_option(option: str) -> str:
+        snapshot = snapshots.get(option)
+        if snapshot is None:
+            return mode_names[option]
+        return t("sidebar.translation_mode_option", name=mode_names[option], price=format_cost_range(snapshot))
+
+    selected = st.sidebar.radio(
+        t("sidebar.translation_mode_label"),
+        list(TRANSLATION_MODE_OPTIONS),
+        index=default_index,
+        format_func=_format_option,
+        help=t("sidebar.translation_mode_help"),
+        key="sidebar_translation_mode",
+    )
+    if not snapshots:
+        st.sidebar.caption(t("sidebar.translation_mode_price_pending"))
+    else:
+        st.sidebar.caption(t("sidebar.translation_mode_price_caption"))
+        if any(bool(snapshot.get("extrapolated")) for snapshot in snapshots.values()):
+            st.sidebar.caption(t("sidebar.translation_mode_price_approximate"))
+    return str(selected)
+
+
+def render_cost_estimate_comparison(
+    cost_estimate_snapshot: Mapping[str, object] | None,
+    cost_actual: Mapping[str, object] | None,
+) -> None:
+    """Actual cost next to the estimate FROZEN at Start. No snapshot -> nothing is shown."""
+    if not isinstance(cost_estimate_snapshot, Mapping):
+        return
+    estimate = format_cost_range(cost_estimate_snapshot)
+    if not isinstance(cost_actual, Mapping) or not isinstance(cost_actual.get("total_usd"), (int, float)):
+        st.caption(t("result.cost_estimate_only", estimate=estimate))
+        return
+    actual_text = f"{_format_usd(float(cast(float, cost_actual['total_usd'])))} $"
+    st.caption(t("result.cost_actual_next_to_estimate", actual=actual_text, estimate=estimate))
+    if not (cost_actual.get("run_complete") and cost_actual.get("cost_accounting_complete")):
+        st.caption(t("result.cost_actual_partial"))
+
+
+def render_sidebar(
+    config: Mapping[str, Any],
+) -> tuple[str, int, int, str, bool, str, str, str, bool, str, str, str, str]:
     st.sidebar.header(t("sidebar.settings_header"))
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -628,6 +712,14 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
             key="sidebar_editorial_intensity",
         )
         editorial_intensity = EDITORIAL_INTENSITY_VALUES_BY_LABEL.get(selected_intensity_label, editorial_intensity)
+
+    # Spec 069 FR-002: for "translate" the MODE decides the model, depth and reasoning (FR-001),
+    # so the mode radio replaces the model selector and the intensity widget; "edit" and
+    # "audiobook" keep their widgets untouched. Same as the intensity above, the value is
+    # never read back out of st.session_state: it exists only while the radio is on screen.
+    translation_mode = ""
+    if processing_operation == "translate":
+        translation_mode = _render_translation_mode_radio(config)
 
     language_labels, code_by_label, label_by_code = get_language_label_maps(config)
     default_target_code = str(config.get("target_language_default", "ru"))
@@ -677,25 +769,30 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
     # own container (`with st.sidebar.expander(...)` + bare `st.*`) so they attach
     # INSIDE the expander — `st.sidebar.*` would escape back to the sidebar root.
     with st.sidebar.expander(t("sidebar.advanced_expander"), expanded=False):
-        model_options = [*get_text_model_options(config), "custom"]
         default_model = get_text_model_default(config)
-        default_index = _resolve_model_default_index(model_options, default_model, config)
-        selected_model = st.selectbox(
-            t("sidebar.model_select_label"),
-            model_options,
-            index=default_index,
-            format_func=lambda option: _format_model_option_label(option, config),
-            key="sidebar_model",
-        )
-        custom_model = ""
-        if selected_model == "custom":
-            custom_model = st.text_input(
-                t("sidebar.custom_model_label"),
-                value=default_model,
-                help=t("sidebar.custom_model_help"),
-            ).strip()
+        if processing_operation == "translate":
+            # The mode owns the model (FR-001): no selector, the value is only a placeholder that
+            # ``main`` replaces with the effective first-pass model of the mode.
+            model = default_model
+        else:
+            model_options = [*get_text_model_options(config), "custom"]
+            default_index = _resolve_model_default_index(model_options, default_model, config)
+            selected_model = st.selectbox(
+                t("sidebar.model_select_label"),
+                model_options,
+                index=default_index,
+                format_func=lambda option: _format_model_option_label(option, config),
+                key="sidebar_model",
+            )
+            custom_model = ""
+            if selected_model == "custom":
+                custom_model = st.text_input(
+                    t("sidebar.custom_model_label"),
+                    value=default_model,
+                    help=t("sidebar.custom_model_help"),
+                ).strip()
 
-        model = custom_model or selected_model
+            model = custom_model or selected_model
 
         if processing_operation == "audiobook":
             image_mode = ImageMode.NO_CHANGE.value
@@ -736,7 +833,26 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
 
     # Model-availability warning stays at the sidebar root (outside the collapsed
     # expander) so a missing API key is always visible.
-    _render_selected_model_availability_warning(model=model, config=config)
+    if processing_operation == "translate":
+        # Both models of the mode are checked, not the placeholder: a missing key for the
+        # polish model would otherwise surface only after the first pass had been paid for.
+        effective = resolve_effective_translation_config(
+            config,
+            processing_operation="translate",
+            requested_mode=translation_mode,
+            requested_model=None,
+            requested_intensity=None,
+            origin="ui",
+        )
+        mode_models: list[str] = []
+        if effective is not None:
+            mode_models.append(effective.first_pass.model)
+            if effective.polish_pass is not None and effective.polish_pass.model not in mode_models:
+                mode_models.append(effective.polish_pass.model)
+        for mode_model in mode_models:
+            _render_selected_model_availability_warning(model=mode_model, config=config)
+    else:
+        _render_selected_model_availability_warning(model=model, config=config)
     return (
         model,
         chunk_size,
@@ -750,6 +866,7 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         editorial_intensity,
         image_vision_model,
         image_draw_model,
+        translation_mode,
     )
 
 
@@ -893,6 +1010,8 @@ def render_result_bundle(
     delivery_disposition: Mapping[str, object] | None = None,
     result_notices: Sequence[Mapping[str, object]] | None = None,
     controlled_block_fallback_artifact: str | None = None,
+    cost_estimate_snapshot: Mapping[str, object] | None = None,
+    cost_actual: Mapping[str, object] | None = None,
 ) -> None:
     delivery_status = str((delivery_disposition or {}).get("status", "accepted") or "accepted")
     blocked = delivery_status == "blocked"
@@ -978,6 +1097,9 @@ def render_result_bundle(
                 path=str(controlled_block_fallback_artifact).strip(),
             )
         )
+    # spec 069 FR-007: the actual next to the estimate frozen at Start for THIS result; a bundle
+    # without a snapshot shows nothing (the current sidebar estimate is never substituted).
+    render_cost_estimate_comparison(cost_estimate_snapshot, cost_actual)
     if blocked and not docx_bytes:
         return
     operation = str(processing_operation or "edit").strip().lower() or "edit"

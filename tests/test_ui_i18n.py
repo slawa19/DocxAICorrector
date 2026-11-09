@@ -325,3 +325,56 @@ def test_compare_all_label_does_not_promise_three_variants_or_a_choice() -> None
         text = f'{catalog["image.mode_compare_all"]} {catalog["image.desc_compare_all"]}'.lower()
         for promise in ("сгенерировать 3", "выбрать лучший", "generate 3", "pick the best"):
             assert promise not in text
+
+
+# Spec 069 WP-8: the translation-mode strings exist in BOTH catalogs with the same placeholders,
+# so the radio and the result captions cannot ship raw braces or a missing key in either language.
+_TRANSLATION_MODE_KEYS = (
+    "sidebar.translation_mode_label",
+    "sidebar.translation_mode_help",
+    "sidebar.translation_mode_standard",
+    "sidebar.translation_mode_quality",
+    "sidebar.translation_mode_option",
+    "sidebar.translation_mode_price_range",
+    "sidebar.translation_mode_price_single",
+    "sidebar.translation_mode_price_unknown",
+    "sidebar.translation_mode_price_pending",
+    "sidebar.translation_mode_price_caption",
+    "sidebar.translation_mode_price_approximate",
+    "result.cost_estimate_only",
+    "result.cost_actual_next_to_estimate",
+    "result.cost_actual_partial",
+)
+
+
+def test_translation_mode_keys_are_in_both_catalogs_with_the_same_placeholders() -> None:
+    ru = json.loads(_locale_path("ru.json").read_text(encoding="utf-8"))
+    en = json.loads(_locale_path("en.json").read_text(encoding="utf-8"))
+
+    assert [key for key in _TRANSLATION_MODE_KEYS if key not in ru] == []
+    assert [key for key in _TRANSLATION_MODE_KEYS if key not in en] == []
+    for key in _TRANSLATION_MODE_KEYS:
+        assert re.findall(r"\{(\w+)\}", ru[key]) == re.findall(r"\{(\w+)\}", en[key]), key
+    # the "without images" label is part of the contract (FR-007), in both languages
+    assert "без картинок" in ru["sidebar.translation_mode_price_caption"]
+    assert "images" in en["sidebar.translation_mode_price_caption"]
+    assert "без картинок" in ru["result.cost_actual_next_to_estimate"]
+    assert "images" in en["result.cost_actual_next_to_estimate"]
+
+
+@pytest.mark.parametrize("lang", ["ru", "en"])
+def test_translation_mode_price_templates_render_without_raw_braces(
+    monkeypatch: pytest.MonkeyPatch, lang: str
+) -> None:
+    _force_language(monkeypatch, lang)
+
+    rendered = [
+        i18n.t("sidebar.translation_mode_option", name="N", price="P"),
+        i18n.t("sidebar.translation_mode_price_range", lower="1", upper="2"),
+        i18n.t("sidebar.translation_mode_price_single", price="3"),
+        i18n.t("result.cost_estimate_only", estimate="E"),
+        i18n.t("result.cost_actual_next_to_estimate", actual="A", estimate="E"),
+    ]
+
+    assert all("{" not in text for text in rendered)
+    assert "1" in rendered[1] and "2" in rendered[1]

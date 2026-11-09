@@ -1117,8 +1117,9 @@ def _run_document_processing_in_scope(
     # Emitting the accounting event INSIDE the run's scope is what makes the snapshot this
     # run's own: taken after the scope exits it would read whatever ledger the context
     # falls back to.
+    run_result: PipelineResult | None = None
     try:
-        return _run_document_processing_accounted(
+        run_result = _run_document_processing_accounted(
             uploaded_file=uploaded_file,
             source_token=source_token,
             run_id=run_id,
@@ -1164,8 +1165,137 @@ def _run_document_processing_in_scope(
             resolve_model_selector=resolve_model_selector,
             document_context_prompt=document_context_prompt,
         )
+        return run_result
     finally:
-        emit_run_model_accounting_event(log_event=log_event, filename=str(uploaded_file))
+        accounting = emit_run_model_accounting_event(log_event=log_event, filename=str(uploaded_file))
+        emit_cost_estimate_vs_actual(
+            app_config=app_config,
+            accounting=accounting,
+            run_status=run_result,
+            run_id=run_id,
+            filename=str(uploaded_file),
+            log_event=log_event,
+            emit_state=emit_state,
+            runtime=runtime,
+        )
+
+
+COST_COMPARISON_STAGES = ("glossary_extraction", "text_generation", "literary_polish")
+
+
+def build_cost_estimate_vs_actual(
+    *,
+    snapshot: Mapping[str, object],
+    accounting: Mapping[str, object],
+    run_status: str | None,
+) -> dict[str, object]:
+    """Compare the estimate frozen at Start with what the run cost (spec 069 FR-007).
+
+    The actual is the sum of ``cost_usd_reported_by_provider`` of the same text stages the
+    estimate covers (glossary + text generation + literary polish); images are out of both.
+    ``relative_error_vs_upper = (actual - upper) / actual`` and ``within_range`` are computed
+    only for a COMPLETE run with complete cost accounting: a stopped or failed run, or one with
+    a call that reported no price, is flagged and carries ``None`` so it never reaches a future
+    calibration. A stage the estimate priced but that made no call also counts as incomplete.
+    """
+    raw_estimated = snapshot.get("stages")
+    estimated_stages: Mapping[str, object] = raw_estimated if isinstance(raw_estimated, Mapping) else {}
+    raw_accounted = accounting.get("stages")
+    accounted_stages: Mapping[str, object] = raw_accounted if isinstance(raw_accounted, Mapping) else {}
+
+    run_complete = run_status == "succeeded"
+    cost_accounting_complete = True
+    stages: dict[str, dict[str, object]] = {}
+    actual_total = 0.0
+    for stage in COST_COMPARISON_STAGES:
+        estimate = estimated_stages.get(stage)
+        estimate = estimate if isinstance(estimate, Mapping) else None
+        spent = accounted_stages.get(stage)
+        spent = spent if isinstance(spent, Mapping) else None
+        actual = float(cast(float, spent.get("cost_usd_reported_by_provider") or 0.0)) if spent else 0.0
+        actual_total += actual
+        if spent is not None and int(cast(int, spent.get("model_calls_without_cost") or 0)) > 0:
+            cost_accounting_complete = False
+        if estimate is not None and (spent is None or int(cast(int, spent.get("model_call_count") or 0)) == 0):
+            cost_accounting_complete = False
+        stages[stage] = {
+            "estimate_upper": estimate.get("upper_usd") if estimate is not None else None,
+            "estimate_lower": estimate.get("lower_usd") if estimate is not None else None,
+            "actual": round(actual, 6),
+        }
+
+    upper = snapshot.get("total_upper_usd")
+    lower = snapshot.get("total_lower_usd")
+    actual_total = round(actual_total, 6)
+    relative_error: float | None = None
+    within_range: bool | None = None
+    comparable = run_complete and cost_accounting_complete and isinstance(upper, (int, float)) and actual_total > 0
+    if comparable:
+        upper_value = float(cast(float, upper))
+        relative_error = (actual_total - upper_value) / actual_total
+        if isinstance(lower, (int, float)):
+            within_range = float(lower) <= actual_total <= upper_value
+    raw_document = snapshot.get("document")
+    return {
+        "mode": snapshot.get("mode"),
+        "coefficients_version": snapshot.get("coefficients_version"),
+        "price_list_date": snapshot.get("price_list_date"),
+        "stages": stages,
+        "estimate_upper_usd": upper,
+        "estimate_lower_usd": lower,
+        "actual_usd": actual_total,
+        "relative_error_vs_upper": relative_error,
+        "within_range": within_range,
+        "run_complete": run_complete,
+        "cost_accounting_complete": cost_accounting_complete,
+        "source_token": raw_document.get("source_token") if isinstance(raw_document, Mapping) else None,
+    }
+
+
+def emit_cost_estimate_vs_actual(
+    *,
+    app_config: Mapping[str, object],
+    accounting: Mapping[str, object],
+    run_status: str | None,
+    run_id: str | None,
+    filename: str,
+    log_event: EventLogger,
+    emit_state: StateEmitter,
+    runtime: object,
+) -> dict[str, object] | None:
+    """Publish ``cost_estimate_vs_actual`` once per run and hand the actual to the result bundle.
+
+    Nothing happens for a run without a frozen snapshot (edit, audiobook, a runner that did not
+    estimate). INFO, once per run, beside ``model_usage_accounted``. Logging must never take a
+    run down, so a failure here is swallowed.
+    """
+    snapshot = app_config.get("cost_estimate_snapshot") if isinstance(app_config, Mapping) else None
+    if not isinstance(snapshot, Mapping):
+        return None
+    try:
+        comparison = build_cost_estimate_vs_actual(snapshot=snapshot, accounting=accounting, run_status=run_status)
+        source_token = comparison.pop("source_token", None)
+        log_event(
+            logging.INFO,
+            "cost_estimate_vs_actual",
+            "Сопоставлены оценка цены при старте и фактическая стоимость текстовых стадий.",
+            filename=filename,
+            run_id=run_id,
+            **comparison,
+        )
+        emit_state(
+            runtime,
+            latest_cost_actual={
+                "stages": {stage: item["actual"] for stage, item in cast(dict[str, dict[str, object]], comparison["stages"]).items()},
+                "total_usd": comparison["actual_usd"],
+                "cost_accounting_complete": comparison["cost_accounting_complete"],
+                "run_complete": comparison["run_complete"],
+                "source_token": source_token,
+            },
+        )
+        return comparison
+    except Exception:
+        return None
 
 
 def emit_run_model_accounting_event(*, log_event: EventLogger, filename: str) -> dict[str, object]:

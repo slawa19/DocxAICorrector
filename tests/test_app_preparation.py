@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 import docxaicorrector.chapter_workflow.service as chapter_workflow_service
 import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.ui._app as app
@@ -8,7 +10,27 @@ from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, GlossaryTerm, SegmentBoundaryEvidence, SegmentDetectionReport
 from docxaicorrector.structure.validation import StructureValidationReport
 from docxaicorrector.ui.i18n import t
+from docxaicorrector.core.translation_modes import TranslationModeSpec, TranslationPassSpec
 from conftest import SessionState as SessionState
+
+# Spec 069: a "translate" run resolves its mode through the config tables, so a loaded config that
+# a translate test hands to ``main`` must carry them (the real config.toml always does).
+_APP_CONFIG_WITH_MODES = {
+    "translation_mode_default": "standard",
+    "translation_modes": {
+        "standard": TranslationModeSpec(
+            name="standard",
+            first_pass=TranslationPassSpec(model="openrouter:google/gemini-3.1-flash-lite-preview", editorial_intensity="literary"),
+            polish_pass=TranslationPassSpec(model="openrouter:anthropic/claude-haiku-5.5"),
+        ),
+        "quality": TranslationModeSpec(
+            name="quality",
+            first_pass=TranslationPassSpec(
+                model="openrouter:google/gemini-3.7-flash", editorial_intensity="conservative", reasoning_effort="low"
+            ),
+        ),
+    },
+}
 
 
 class UploadedFileStub:
@@ -363,7 +385,7 @@ def test_main_restarts_background_preparation_when_uploaded_file_changes(monkeyp
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -443,7 +465,7 @@ def test_main_normalizes_legacy_doc_before_starting_background_preparation(monke
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -502,7 +524,7 @@ def test_main_supports_pdf_upload_and_updates_user_facing_copy(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -542,7 +564,7 @@ def test_main_shows_pdf_size_limit_error_copy(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -577,7 +599,7 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -619,7 +641,7 @@ def test_main_renders_live_status_during_active_preparation(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -649,7 +671,7 @@ def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatc
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -688,7 +710,7 @@ def test_main_renders_current_preparation_failure_without_restarting(monkeypatch
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -744,7 +766,7 @@ def test_main_retry_button_clears_failure_and_reruns_in_failed_branch(monkeypatc
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -799,7 +821,7 @@ def test_main_warns_when_current_preparation_state_is_unavailable(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -858,7 +880,7 @@ def test_main_keeps_completed_view_with_shared_layout(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -909,7 +931,7 @@ def test_main_passes_completed_result_bundle_mode_metadata_to_renderer(monkeypat
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -970,7 +992,7 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -1041,7 +1063,7 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -1105,7 +1127,7 @@ def test_main_ignores_stale_completed_result_for_different_uploaded_file(monkeyp
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -1348,7 +1370,7 @@ def test_main_uses_lightweight_freeze_for_pdf_upload(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -1464,7 +1486,7 @@ def _run_main_for_result_guard(
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     monkeypatch.setattr(app, "render_sidebar", lambda config: sidebar_result)
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -1602,7 +1624,7 @@ def test_a_setting_outside_the_marker_neither_restarts_preparation_nor_asks_anyt
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(_APP_CONFIG_WITH_MODES))
     # Same settings as the finished run except the model, which the marker ignores.
     monkeypatch.setattr(
         app,
@@ -1742,6 +1764,8 @@ def _run_main_for_processing_start_guard(
     current_result: object = "from-session",
     control_action: str | None = "start",
     session_overrides=None,
+    sidebar_result=("gpt-5.4", 6000, 3, "safe", False, "translate", "en", "de", False),
+    app_config=None,
 ):
     """Drive ``main()`` down to the bottom start control of an already-prepared document.
 
@@ -1770,19 +1794,18 @@ def _run_main_for_processing_start_guard(
     )
     for key, value in (session_overrides or {}).items():
         session_state[key] = value
-    record = {"processing_starts": [], "warnings": [], "buttons": [], "rendered": [], "rerun": False}
+    record = {
+        "processing_starts": [], "warnings": [], "buttons": [], "rendered": [], "rerun": False,
+        "session": session_state,
+    }
 
     class RerunRequested(Exception):
         pass
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
-    monkeypatch.setattr(
-        app,
-        "render_sidebar",
-        lambda config: ("gpt-5.4", 6000, 3, "safe", False, "translate", "en", "de", False),
-    )
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: dict(app_config or _APP_CONFIG_WITH_MODES))
+    monkeypatch.setattr(app, "render_sidebar", lambda config: sidebar_result)
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
     monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
@@ -1923,3 +1946,13 @@ def test_a_start_after_a_refusal_that_carried_nothing_says_nothing(monkeypatch):
     assert app.get_current_result_bundle() is not None
     assert t("app.start_discards_result_warning") not in record["warnings"]
     assert len(record["processing_starts"]) == 1
+
+
+@pytest.fixture(autouse=True)
+def _no_cost_estimate_in_main_flow_tests(monkeypatch):
+    """Spec 069: these tests drive ``main()`` through the preparation and start guards, not the price.
+
+    The estimate has its own tests (``tests/test_ui_translation_modes.py``); here it must neither
+    reach for the price list (a network lookup) nor ask for the extra rerun that shows it.
+    """
+    monkeypatch.setattr(app, "_refresh_translation_cost_estimates", lambda **kwargs: False)
