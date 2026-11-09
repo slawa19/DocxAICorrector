@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import pytest
 
@@ -338,3 +338,380 @@ def test_sc006_text_completion_without_a_profile_is_byte_identical(path):
 
     assert text == '{"terms": []}'
     assert _fingerprint(client.calls) == _GOLDEN_GLOSSARY[path], json.dumps(client.calls, ensure_ascii=False, indent=1)
+
+
+# --- B. the profile: reasoning by API path, budget multiplier, accounting stage ------------
+
+_LOW_TRIPLE: dict[str, Any] = {
+    "reasoning_effort": "low",
+    "output_budget_multiplier": 3.0,
+    "usage_stage": "literary_polish",
+}
+
+
+def _profile(**overrides: Any) -> Any:
+    return generation.GenerationRequestProfile(**{**_LOW_TRIPLE, **overrides})
+
+
+def _stages() -> dict[str, Any]:
+    return cast(dict[str, Any], model_accounting.snapshot_run_model_accounting()["stages"])
+
+
+def _sent(client: _ScriptedClient, api: str) -> list[dict[str, Any]]:
+    return [kwargs for name, kwargs in client.calls if name == api]
+
+
+def _prompt_of(api: str, kwargs: dict[str, Any]) -> str:
+    if api == "responses.create":
+        return kwargs["input"][-1]["content"][0]["text"]
+    return kwargs["messages"][-1]["content"]
+
+
+def _capture_events(monkeypatch, *modules: Any) -> list[tuple[int, str, dict[str, Any]]]:
+    events: list[tuple[int, str, dict[str, Any]]] = []
+
+    def capture(level, event, message, **context):
+        events.append((level, event, dict(context)))
+        return f"evt-{event}"
+
+    for module in modules:
+        monkeypatch.setattr(module, "log_event", capture)
+    return events
+
+
+def test_profile_is_frozen_and_its_default_is_the_request_of_today():
+    import dataclasses
+
+    default = generation.GenerationRequestProfile()
+    assert (default.reasoning_effort, default.output_budget_multiplier, default.usage_stage) == (
+        None,
+        1.0,
+        model_accounting.STAGE_TEXT_GENERATION,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        default.reasoning_effort = "low"  # type: ignore[misc]
+    bad_arguments: tuple[dict[str, Any], ...] = (
+        {"output_budget_multiplier": 0},
+        {"output_budget_multiplier": float("nan")},
+        {"output_budget_multiplier": True},
+        {"reasoning_effort": " "},
+        {"usage_stage": ""},
+    )
+    for bad in bad_arguments:
+        with pytest.raises(ValueError):
+            generation.GenerationRequestProfile(**bad)
+
+
+def test_profile_for_model_takes_the_multiplier_of_the_model():
+    haiku = generation.GenerationRequestProfile.for_model(
+        "openrouter:anthropic/claude-haiku-5.5", usage_stage="literary_polish"
+    )
+    assert (haiku.reasoning_effort, haiku.output_budget_multiplier, haiku.usage_stage) == (
+        None,
+        3.0,
+        "literary_polish",
+    )
+    gemini = generation.GenerationRequestProfile.for_model("openrouter:google/gemini-3.7-flash", reasoning_effort="low")
+    assert (gemini.reasoning_effort, gemini.output_budget_multiplier, gemini.usage_stage) == (
+        "low",
+        1.0,
+        model_accounting.STAGE_TEXT_GENERATION,
+    )
+
+
+def test_default_profile_sends_the_same_bytes_as_no_profile():
+    """``request_profile=GenerationRequestProfile()`` and ``None`` are one request."""
+
+    without = _ScriptedClient("responses", "ladder")
+    _run_block(without, "translate", "ladder")
+    explicit = _ScriptedClient("responses", "ladder")
+    _run_block(explicit, "translate", "ladder", request_profile=generation.GenerationRequestProfile())
+    assert explicit.calls == without.calls
+
+
+def test_responses_request_carries_reasoning_only_with_a_profile():
+    plain = _ScriptedClient("responses", "first_attempt")
+    _run_block(plain, "translate", "first_attempt")
+    profiled = _ScriptedClient("responses", "first_attempt")
+    _run_block(profiled, "translate", "first_attempt", request_profile=_profile())
+
+    [plain_request] = _sent(plain, "responses.create")
+    [profiled_request] = _sent(profiled, "responses.create")
+    assert "reasoning" not in plain_request
+    assert profiled_request["reasoning"] == {"effort": "low"}
+    # Everything else is the request of today, and the budget is the multiplied one.
+    assert profiled_request["max_output_tokens"] == min(3 * plain_request["max_output_tokens"], 16384)
+    rest = {key: value for key, value in profiled_request.items() if key not in {"reasoning", "max_output_tokens"}}
+    assert rest == {key: value for key, value in plain_request.items() if key != "max_output_tokens"}
+
+
+def test_profile_without_reasoning_sends_no_reasoning_key():
+    """The second pass of ``standard`` sends no parameter (contract §4: "без параметра")."""
+
+    client = _ScriptedClient("responses", "first_attempt")
+    _run_block(client, "translate", "first_attempt", request_profile=_profile(reasoning_effort=None))
+    assert client.calls and all("reasoning" not in kwargs for _, kwargs in client.calls)
+
+
+def test_chat_completions_carries_reasoning_in_extra_body():
+    client = _ScriptedClient("chat", "first_attempt")
+    _run_block(client, "translate", "first_attempt", request_profile=_profile())
+
+    [refused] = _sent(client, "responses.create")
+    [chat] = _sent(client, "chat.completions.create")
+    assert refused["reasoning"] == {"effort": "low"}
+    assert chat["extra_body"] == {"reasoning": {"effort": "low"}}
+    assert "reasoning" not in chat
+    assert chat["max_tokens"] == refused["max_output_tokens"]
+
+    plain = _ScriptedClient("chat", "first_attempt")
+    _run_block(plain, "translate", "first_attempt")
+    assert plain.calls and all("extra_body" not in kwargs for _, kwargs in plain.calls)
+
+
+@pytest.mark.parametrize("path", ["responses", "chat"])
+def test_text_completion_carries_reasoning_with_a_profile(path):
+    client = _ScriptedClient(path, "first_attempt", answer=lambda _scenario, _target: "{}")
+    request: dict[str, object] = {
+        "model": _MODELS[path],
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "{}"}]}],
+        "temperature": 0.2,
+        "max_output_tokens": 3072,
+    }
+
+    generation.request_text_completion(
+        client,
+        request,
+        usage_stage=model_accounting.STAGE_GLOSSARY_EXTRACTION,
+        request_profile=_profile(),
+    )
+
+    sent = client.calls[-1][1]
+    if path == "responses":
+        assert sent["reasoning"] == {"effort": "low"}
+        # The budget is the builder's: the glossary formula already applied the multiplier.
+        assert sent["max_output_tokens"] == 3072
+    else:
+        assert sent["extra_body"] == {"reasoning": {"effort": "low"}}
+        assert sent["max_tokens"] == 3072
+    assert "reasoning" not in request, "the caller's request is not mutated"
+    # The explicit stage of the call wins over the profile's: the glossary stays glossary.
+    stages = _stages()
+    assert set(stages) == {model_accounting.STAGE_GLOSSARY_EXTRACTION}
+
+
+class _ReasoningRejected(Exception):
+    status_code = 400
+    code = "unsupported_parameter"
+
+    def __init__(self) -> None:
+        super().__init__("Unsupported parameter: 'reasoning' is not supported with this model.")
+
+
+def test_responses_rejection_of_reasoning_drops_it_and_warns(monkeypatch):
+    import docxaicorrector.image.shared as image_shared
+
+    events = _capture_events(monkeypatch, image_shared)
+    calls: list[dict[str, Any]] = []
+
+    def create(**kwargs: Any) -> SimpleNamespace:
+        calls.append(dict(kwargs))
+        if "reasoning" in kwargs:
+            raise _ReasoningRejected()
+        return SimpleNamespace(output_text="Готово.")
+
+    result = generation.generate_markdown_block(
+        client=SimpleNamespace(responses=SimpleNamespace(create=create)),  # type: ignore[arg-type]
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="Ready.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        request_profile=_profile(),
+    )
+
+    assert result == "Готово."
+    assert [("reasoning" in call) for call in calls] == [True, False]
+    dropped = [event for event in events if event[1] == "model_call_param_dropped"]
+    assert [(level, context["param"], context["stage"]) for level, _, context in dropped] == [
+        (30, "reasoning", "literary_polish")
+    ]
+    assert "nested_in" not in dropped[0][2]
+
+
+def test_chat_rejection_of_nested_reasoning_drops_it_and_warns(monkeypatch):
+    import docxaicorrector.image.shared as image_shared
+
+    events = _capture_events(monkeypatch, image_shared)
+    chat_calls: list[dict[str, Any]] = []
+
+    class ResponsesUnsupported(Exception):
+        status_code = 400
+
+    def responses_create(**kwargs: Any) -> SimpleNamespace:
+        raise ResponsesUnsupported("Responses API unsupported for this model; use chat.completions instead.")
+
+    def chat_create(**kwargs: Any) -> SimpleNamespace:
+        chat_calls.append(json.loads(json.dumps(kwargs, ensure_ascii=False)))
+        if "reasoning" in (kwargs.get("extra_body") or {}):
+            raise _ReasoningRejected()
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content="Готово."))])
+
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+
+    result = generation.generate_markdown_block(
+        client=client,  # type: ignore[arg-type]
+        model="google/gemini-3.7-flash",
+        system_prompt="system",
+        target_text="Ready.",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        request_profile=_profile(),
+    )
+
+    assert result == "Готово."
+    assert [call.get("extra_body") for call in chat_calls] == [{"reasoning": {"effort": "low"}}, None]
+    dropped = [event for event in events if event[1] == "model_call_param_dropped"]
+    assert [(context["param"], context["nested_in"], context["stage"]) for _, _, context in dropped] == [
+        ("reasoning", "extra_body", "literary_polish")
+    ]
+
+
+def test_nested_drop_keeps_the_other_extra_body_keys_and_does_not_mutate_them(monkeypatch):
+    import docxaicorrector.image.shared as image_shared
+
+    _capture_events(monkeypatch, image_shared)
+    extra_body = {"reasoning": {"effort": "low"}, "provider": {"order": ["x"]}}
+    payload: dict[str, object] = {"model": "m", "extra_body": extra_body}
+
+    assert image_shared.drop_rejected_optional_param(_ReasoningRejected(), payload, {"reasoning"}, stage="s")
+    assert payload["extra_body"] == {"provider": {"order": ["x"]}}
+    assert extra_body == {"reasoning": {"effort": "low"}, "provider": {"order": ["x"]}}
+    # Not removable → not dropped, wherever it sits.
+    payload = {"model": "m", "extra_body": {"reasoning": {"effort": "low"}}}
+    assert not image_shared.drop_rejected_optional_param(_ReasoningRejected(), payload, {"temperature"}, stage="s")
+    assert payload["extra_body"] == {"reasoning": {"effort": "low"}}
+
+
+def test_anthropic_never_receives_reasoning_and_warns_once_per_model_and_effort(monkeypatch):
+    monkeypatch.setattr(generation, "_REASONING_UNSUPPORTED_WARNED", set())
+    events = _capture_events(monkeypatch, generation)
+
+    for effort in ("low", "low", "high"):
+        client = _ScriptedClient("anthropic", "first_attempt")
+        _run_block(client, "translate", "first_attempt", request_profile=_profile(reasoning_effort=effort))
+        assert client.calls
+        assert all("reasoning" not in kwargs and "extra_body" not in kwargs for _, kwargs in client.calls)
+
+    warned = [context for _, event, context in events if event == "reasoning_effort_not_supported_for_provider"]
+    assert warned == [
+        {"provider": "anthropic", "model": "claude-haiku-5-5", "reasoning_effort": "low", "stage": "literary_polish"},
+        {"provider": "anthropic", "model": "claude-haiku-5-5", "reasoning_effort": "high", "stage": "literary_polish"},
+    ]
+
+
+# T2.5 — the profile reaches every call of the block, one test per point. Each was shown to
+# fail with the hand-over at its point removed (WP-2 report, anti-vacuum).
+
+
+def test_profile_reaches_the_recovery_call():
+    client = _ScriptedClient("responses", "ladder")
+    _run_block(client, "translate", "ladder", request_profile=_profile())
+
+    recovery = [
+        kwargs
+        for api, kwargs in client.calls
+        if "[TARGET BLOCK WITH MARKERS ONLY]" in _prompt_of(api, kwargs)
+    ]
+    assert len(recovery) == 1
+    assert recovery[0]["reasoning"] == {"effort": "low"}
+    assert recovery[0]["max_output_tokens"] == 3 * 1260
+
+
+def test_profile_reaches_the_boosted_retry_and_the_boosted_recovery():
+    client = _ScriptedClient("responses", "incomplete")
+    _run_block(client, "translate", "incomplete", request_profile=_profile())
+
+    block_calls = [kwargs for api, kwargs in client.calls if _target_of(_prompt_of(api, kwargs)) == _PLAIN_TARGET]
+    # 3 x 1208 first; the boost doubles it; the recovery is rebuilt at 3 x 1208 and boosted.
+    assert [kwargs["max_output_tokens"] for kwargs in block_calls] == [3 * 1208, 6 * 1208, 6 * 1208]
+    assert all(kwargs["reasoning"] == {"effort": "low"} for kwargs in block_calls)
+
+
+def test_profile_reaches_the_ladder_calls():
+    client = _ScriptedClient("responses", "ladder")
+    _run_block(client, "translate", "ladder", request_profile=_profile())
+
+    ladder = [kwargs for api, kwargs in client.calls if "[[DOCX_PARA_" not in _prompt_of(api, kwargs)]
+    assert len(ladder) == 2
+    assert all(kwargs["reasoning"] == {"effort": "low"} for kwargs in ladder)
+    assert [kwargs["max_output_tokens"] for kwargs in ladder] == [3 * 540, 3 * 664]
+
+
+def test_profile_reaches_the_nested_generation_of_a_divided_paragraph():
+    client = _ScriptedClient("responses", "incomplete")
+    _run_block(client, "translate", "incomplete", request_profile=_profile())
+
+    sentences = [
+        kwargs
+        for api, kwargs in client.calls
+        if _target_of(_prompt_of(api, kwargs)) in {_P2_S1, _P2_S2}
+    ]
+    assert len(sentences) == 2
+    assert all(kwargs["reasoning"] == {"effort": "low"} for kwargs in sentences)
+    assert all(kwargs["max_output_tokens"] == 3 * 512 for kwargs in sentences)
+
+
+@pytest.mark.parametrize("path", sorted(_MODELS))
+def test_profile_books_every_call_under_its_own_stage(path):
+    client = _ScriptedClient(path, "ladder")
+    _run_block(client, "translate", "ladder", request_profile=_profile())
+
+    stages = _stages()
+    # On the Chat path the refused Responses call is not an answer and is not booked.
+    answered = [name for name, _ in client.calls if not (path == "chat" and name == "responses.create")]
+    assert set(stages) == {"literary_polish"}
+    assert stages["literary_polish"]["model_call_count"] == len(answered) == 5
+
+
+def test_without_a_profile_calls_stay_text_generation():
+    client = _ScriptedClient("chat", "ladder")
+    _run_block(client, "translate", "ladder")
+    assert set(_stages()) == {model_accounting.STAGE_TEXT_GENERATION}
+
+
+def test_ladder_divides_against_the_budget_of_the_profile(monkeypatch):
+    """FR-006: the ladder sizes its sentence groups from the SAME multiplied budget."""
+
+    events = _capture_events(monkeypatch, generation)
+    sentence = "The harbour clock struck " + "once more and again, " * 22 + "and then fell silent."
+    # Half of it is over 4 096 (the m = 3 limit) and the whole is under 12 288 (the m = 1 one).
+    divisible = " ".join([sentence] * 20)
+    assert 2 * 4096 < len(divisible) < 12288
+    undividable = sentence * 9  # no whitespace after any terminal: one sentence
+    assert 4096 < len(undividable) < 12288
+
+    outcome = generation._ladder_translate_unit(
+        client=_ScriptedClient("responses", "incomplete", answer=lambda _scenario, _target: _INCOMPLETE),  # type: ignore[arg-type]
+        model="anthropic/claude-haiku-5.5",
+        system_prompt="system",
+        unit_text=undividable,
+        unit_label="p0001",
+        context_before="",
+        context_after="",
+        max_retries=1,
+        block_index=0,
+        request_profile=_profile(),
+    )
+    assert outcome.text is None
+    ceiling = [context for _, event, context in events if event == "degradation_ladder_sentence_exceeds_output_ceiling"]
+    assert ceiling and ceiling[0]["budgetable_chars"] == 4096
+
+    assert len(generation._ladder_sentence_groups(divisible)) == 2
+    assert len(generation._ladder_sentence_groups(divisible, budget_multiplier=3.0)) == 3

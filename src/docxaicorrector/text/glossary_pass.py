@@ -36,6 +36,10 @@ from functools import lru_cache
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.document.segments import GLOSSARY_TERM_KINDS, GlossaryTerm
+from docxaicorrector.generation.output_budget import (
+    DEFAULT_OUTPUT_BUDGET_MULTIPLIER,
+    scale_output_budget,
+)
 
 
 GLOSSARY_SOURCE_REGIONS = frozenset({"prose", "front_matter"})
@@ -1485,11 +1489,22 @@ GLOSSARY_OUTPUT_TOKENS_MIN = 1024
 GLOSSARY_OUTPUT_TOKENS_CEILING = 16384
 
 
-def glossary_max_output_tokens(entry_count: int) -> int:
-    """``max_output_tokens`` for a glossary answer of ``entry_count`` entries."""
+def glossary_max_output_tokens(entry_count: int, *, multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER) -> int:
+    """``max_output_tokens`` for a glossary answer of ``entry_count`` entries.
+
+    Spec 069 FR-006: ``multiplier`` is the output-budget multiplier of the model that answers
+    (``generation/output_budget.py``). It scales the WHOLE formula, the 1 024 floor included,
+    and the ceiling is applied last — a model that spends three times the tokens on an entry
+    spends them on a short list as well. ``multiplier=1`` is the budget of before spec 069
+    (the floor is below the ceiling, so floor-then-ceiling equals the old ceiling-then-floor).
+    """
 
     budget = GLOSSARY_OUTPUT_TOKENS_ENVELOPE + GLOSSARY_OUTPUT_TOKENS_PER_ENTRY * max(1, int(entry_count))
-    return max(GLOSSARY_OUTPUT_TOKENS_MIN, min(GLOSSARY_OUTPUT_TOKENS_CEILING, budget))
+    return scale_output_budget(
+        max(GLOSSARY_OUTPUT_TOKENS_MIN, budget),
+        multiplier,
+        ceiling=GLOSSARY_OUTPUT_TOKENS_CEILING,
+    )
 
 
 def split_candidates_in_halves(
@@ -1511,12 +1526,15 @@ def build_glossary_request(
     sample_text: str = "",
     role: str = GLOSSARY_ROLE_OPTIONAL,
     already_fixed: Sequence[GlossaryTerm] = (),
+    output_budget_multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER,
 ) -> dict[str, object]:
     """One glossary request, in the Responses ``input`` shape every provider helper accepts.
 
     ``role="required"`` asks only for renderings of what the author introduced (call A);
     ``role="optional"`` asks for the model's own choices plus anything call A left out, and
     shows what is ``already_fixed`` so no optional entry takes a rendering already in use (B).
+    ``output_budget_multiplier`` is the answering model's (spec 069 FR-006); the default keeps
+    the request byte-identical to before.
     """
 
     source_label = describe_source_language(source_language, sample_text=sample_text)
@@ -1557,7 +1575,7 @@ def build_glossary_request(
         model=model,
         instructions=instructions,
         payload=payload,
-        max_output_tokens=glossary_max_output_tokens(entry_budget),
+        max_output_tokens=glossary_max_output_tokens(entry_budget, multiplier=output_budget_multiplier),
     )
 
 
@@ -1725,8 +1743,11 @@ def build_distinction_request(
     target_language: str,
     sample_text: str = "",
     counts: Mapping[tuple[str, ...], int] | None = None,
+    output_budget_multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER,
 ) -> dict[str, object]:
     """Call C: one request for every collision group, with each term's context.
+
+    ``output_budget_multiplier`` as in ``build_glossary_request`` (spec 069 FR-006).
 
     ``groups`` come ordered by ``order_collision_group``: the first member (and its spellings)
     KEEPS ``current_rendering`` and is marked ``"keep": true``; every term carries how often the
@@ -1769,7 +1790,9 @@ def build_distinction_request(
         model=model,
         instructions=instructions,
         payload=payload,
-        max_output_tokens=glossary_max_output_tokens(sum(len(group) for group in groups)),
+        max_output_tokens=glossary_max_output_tokens(
+            sum(len(group) for group in groups), multiplier=output_budget_multiplier
+        ),
     )
 
 
