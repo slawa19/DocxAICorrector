@@ -4814,15 +4814,21 @@ def _build_reasoning_by_stage(model_accounting: Mapping[str, object] | None) -> 
         if not isinstance(raw, Mapping):
             continue
         reasoning_reported = int(cast(int, raw.get("reasoning_reported_call_count") or 0))
-        cache_reported = int(cast(int, raw.get("cache_fields_reported_call_count") or 0))
+
+        def _field_reported(count_key: str, field: str) -> bool:
+            # Per-field count (FR-003); a stage dict without it predates the split, so fall back to the legacy shared count.
+            if count_key in raw:
+                return bool(int(cast(int, raw.get(count_key) or 0)))
+            return bool(int(cast(int, raw.get("cache_fields_reported_call_count") or 0))) and raw.get(field) is not None
+
         result[str(stage)] = {
             "model_call_count": raw.get("model_call_count"),
             "reasoning_tokens": raw.get("reasoning_tokens") if reasoning_reported else None,
             "reasoning_reported_call_count": raw.get("reasoning_reported_call_count"),
             "reasoning_unreported_call_count": raw.get("reasoning_unreported_call_count"),
-            "cached_tokens": raw.get("cached_tokens") if cache_reported else None,
-            "cache_write_tokens": raw.get("cache_write_tokens") if cache_reported else None,
-            "cache_discount_usd": raw.get("cache_discount_usd") if cache_reported else None,
+            "cached_tokens": raw.get("cached_tokens") if _field_reported("cached_tokens_reported_call_count", "cached_tokens") else None,
+            "cache_write_tokens": raw.get("cache_write_tokens") if _field_reported("cache_write_tokens_reported_call_count", "cache_write_tokens") else None,
+            "cache_discount_usd": raw.get("cache_discount_usd") if _field_reported("cache_discount_reported_call_count", "cache_discount_usd") else None,
             "cache_fields_reported_call_count": raw.get("cache_fields_reported_call_count"),
         }
     return result

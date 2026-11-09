@@ -391,3 +391,43 @@ class TestPassCounterScope:
             snapshot = ma.snapshot_run_model_accounting()
         assert _polish_section(snapshot)["retry_attempt_count"] == 0
         assert snapshot["literary_polish"]["counters"] == {}  # type: ignore[index]
+
+
+class TestPartialCacheFieldsStayUnknown:
+    """Codex 069 P1 / FR-003: an unreported individual cache field is None, never a zero."""
+
+    def test_only_cached_tokens_reported_leaves_the_others_unknown(self) -> None:
+        with ma.run_model_accounting_scope(run_id="r", source_token="s"):
+            ma.record_model_call_usage(
+                stage=ma.STAGE_TEXT_GENERATION,
+                response=_responses(input_tokens_details={"cached_tokens": 64}),
+            )
+            stage = ma.snapshot_run_model_accounting()["stages"]["text_generation"]  # type: ignore[index]
+        assert stage["cached_tokens"] == 64
+        assert stage["cache_write_tokens"] is None
+        assert stage["cache_discount_usd"] is None
+        assert stage["cached_tokens_reported_call_count"] == 1
+        assert stage["cache_write_tokens_reported_call_count"] == 0
+        assert stage["cache_discount_reported_call_count"] == 0
+
+    def test_runner_report_publishes_null_for_unreported_fields(self) -> None:
+        from tests.artifacts.real_document_pipeline import run_lietaer_validation as runner
+
+        with ma.run_model_accounting_scope(run_id="r", source_token="s"):
+            ma.record_model_call_usage(
+                stage=ma.STAGE_TEXT_GENERATION,
+                response=_responses(input_tokens_details={"cached_tokens": 64}),
+            )
+            snapshot = ma.snapshot_run_model_accounting()
+        by_stage = runner._build_reasoning_by_stage(snapshot)
+        item = by_stage["text_generation"]  # type: ignore[index]
+        assert (item["cached_tokens"], item["cache_write_tokens"], item["cache_discount_usd"]) == (64, None, None)
+
+    def test_a_field_reported_by_another_call_is_summed_over_reporting_calls_only(self) -> None:
+        with ma.run_model_accounting_scope(run_id="r", source_token="s"):
+            ma.record_model_call_usage(stage=ma.STAGE_TEXT_GENERATION, response=_chat(cache_discount=0.25))
+            ma.record_model_call_usage(
+                stage=ma.STAGE_TEXT_GENERATION, response=_responses(input_tokens_details={"cached_tokens": 8})
+            )
+            stage = ma.snapshot_run_model_accounting()["stages"]["text_generation"]  # type: ignore[index]
+        assert (stage["cached_tokens"], stage["cache_write_tokens"], stage["cache_discount_usd"]) == (8, None, 0.25)

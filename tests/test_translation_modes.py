@@ -521,3 +521,48 @@ def test_registry_accepts_the_three_translation_modes():
     for mode in ("standard", "quality", "single"):
         built = profiles._build_run_profile({"id": "x", "processing_operation": "translate", "translation_mode": mode})
         assert built.translation_mode == mode
+
+
+def _translate_quality_defaults(monkeypatch):
+    import dataclasses
+
+    app_config = config.load_app_config()
+    return dataclasses.replace(
+        app_config,
+        processing_operation_default="translate",
+        translation_mode_default="quality",
+    )
+
+
+@pytest.mark.parametrize("operation", ["edit", "audiobook"])
+def test_translate_defaults_do_not_leak_into_non_translate_run_profile(log_calls, monkeypatch, operation):
+    """Codex 069 P1: mode model/intensity must not be inherited by edit/audiobook profiles."""
+    import docxaicorrector.validation.profiles as profiles
+
+    app_config = _translate_quality_defaults(monkeypatch)
+    general = profiles.resolve_runtime_resolution(
+        dataclasses_replace(app_config, processing_operation_default="edit"),
+        profiles.RunProfile(id="demo", processing_operation=operation),
+    ).effective
+    resolution = profiles.resolve_runtime_resolution(app_config, profiles.RunProfile(id="demo", processing_operation=operation))
+
+    assert resolution.effective.model == general.model
+    assert resolution.effective.model != _SHIPPED_QUALITY_MODEL
+    assert resolution.effective.editorial_intensity == "literary"
+    assert resolution.effective.translation_mode is None
+
+
+def test_translate_run_profile_still_gets_the_mode_under_translate_defaults(log_calls, monkeypatch):
+    import docxaicorrector.validation.profiles as profiles
+
+    app_config = _translate_quality_defaults(monkeypatch)
+    resolution = profiles.resolve_runtime_resolution(app_config, profiles.RunProfile(id="demo", processing_operation="translate"))
+
+    assert resolution.effective.translation_mode == "quality"
+    assert resolution.effective.model == _SHIPPED_QUALITY_MODEL
+
+
+def dataclasses_replace(obj, **kwargs):
+    import dataclasses
+
+    return dataclasses.replace(obj, **kwargs)

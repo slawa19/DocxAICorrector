@@ -286,6 +286,9 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         image_draw_model=_image_model_choice_default(app_config, "draw"),
         image_models=_resolve_image_models(app_config, vision_model=None, draw_model=None),
     )
+    # General (pre-mode) defaults: edit/audiobook runs inherit model and intensity from HERE, never from
+    # the translate-mode-resolved ui_defaults (Codex 069 P1: the mode leaked into non-translate runs).
+    general_defaults = ui_defaults
     # ui_defaults is "what the UI would start with": no requested model/intensity, no profile mode.
     ui_defaults = replace(
         ui_defaults,
@@ -299,14 +302,14 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         ),
     )
     effective = ResolvedRuntimeConfig(
-        model=run_profile.model or ui_defaults.model,
+        model=run_profile.model or general_defaults.model,
         chunk_size=run_profile.chunk_size if run_profile.chunk_size is not None else ui_defaults.chunk_size,
         max_retries=run_profile.max_retries if run_profile.max_retries is not None else ui_defaults.max_retries,
         image_mode=run_profile.image_mode or ui_defaults.image_mode,
         processing_operation=str(_resolve_run_profile_field(run_profile.processing_operation, ui_defaults.processing_operation)),
         source_language=str(_resolve_run_profile_field(run_profile.source_language, ui_defaults.source_language)),
         target_language=str(_resolve_run_profile_field(run_profile.target_language, ui_defaults.target_language)),
-        editorial_intensity=str(_resolve_run_profile_field(run_profile.editorial_intensity, ui_defaults.editorial_intensity)),
+        editorial_intensity=str(_resolve_run_profile_field(run_profile.editorial_intensity, general_defaults.editorial_intensity)),
         audiobook_postprocess_enabled=bool(
             _resolve_run_profile_field(
                 run_profile.audiobook_postprocess_enabled,
