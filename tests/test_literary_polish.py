@@ -191,12 +191,13 @@ def _fake_loader(**kwargs: Any) -> str:
 def _run_blocks(
     jobs: list[dict[str, Any]],
     *,
-    generator: _Generator,
+    generator: Any,
     app_config: dict[str, object],
     operation: str = "translate",
     should_stop: Any = None,
     load_system_prompt: Any = _fake_loader,
     run_id: str = "run-polish",
+    client: object = TEXT_CLIENT,
 ) -> SimpleNamespace:
     events: list[dict[str, Any]] = []
     runtime: dict[str, Any] = {"state": {}, "finalize": [], "log": [], "status": []}
@@ -208,7 +209,7 @@ def _run_blocks(
 
     def get_client() -> object:
         client_requests.append("default")
-        return TEXT_CLIENT
+        return client
 
     dependencies = build_processing_dependencies(
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
@@ -958,3 +959,73 @@ def test_the_polish_prompt_states_the_three_rules_of_form() -> None:
     assert "Записывайте числа так же, как в тексте: цифры — цифрами, слова — словами" in prompt
     assert "Маркеры абзацев и номера пунктов списка не меняйте" in prompt
     assert "Фрагменты на другом письме (имена, названия, ссылки, адреса) не переводите и не транслитерируйте" in prompt
+
+
+# --- the same contract through the REAL generator ---------------------------------------------------
+
+
+class _MarkerAnsweringClient:
+    """A Responses client: translates first-pass blocks from a table, polishes second-pass ones.
+
+    It answers what the real generator actually sent -- the target section of the user message --
+    so the keyword contract of the second-pass call is checked against production code.
+    """
+
+    def __init__(self, translations: dict[str, str]) -> None:
+        self.translations = translations
+        self.requests: list[dict[str, Any]] = []
+        self.responses = SimpleNamespace(create=self._create)
+
+    @staticmethod
+    def is_polish(request: dict[str, Any]) -> bool:
+        return "Не переводите его заново" in str(request["input"][0]["content"][0]["text"])
+
+    def _create(self, **request: Any) -> SimpleNamespace:
+        self.requests.append(request)
+        user_text = str(request["input"][1]["content"][0]["text"])
+        target = user_text.split("[TARGET BLOCK WITH MARKERS]\n", 1)[1].split("\n\n[CONTEXT AFTER]", 1)[0]
+        answer = "\n\n".join(
+            f"[[DOCX_PARA_{paragraph_id}]]\n"
+            + (text.replace("первого прохода", "после шлифовки") if self.is_polish(request) else self.translations[paragraph_id])
+            for paragraph_id, text in _split_marked(target)
+        )
+        return SimpleNamespace(
+            status="completed",
+            output_text=answer,
+            usage=SimpleNamespace(prompt_tokens=40, completion_tokens=30, cost=0.0001),
+        )
+
+
+def test_the_real_generator_runs_the_pass_and_books_it_in_its_own_section(run_dir: Path) -> None:
+    from docxaicorrector.generation._generation import generate_markdown_block
+
+    client = _MarkerAnsweringClient({pid: text for pid, (text, _status) in _FIRST_PASS.items()})
+
+    run = _run_blocks(
+        _two_blocks(),
+        generator=generate_markdown_block,
+        app_config=_app_config("standard", polish_reasoning="low"),
+        load_system_prompt=core_config.load_system_prompt,
+        client=client,
+    )
+
+    polished = [text.replace("первого прохода", "после шлифовки") for text, _status in _FIRST_PASS.values()]
+    assert run.outcome is None
+    assert _registry_texts(run.state) == polished
+    polish_requests = [request for request in client.requests if client.is_polish(request)]
+    first_pass_requests = [request for request in client.requests if not client.is_polish(request)]
+    assert len(polish_requests) == 2 and len(first_pass_requests) == 2
+    # FR-003 on the wire: the pass's level on its own calls, nothing on the first pass of
+    # ``standard``.
+    assert all(request["reasoning"] == {"effort": "low"} for request in polish_requests)
+    assert all("reasoning" not in request for request in first_pass_requests)
+    # FR-004 (6): the run-wide record is the first pass's; the pass's calls and counters are its own.
+    snapshot = run.snapshot
+    assert snapshot["paragraph_disposition_counts"]["accepted"] == 3
+    assert sum(snapshot["api_path_counts"].values()) == 2
+    assert snapshot["stages"]["literary_polish"]["model_call_count"] == 2
+    assert snapshot["stages"]["text_generation"]["model_call_count"] == 2
+    generator_counters = snapshot["literary_polish"]["generator_counters"]
+    assert generator_counters["paragraph_disposition_counts"]["accepted"] == 3
+    assert sum(generator_counters["api_path_counts"].values()) == 2
+    assert snapshot["literary_polish"]["counters"]["accepted_paragraph_count"] == 3
