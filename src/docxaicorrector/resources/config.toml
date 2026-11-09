@@ -44,6 +44,9 @@ glossary_pass_enabled = true
 glossary_max_terms = 60
 glossary_prompt_max_chars = 5900
 glossary_candidate_limit = 400
+# Spec 069: the translate mode the UI starts on and a run profile without `translation_mode`
+# resolves to. "standard" | "quality"; the modes themselves are the [translation_modes.*] tables.
+translation_mode_default = "standard"
 image_mode_default = "no_change"
 semantic_validation_policy = "advisory"
 keep_all_image_variants = false
@@ -161,6 +164,21 @@ title = "DocxAICorrector"
 enabled = true
 api_key_env = "ANTHROPIC_API_KEY"
 timeout_seconds = 1200
+
+# Spec 069: translate modes. Models and levels come from the bake-off measurements (spec 063
+# FR-017), they are not a UI knob. In a mode the model, intensity and reasoning of the first
+# pass WIN over the general `[models.text]` / `editorial_intensity_default` and over a run
+# profile's own fields. An absent reasoning_effort sends no reasoning parameter; an absent
+# polish_model means no second pass. Env: DOCX_AI_TRANSLATION_MODES_<MODE>_<FIELD>.
+[translation_modes.standard]
+model = "openrouter:google/gemini-3.1-flash-lite-preview"
+editorial_intensity = "literary"
+polish_model = "openrouter:anthropic/claude-haiku-5.5"
+
+[translation_modes.quality]
+model = "openrouter:google/gemini-3.7-flash"
+editorial_intensity = "conservative"
+reasoning_effort = "low"
 
 [paragraph_boundary_normalization]
 enabled = true

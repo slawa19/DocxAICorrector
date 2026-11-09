@@ -1190,3 +1190,81 @@ def test_markdown_quality_metrics_keep_residual_bullet_raw_observability_separat
     assert metrics["residual_bullet_glyph_gate_source"] == "legacy_markdown"
     assert metrics["residual_bullet_glyph_classification"] == "display_hygiene"
     assert metrics["raw_residual_bullet_glyph_count"] == 1
+
+
+# Spec 069 T1.1: characterization of how every run profile resolves BEFORE the
+# translation-modes fields. Covers the keys that existed then; ``translation_*`` keys are
+# new and excluded, so adding them must not move an existing key for any profile.
+_PROFILES_ADDED_BY_SPEC_069 = (
+    "ui-parity-translate-benchmark-standard",
+    "ui-parity-translate-benchmark-quality",
+)
+_PRE_TRANSLATION_MODES_RESOLUTION_DIGEST = "1a9f12fbcb9501c253fb14467998bb6da2c6b4b590574394fb8c3130898db0cd"
+
+
+def _resolution_digest_without_translation_keys() -> str:
+    import hashlib
+
+    app_config = load_app_config()
+    rows = []
+    for profile in REGISTRY.run_profiles:
+        if profile.id in _PROFILES_ADDED_BY_SPEC_069:
+            continue
+        resolution = validation_profiles.resolve_runtime_resolution(app_config, profile)
+        applied = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
+        rows.append(
+            (
+                profile.id,
+                sorted((k, repr(v)) for k, v in resolution.effective.to_dict().items() if not k.startswith("translation_")),
+                sorted((k, repr(v)) for k, v in resolution.overrides.items() if not k.startswith("translation_")),
+                sorted((k, repr(v)) for k, v in resolution.app_config_overrides.items() if not k.startswith("translation_")),
+                sorted((k, repr(v)) for k, v in applied.items() if not k.startswith("translation_")),
+            )
+        )
+    return hashlib.sha256(repr(rows).encode("utf-8")).hexdigest()
+
+
+def test_run_profile_resolution_is_unchanged_for_pre_existing_keys():
+    assert _resolution_digest_without_translation_keys() == _PRE_TRANSLATION_MODES_RESOLUTION_DIGEST
+
+
+# Spec 069 T1.4: every translate run profile declares its translation mode explicitly, so a
+# change of ``translation_mode_default`` can never silently change what an old regression
+# profile measures (and what it costs).
+def _raw_run_profile_tables() -> list[dict[str, Any]]:
+    import tomllib
+
+    payload = tomllib.loads(validation_profiles.DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
+    return list(payload["run_profiles"])
+
+
+def test_every_translate_run_profile_declares_translation_mode_explicitly():
+    translate_tables = [table for table in _raw_run_profile_tables() if table.get("processing_operation") == "translate"]
+    assert len(translate_tables) >= 19  # the guard is not vacuous: 17 old + 2 new profiles
+
+    undeclared = [table["id"] for table in translate_tables if "translation_mode" not in table]
+
+    assert undeclared == []
+
+
+def test_pre_existing_translate_profiles_are_single_pass():
+    by_id = {table["id"]: table for table in _raw_run_profile_tables()}
+    new_ids = {"ui-parity-translate-benchmark-standard", "ui-parity-translate-benchmark-quality"}
+    old_translate = [
+        table for table in by_id.values() if table.get("processing_operation") == "translate" and table["id"] not in new_ids
+    ]
+    assert len(old_translate) == 17
+
+    assert [table["id"] for table in old_translate if table["translation_mode"] != "single"] == []
+
+
+def test_mode_benchmark_profiles_copy_the_image_safe_profile_and_differ_only_in_mode():
+    by_id = {table["id"]: table for table in _raw_run_profile_tables()}
+    base = dict(by_id["ui-parity-translate-benchmark-advisory-image-safe-no-cleanup"])
+    base.pop("id")
+    base.pop("translation_mode")
+    for mode in ("standard", "quality"):
+        copy = dict(by_id[f"ui-parity-translate-benchmark-{mode}"])
+        assert copy.pop("id") == f"ui-parity-translate-benchmark-{mode}"
+        assert copy.pop("translation_mode") == mode
+        assert copy == base
