@@ -740,7 +740,9 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
     result = ui.render_sidebar(config)
 
     # no_change calls no image model, so neither image-model selector is drawn ("").
-    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", "auto", "ru", "literary", "", "", "")
+    assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", None, None, "literary", "", "", "")
+    # Spec 070 FR-001: neither language selector is drawn for audiobook and the pair is absent.
+    assert not [call for call in selectbox_calls if call[0] in {"Язык оригинала", "Целевой язык"}]
     assert checkbox_calls == [
         (
             "Сохранять все варианты изображений",

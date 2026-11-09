@@ -21,6 +21,8 @@ This inventory is intentionally pragmatic:
 - `tests/test_app_runtime.py`
 - `tests/test_application_flow.py`
 - `tests/test_audiobook_prompt.py`
+- `tests/test_audiobook_language_free.py`
+- `tests/test_audiobook_model.py`
 - `tests/test_audiobook_plan.py`
 - `tests/test_block_execution_passthrough_bypass.py`
 - `tests/test_config.py`

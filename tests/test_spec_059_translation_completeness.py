@@ -896,7 +896,7 @@ def test_a_block_the_region_excludes_is_counted_as_a_region_exclusion(monkeypatc
     assert state.narration_excluded_source_fallback_block_count == 0
 
 
-@pytest.mark.parametrize("operation", ["translate", "audiobook"])
+@pytest.mark.parametrize("operation", ["translate"])
 def test_source_text_is_never_spoken_in_a_language_changing_operation(operation) -> None:
     """Anti-regression 11 as rewritten by spec 061 FR-009 — and ANTI-VACUUM for FR-006.
 
@@ -930,6 +930,32 @@ def test_source_text_is_never_spoken_in_a_language_changing_operation(operation)
         {"paragraph_id": "p3", "text": "English the model returned nothing for.", "status": "omitted"},
     ]
 
+
+
+def test_audiobook_speaks_a_restored_source_paragraph_but_still_withholds_an_omitted_one() -> None:
+    """Spec 070 FR-001: the audiobook input is already in its final language, so the SOURCE of a
+    paragraph is a real paragraph of the book (as on ``edit``); ``omitted`` stays withheld.
+    Counter-proof: on ``translate`` the same record withholds both."""
+    from docxaicorrector.generation._generation import (
+        PARAGRAPH_STATUS_ACCEPTED,
+        PARAGRAPH_STATUS_OMITTED,
+        PARAGRAPH_STATUS_SOURCE_RESTORED,
+    )
+
+    block = _marker_block(
+        ("p1", "Первый абзац.", PARAGRAPH_STATUS_ACCEPTED),
+        ("p2", "Восстановленный из источника абзац.", PARAGRAPH_STATUS_SOURCE_RESTORED),
+        ("p3", "Абзац без ответа модели.", PARAGRAPH_STATUS_OMITTED),
+    )
+    spoken, withheld = block_execution.narration_projection_for_processed_block(block, processing_operation="audiobook")
+    translate_spoken, translate_withheld = block_execution.narration_projection_for_processed_block(
+        block, processing_operation="translate"
+    )
+
+    assert "Восстановленный из источника абзац." in spoken
+    assert [entry["paragraph_id"] for entry in withheld] == ["p3"]
+    assert "Восстановленный из источника абзац." not in translate_spoken
+    assert [entry["paragraph_id"] for entry in translate_withheld] == ["p2", "p3"]
 
 def test_on_edit_a_restored_paragraph_is_spoken_and_an_omitted_one_is_still_held() -> None:
     """FR-007: on ``edit`` nothing changes — ``source_restored`` is a real paragraph of the book.
@@ -1148,8 +1174,9 @@ def test_an_apparatus_block_in_the_same_loop_still_ships_and_is_counted_as_a_fal
 #
 # The operation is part of the question, not context around it.
 
-_LANGUAGE_CHANGING = ("translate", "audiobook")
-_NON_LANGUAGE_CHANGING = ("edit", "", "  ", "unknown_future_operation")
+# Spec 070 FR-001: ``audiobook`` left the set -- its input is already in its final language.
+_LANGUAGE_CHANGING = ("translate",)
+_NON_LANGUAGE_CHANGING = ("edit", "audiobook", "", "  ", "unknown_future_operation")
 
 
 @pytest.mark.parametrize("operation", _NON_LANGUAGE_CHANGING)

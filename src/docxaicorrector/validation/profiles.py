@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from docxaicorrector.core.audiobook_mode import AUDIOBOOK_OPERATION, language_pair_for_operation, resolve_audiobook_model
 from docxaicorrector.core.config import (
     EDITORIAL_INTENSITY_VALUES,
     apply_image_model_selection,
@@ -157,8 +158,8 @@ class ResolvedRuntimeConfig:
     max_retries: int
     image_mode: str
     processing_operation: str
-    source_language: str
-    target_language: str
+    source_language: str | None
+    target_language: str | None
     editorial_intensity: str
     reader_cleanup_enabled: bool
     enable_paragraph_markers: bool
@@ -301,14 +302,27 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
             origin="ui",
         ),
     )
+    resolved_operation = str(_resolve_run_profile_field(run_profile.processing_operation, ui_defaults.processing_operation))
+    # Spec 070 FR-001: an audiobook run has no language pair (absence stays absence), and
+    # FR-008: its model comes from the one resolver the UI uses.
+    resolved_source_language, resolved_target_language = language_pair_for_operation(
+        resolved_operation,
+        str(_resolve_run_profile_field(run_profile.source_language, ui_defaults.source_language)),
+        str(_resolve_run_profile_field(run_profile.target_language, ui_defaults.target_language)),
+    )
+    resolved_model = (
+        resolve_audiobook_model(app_config, requested_model=run_profile.model, origin=f"run_profile:{run_profile.id}").model
+        if resolved_operation == AUDIOBOOK_OPERATION
+        else run_profile.model or general_defaults.model
+    )
     effective = ResolvedRuntimeConfig(
-        model=run_profile.model or general_defaults.model,
+        model=resolved_model,
         chunk_size=run_profile.chunk_size if run_profile.chunk_size is not None else ui_defaults.chunk_size,
         max_retries=run_profile.max_retries if run_profile.max_retries is not None else ui_defaults.max_retries,
         image_mode=run_profile.image_mode or ui_defaults.image_mode,
         processing_operation=str(_resolve_run_profile_field(run_profile.processing_operation, ui_defaults.processing_operation)),
-        source_language=str(_resolve_run_profile_field(run_profile.source_language, ui_defaults.source_language)),
-        target_language=str(_resolve_run_profile_field(run_profile.target_language, ui_defaults.target_language)),
+        source_language=resolved_source_language,
+        target_language=resolved_target_language,
         editorial_intensity=str(_resolve_run_profile_field(run_profile.editorial_intensity, general_defaults.editorial_intensity)),
         reader_cleanup_enabled=bool(
             _resolve_run_profile_field(

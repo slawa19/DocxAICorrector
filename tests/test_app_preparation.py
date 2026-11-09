@@ -240,7 +240,7 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
         raise AssertionError("Expected rerun after starting background preparation")
 
     assert len(start_calls) == 1
-    assert start_calls[0]["upload_marker"] == "report.docx:3:ba7816bf8f01cfea:7000:op=audiobook:sl=auto:tl=ru"
+    assert start_calls[0]["upload_marker"] == "report.docx:3:ba7816bf8f01cfea:7000:op=audiobook"
     assert start_calls[0]["chunk_size"] == 7000
     assert start_calls[0]["image_mode"] == "safe"
     assert start_calls[0]["keep_all_image_variants"] is True

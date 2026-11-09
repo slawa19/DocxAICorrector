@@ -19,6 +19,7 @@
 | `audiobook_repair_failed` | WARNING | то же | отказ, ошибка или Stop | `{filename, block_index, paragraph_ids, reason, error_class, call_made}` (`reason` ∈ `marker_mismatch`, `empty_paragraph`, `error`, `stopped`) |
 | `audiobook_needs_review` | WARNING | `pipeline/late_phases.py` | один раз на прогон, если есть хотя бы один абзац с пометкой | `{filename, run_id, needs_review_paragraph_count, needs_review_by_reason, records: [{paragraph_id, block_index, reasons, residue_classes, sample}]}` — `records` полный (ID + образец ≤ 120 знаков), без полных текстов |
 | `audiobook_paragraph_boundary_mismatch` | ERROR | `pipeline/narration_postprocess.py` (сборка) | разбор итогового текста не совпал с записями (дефект кода; не должен случаться) | `{filename, expected_paragraph_count, delivered_paragraph_count, deterministic_join_count, parsed_paragraph_count, first_mismatch_paragraph_id}` |
+| `audiobook_narration_failed` | ERROR | `pipeline/late_phases.py` (через `present_error`) | подготовка текста озвучки standalone-`audiobook` завершилась исключением; результат — failed-ветвь | `{filename, processing_operation}` + текст ошибки |
 
 ## Изменённые события
 

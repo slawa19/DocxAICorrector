@@ -2,6 +2,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
+from docxaicorrector.core.audiobook_mode import language_pair_for_operation
 from docxaicorrector.core.logger import log_event as _module_log_event
 from docxaicorrector.core.models import ImageMode
 from docxaicorrector.generation.formatting_diagnostics_retention import (
@@ -171,14 +172,16 @@ def build_processing_context(
     model: str,
     max_retries: int,
     processing_operation: str,
-    source_language: str,
-    target_language: str,
+    source_language: str | None,
+    target_language: str | None,
     on_progress: Any,
     runtime: object,
     dependencies: Any,
     context_factory_fn: Callable[..., Any],
     document_context_prompt: str = "",
 ) -> Any:
+    # Spec 070 FR-001: the audiobook run carries no language pair, whatever the caller still holds.
+    source_language, target_language = language_pair_for_operation(processing_operation, source_language, target_language)
     effective_image_mode = ImageMode.NO_CHANGE.value if processing_operation == "audiobook" else image_mode
     model_selector = model
     canonical_model_selector = model
@@ -257,8 +260,8 @@ def build_processing_run_components(
     model: str,
     max_retries: int,
     processing_operation: str,
-    source_language: str,
-    target_language: str,
+    source_language: str | None,
+    target_language: str | None,
     on_progress: Any,
     runtime: object,
     dependency_builder_fn: Callable[..., Any],

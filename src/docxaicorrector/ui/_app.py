@@ -45,6 +45,7 @@ from docxaicorrector.ui.app_runtime import (
     start_background_preparation,
     start_background_processing,
 )
+from docxaicorrector.core.audiobook_mode import AUDIOBOOK_OPERATION, language_pair_for_operation, resolve_audiobook_model
 from docxaicorrector.core.logger import fail_critical, log_event, present_error
 from docxaicorrector.core.translation_modes import (
     EffectiveTranslationConfig,
@@ -140,7 +141,7 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
     time_fn=time.monotonic,
 )
 
-SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, str, str, str, str]
+SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str | None, str | None, str, str, str, str]
 
 # How long a looked-up price list (or the lack of one) is reused by the estimate before
 # ``get_price_list`` is asked again: it may reach for the network, a rerun must not.
@@ -244,8 +245,8 @@ def _start_background_processing(
     model: str,
     max_retries: int,
     processing_operation: str = "edit",
-    source_language: str = "en",
-    target_language: str = "ru",
+    source_language: str | None = "en",
+    target_language: str | None = "ru",
     document_context_prompt: str = "",
 ) -> None:
     def worker_entrypoint(
@@ -1028,6 +1029,9 @@ def main() -> None:
         image_draw_model,
         translation_mode,
     ) = _resolve_sidebar_settings(render_sidebar(app_config))
+    # Spec 070 FR-001: an audiobook run has no language pair, whatever the sidebar (or the
+    # session behind it) still holds; absence is carried as None from here on.
+    source_language, target_language = language_pair_for_operation(processing_operation, source_language, target_language)
     # Spec 062: the two image-model selectors set the six image roles for this run; a
     # per-role pin from .env / config.toml still wins (core.config.resolve_image_role_models).
     app_config = dict(
@@ -1058,6 +1062,10 @@ def main() -> None:
         origin="ui",
     )
     app_config = apply_effective_translation_config(app_config, effective_translation)
+    if processing_operation == AUDIOBOOK_OPERATION:
+        # Spec 070 FR-008: the same resolver the runner uses; the sidebar value is the user's
+        # audiobook choice (or its default, which is the resolver's own config answer).
+        model = resolve_audiobook_model(app_config, requested_model=model, origin="ui").model
     if effective_translation is not None:
         model = effective_translation.first_pass.model
 
@@ -1287,8 +1295,8 @@ def main() -> None:
                 app_config=app_config,
                 prepared_run_context=prepared_run_context,
                 uploaded_file_token=uploaded_file_token,
-                source_language=source_language,
-                target_language=target_language,
+                source_language=str(source_language or ""),
+                target_language=str(target_language or ""),
                 source_text=source_text,
             )
         except Exception as exc:  # noqa: BLE001
@@ -1303,18 +1311,22 @@ def main() -> None:
             st.rerun()
     else:
         _discard_translation_cost_estimates()
-    assessment = _assess_text_transform(
-        source_text=source_text,
-        target_language=target_language,
-    )
-    _maybe_apply_file_recommendations(
-        app_config=app_config,
-        prepared_run_context=prepared_run_context,
-        assessment=assessment,
-        processing_operation=processing_operation,
-        source_language=source_language,
-        target_language=target_language,
-    )
+    assessment: TextTransformAssessment | None = None
+    if processing_operation != AUDIOBOOK_OPERATION:
+        # Spec 070 FR-001: language estimation and settings recommendations are about a language
+        # pair; the audiobook mode has none, so neither runs for it.
+        assessment = _assess_text_transform(
+            source_text=source_text,
+            target_language=str(target_language or ""),
+        )
+        _maybe_apply_file_recommendations(
+            app_config=app_config,
+            prepared_run_context=prepared_run_context,
+            assessment=assessment,
+            processing_operation=processing_operation,
+            source_language=str(source_language or ""),
+            target_language=str(target_language or ""),
+        )
     processing_outcome = get_processing_outcome()
     restartable_outcome = has_restartable_outcome(processing_outcome)
 
@@ -1349,13 +1361,14 @@ def main() -> None:
 
     notice_message = None
     if not restartable_outcome:
-        for warning_message in build_text_transform_warnings(
-            operation=processing_operation,
-            source_language=source_language,
-            target_language=target_language,
-            assessment=assessment,
-        ):
-            st.warning(warning_message)
+        if assessment is not None:
+            for warning_message in build_text_transform_warnings(
+                operation=processing_operation,
+                source_language=str(source_language or ""),
+                target_language=str(target_language or ""),
+                assessment=assessment,
+            ):
+                st.warning(warning_message)
         notice_message = _build_recommended_text_settings_notice(uploaded_file_token)
         if notice_message is not None:
             st.info(notice_message)
@@ -1407,8 +1420,8 @@ def main() -> None:
                     app_config=app_config,
                     prepared_run_context=prepared_run_context,
                     uploaded_file_token=uploaded_file_token,
-                    source_language=source_language,
-                    target_language=target_language,
+                    source_language=str(source_language or ""),
+                    target_language=str(target_language or ""),
                     source_text=source_text,
                 )
                 cost_estimate_snapshot = _freeze_cost_estimate_snapshot(effective_translation, uploaded_file_token)
