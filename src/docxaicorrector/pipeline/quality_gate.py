@@ -73,6 +73,7 @@ from docxaicorrector.pipeline.output_validation import (
     collect_residual_bullet_glyph_samples,
     has_toc_body_concat_markdown,
     is_citation_form_paragraph,
+    notes_run_untranslated_part,
 )
 from docxaicorrector.pipeline.formatting_diagnostics_feedback import (
     _load_formatting_diagnostics_payloads,
@@ -587,7 +588,8 @@ def _collect_untranslated_body_samples(
         if _is_policy_kept_source_entry(entry):
             continue
         text = str(getattr(entry, "text", "") or "").strip()
-        if not _is_untranslated_body_text(text):
+        char_count = _untranslated_body_char_count(text)
+        if not char_count:
             continue
         samples.append(
             _UntranslatedStructuralSample(
@@ -597,10 +599,41 @@ def _collect_untranslated_body_samples(
                 role=role or None,
                 structural_role=structural_role or None,
                 paragraph_id=str(getattr(entry, "paragraph_id", "") or "") or None,
-                char_count=len(_strip_structural_markdown_prefix(text)),
+                char_count=char_count,
             )
         )
     return samples
+
+
+def _untranslated_body_char_count(text: str) -> int:
+    """How many characters of one delivered body paragraph count as untranslated; 0 if none.
+
+    Spec 069 FR-005 (c): a paragraph that is a run of notes by its form
+    (``output_validation.notes_run_untranslated_part``) is counted by its UNTRANSLATED PART --
+    the commentary left in the source language, without the references D1 keeps there. That
+    part must pass the same floors as a whole paragraph (``_UNTRANSLATED_BODY_MIN_CHARS``,
+    ``_UNTRANSLATED_BODY_MIN_LATIN_WORDS``), and its length is what the sample adds to the
+    document total, which meets the same 2 000-character / 2 % thresholds. The sample keeps
+    the whole delivered paragraph as its text: that is what a reviewer finds in the document.
+
+    Replayed on the delivered text of the spec 063 bake-off (spec 069 research R4): Gemini
+    variants of Money ch. III 1 993-2 036 -> 346-348 characters (what is left is a list of
+    firm names in one note, below the document thresholds); the Haiku variant, which left
+    whole definitions in English, 6 689 -> 3 656, still above both thresholds and still
+    blocked -- the rule subtracts kept references and nothing else.
+
+    Every other paragraph takes the path it took before (``_is_untranslated_body_text``,
+    URL branch included).
+    """
+    stripped = _strip_structural_markdown_prefix(text)
+    part = notes_run_untranslated_part(stripped)
+    if part is None:
+        return len(stripped) if _is_untranslated_body_text(text) else 0
+    if len(part) < _UNTRANSLATED_BODY_MIN_CHARS:
+        return 0
+    if len(_LATIN_WORD_PATTERN.findall(part)) < _UNTRANSLATED_BODY_MIN_LATIN_WORDS:
+        return 0
+    return len(part)
 
 
 def _list_fragment_apparatus_credited_lines(
