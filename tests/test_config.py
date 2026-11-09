@@ -71,9 +71,9 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     models = cast(config.ModelRegistry, app_config["models"])
 
     assert app_config["default_model"] == "gpt-5.4-mini"
-    assert app_config["model_options"] == ["gpt-5.4", "gpt-5.4-mini", "gpt-5-mini"]
+    assert app_config["model_options"] == ["gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview", "openrouter:google/gemini-3.7-flash"]
     assert models.text.default == "gpt-5.4-mini"
-    assert models.text.options == ("gpt-5.4", "gpt-5.4-mini", "gpt-5-mini")
+    assert models.text.options == ("gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview", "openrouter:google/gemini-3.7-flash")
     assert app_config["chunk_size"] == 12000
     assert app_config["max_retries"] == 1
     assert app_config["processing_operation_default"] == "edit"

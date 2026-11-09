@@ -97,9 +97,8 @@ _PROVIDER_CAPABILITIES = {
 }
 _MIGRATION_DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
 _MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS = (
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5-mini",
+    "openrouter:google/gemini-3.1-flash-lite-preview",
+    "openrouter:google/gemini-3.7-flash",
 )
 _MIGRATION_DEFAULT_MODEL_ROLES = {
     "boundary_review": _MIGRATION_DEFAULT_TEXT_MODEL,

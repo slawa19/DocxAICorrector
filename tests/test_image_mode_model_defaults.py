@@ -101,8 +101,30 @@ def test_a_user_choice_survives_a_rerun_in_the_same_mode_and_does_not_leak_into_
 
     _select_mode(at, "semantic_redraw_structured")  # another mode: its own default, not the pick
     assert _pair(at) == PER_MODE_PAIRS["semantic_redraw_structured"]
-    # (Streamlit drops the state of a widget that a run did not render, so coming back to the
-    # first mode starts from its default again; only reruns of the same mode keep the pick.)
+
+    _select_mode(at, "semantic_redraw_direct")  # back: the pick of that mode is still there
+    assert _pair(at) == ("gpt-6.1-sol", "gpt-image-2.5-flare")
+
+
+def test_a_pick_survives_switching_to_another_mode_and_operation_and_back():
+    at = _select_mode(_run_sidebar(), "semantic_redraw_structured")
+    at.sidebar.selectbox(key="sidebar_image_vision_model__semantic_redraw_structured").select("gpt-6.1-sol")
+    at.sidebar.selectbox(key="sidebar_image_draw_model__semantic_redraw_structured").select("gpt-image-2.5-sunburst")
+    at.run()
+    picked = ("gpt-6.1-sol", "gpt-image-2.5-sunburst")
+    assert _pair(at) == picked
+
+    _select_mode(at, "semantic_redraw_direct")
+    assert _pair(at) == PER_MODE_PAIRS["semantic_redraw_direct"]
+    _select_mode(at, "semantic_redraw_structured")
+    assert _pair(at) == picked
+
+    at.sidebar.selectbox(key="sidebar_text_operation").select(ui.TEXT_OPERATION_LABELS["translate"]).run()
+    assert not at.exception, at.exception
+    at.sidebar.selectbox(key="sidebar_text_operation").select(ui.TEXT_OPERATION_LABELS["edit"]).run()
+    assert not at.exception, at.exception
+    _select_mode(at, "semantic_redraw_structured")
+    assert _pair(at) == picked
 
 
 def test_a_per_role_pin_still_outranks_the_mode_default(monkeypatch):
