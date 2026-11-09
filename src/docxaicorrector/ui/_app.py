@@ -378,6 +378,23 @@ def _discard_translation_cost_estimates() -> bool:
     return st.session_state.pop(TRANSLATION_COST_ESTIMATES_KEY, None) is not None
 
 
+def _pass_signature(spec: PassSpec) -> list[object]:
+    return [spec.pass_kind, spec.model, spec.stage, spec.reasoning_effort, spec.editorial_intensity]
+
+
+def _snapshot_matches_effective(snapshot: Mapping[str, object], effective: EffectiveTranslationConfig) -> bool:
+    expected = [_pass_signature(spec) for spec in _translation_mode_passes(effective)]
+    raw = snapshot.get("passes")
+    if not isinstance(raw, list):
+        return False
+    actual = [
+        [item.get("pass"), item.get("model"), item.get("stage"), item.get("reasoning_effort"), item.get("editorial_intensity")]
+        for item in raw
+        if isinstance(item, dict)
+    ]
+    return actual == expected
+
+
 def _refresh_translation_cost_estimates(
     *,
     app_config: Mapping[str, object],
@@ -397,21 +414,7 @@ def _refresh_translation_cost_estimates(
     table = load_coefficient_table()
     price_list = _lookup_price_list()
     prepared_source_key = str(getattr(prepared_run_context, "prepared_source_key", "") or "")
-    key = [
-        uploaded_file_token,
-        prepared_source_key,
-        f"{source_language}->{target_language}",
-        table.version,
-        price_list.fetched_at if price_list is not None else None,
-    ]
-    existing = st.session_state.get(TRANSLATION_COST_ESTIMATES_KEY)
-    if isinstance(existing, dict) and existing.get("key") == key:
-        return False
-
-    jobs = cast(list[Mapping[str, object]], list(getattr(prepared_run_context, "jobs", []) or []))
-    llm_job_count = sum(1 for job in jobs if str(job.get("job_kind", "llm") or "llm") == "llm")
-    paragraph_count = len(getattr(prepared_run_context, "paragraphs", []) or [])
-    snapshots: dict[str, dict[str, object]] = {}
+    mode_passes: dict[str, tuple[EffectiveTranslationConfig, list[PassSpec]]] = {}
     for mode in TRANSLATION_MODE_OPTIONS:
         effective = resolve_effective_translation_config(
             app_config,
@@ -421,12 +424,31 @@ def _refresh_translation_cost_estimates(
             requested_intensity=None,
             origin="ui",
         )
-        if effective is None:
-            continue
+        if effective is not None:
+            mode_passes[mode] = (effective, _translation_mode_passes(effective))
+    key = [
+        uploaded_file_token,
+        prepared_source_key,
+        f"{source_language}->{target_language}",
+        table.version,
+        price_list.fetched_at if price_list is not None else None,
+        # The effective pass specs of every mode (model, stage, reasoning, intensity, pass kind): an
+        # estimate of another configuration must never be served as this one's.
+        {mode: [_pass_signature(spec) for spec in passes] for mode, (_, passes) in mode_passes.items()},
+    ]
+    existing = st.session_state.get(TRANSLATION_COST_ESTIMATES_KEY)
+    if isinstance(existing, dict) and existing.get("key") == key:
+        return False
+
+    jobs = cast(list[Mapping[str, object]], list(getattr(prepared_run_context, "jobs", []) or []))
+    llm_job_count = sum(1 for job in jobs if str(job.get("job_kind", "llm") or "llm") == "llm")
+    paragraph_count = len(getattr(prepared_run_context, "paragraphs", []) or [])
+    snapshots: dict[str, dict[str, object]] = {}
+    for mode, (effective, passes) in mode_passes.items():
         estimate = estimate_text_stages(
             EstimateInput(
                 mode=effective.mode,
-                passes=_translation_mode_passes(effective),
+                passes=passes,
                 llm_job_count=llm_job_count,
                 paragraph_count=paragraph_count,
                 source_chars=len(source_text),
@@ -473,7 +495,11 @@ def _freeze_cost_estimate_snapshot(
         return None
     snapshots = state.get("snapshots")
     snapshot = snapshots.get(effective.mode) if isinstance(snapshots, dict) else None
-    return copy.deepcopy(snapshot) if isinstance(snapshot, dict) else None
+    if not isinstance(snapshot, dict) or not _snapshot_matches_effective(snapshot, effective):
+        # An estimate of another configuration (other models, reasoning, intensity or passes) is
+        # never frozen as this run's.
+        return None
+    return copy.deepcopy(snapshot)
 
 
 def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
@@ -1377,6 +1403,21 @@ def main() -> None:
         # later change of mode, file or price list cannot rewrite it. A start without a snapshot
         # clears the previous one, so an old estimate never decorates this run's result.
         cost_estimate_snapshot = _freeze_cost_estimate_snapshot(effective_translation, uploaded_file_token)
+        if cost_estimate_snapshot is None and effective_translation is not None and effective_translation.mode != "single":
+            # The estimate in the session was built for another configuration: recompute it for the
+            # one being started, then freeze.
+            try:
+                _refresh_translation_cost_estimates(
+                    app_config=app_config,
+                    prepared_run_context=prepared_run_context,
+                    uploaded_file_token=uploaded_file_token,
+                    source_language=source_language,
+                    target_language=target_language,
+                    source_text=source_text,
+                )
+                cost_estimate_snapshot = _freeze_cost_estimate_snapshot(effective_translation, uploaded_file_token)
+            except Exception as exc:  # noqa: BLE001
+                log_event(logging.WARNING, "cost_estimate_failed", "Оценка цены не пересчитана при старте.", error=f"{type(exc).__name__}: {exc}")
         if cost_estimate_snapshot is not None:
             app_config["cost_estimate_snapshot"] = cost_estimate_snapshot
         st.session_state["latest_cost_estimate_snapshot"] = cost_estimate_snapshot

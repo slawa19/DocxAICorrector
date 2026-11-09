@@ -892,3 +892,52 @@ def test_the_pipeline_emits_no_comparison_for_a_run_without_a_snapshot(monkeypat
 
     assert "cost_estimate_vs_actual" not in dict(events)
     assert states == []
+
+
+# ---------------------------------------------------------------- review 069 acceptance, findings 3 and 4
+
+
+def test_edit_translate_edit_keeps_the_chosen_edit_model() -> None:
+    # Finding 3: the model selectbox is not drawn for translate, so Streamlit drops its widget state;
+    # coming back to edit must show the user's choice, not the default model.
+    custom = "openrouter:vendor/review-custom"
+    at = AppTest.from_string(_SIDEBAR_SCRIPT, default_timeout=30)
+    at.run()
+    assert not at.exception, at.exception
+    at.sidebar.selectbox(key="sidebar_model").select("custom").run()
+    at.sidebar.text_input[0].set_value(custom).run()
+    assert not at.exception, at.exception
+    assert at.session_state["_sidebar_result"][0] == custom
+
+    at.sidebar.selectbox(key="sidebar_text_operation").select(ui.TEXT_OPERATION_LABELS["translate"]).run()
+    assert "sidebar_model" not in _selectbox_keys(at)
+    at.sidebar.selectbox(key="sidebar_text_operation").select(ui.TEXT_OPERATION_LABELS["edit"]).run()
+
+    assert not at.exception, at.exception
+    assert at.sidebar.selectbox(key="sidebar_model").value == "custom"
+    assert at.session_state["_sidebar_result"][0] == custom
+
+
+def test_a_changed_pass_configuration_recomputes_the_estimate_and_the_start_never_freezes_a_stale_one(
+    session: SessionState,
+) -> None:
+    # Finding 4: same document, same prices, but the effective ``quality`` pass moved low -> high.
+    assert _refresh() is True
+    assert session[KEY]["snapshots"]["quality"]["passes"][0]["reasoning_effort"] == "low"
+
+    high = copy.deepcopy(_APP_CONFIG_WITH_MODES)
+    high["translation_modes"]["quality"] = dataclasses.replace(
+        high["translation_modes"]["quality"],
+        first_pass=dataclasses.replace(high["translation_modes"]["quality"].first_pass, reasoning_effort="high"),
+    )
+    effective = app.resolve_effective_translation_config(
+        high, processing_operation="translate", requested_mode="quality",
+        requested_model=None, requested_intensity=None, origin="ui",
+    )
+
+    # Start on the stale estimate: nothing frozen, rather than a snapshot of another configuration.
+    assert app._freeze_cost_estimate_snapshot(effective, "tok") is None
+    assert _refresh(app_config=high) is True
+    frozen = app._freeze_cost_estimate_snapshot(effective, "tok")
+    assert frozen is not None
+    assert cast(list, frozen["passes"])[0]["reasoning_effort"] == "high"
