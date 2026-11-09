@@ -33,7 +33,7 @@ from docxaicorrector.pipeline.audiobook_pass import (
     audiobook_narration_summary,
 )
 from docxaicorrector.pipeline.contracts import BlockExecutionPayload, ProcessingInitialization, ProcessingState
-from docxaicorrector.pipeline.job_parsing import is_marker_mode_enabled
+from docxaicorrector.pipeline.job_parsing import is_marker_mode_enabled, parse_processing_job
 from docxaicorrector.pipeline.narration_postprocess import _build_narration_text, assemble_narration_records
 from docxaicorrector.pipeline.output_validation import classify_processed_block
 from docxaicorrector.pipeline.support import resolve_system_prompt
@@ -310,6 +310,48 @@ def test_a_block_with_nothing_excluded_is_sent_whole() -> None:
     assert generator.calls[0]["expected_paragraph_ids"] == ["p1", "p2"]
     assert generator.calls[0]["target_text"] == payload.target_text_with_markers
     assert run.state.narration_exclusions == []
+
+
+def test_excluded_neighbours_do_not_reach_the_model_through_the_context() -> None:
+    """Fix-1, Codex acceptance finding 6: a paragraph that is not narrated is not sent as
+    context either. The job comes from the real document layer and the real job parser, and the
+    request is the one the block generator receives."""
+
+    from docxaicorrector.core.models import DocumentBlock, ParagraphUnit
+    from docxaicorrector.document.semantic_blocks import build_editing_jobs
+
+    def unit(text: str, pid: str, role: str = "body", structural_role: str | None = None, level: int | None = None):
+        return ParagraphUnit(
+            text=text, role=role, paragraph_id=pid, heading_level=level, structural_role=structural_role or role
+        )
+
+    table = "<table><tr><td>17</td></tr></table>"
+    caption = "Рисунок 1. Карта приливов."
+    entry = "1. Летопись гавани, 2010."
+    blocks = [
+        DocumentBlock(paragraphs=[unit(_PROSE_A, "p0000")]),
+        DocumentBlock(
+            paragraphs=[
+                unit(_TOC_LINE, "p0001", structural_role="toc_entry"),
+                unit(table, "p0002", role="table"),
+                unit(caption, "p0003", role="caption"),
+            ]
+        ),
+        DocumentBlock(paragraphs=[unit(_PROSE_B, "p0004")]),
+        DocumentBlock(paragraphs=[unit("Notes", "p0005", role="heading", level=1)]),
+        DocumentBlock(paragraphs=[unit(entry, "p0006", role="list")]),
+    ]
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+    payload = parse_processing_job(job=jobs[2], payload_factory=BlockExecutionPayload)
+    generator = _Generator(_accepted)
+
+    _run(payload, generator=generator, index=2)
+
+    (sent,) = generator.calls
+    assert _PROSE_A in sent["context_before"]  # anti-vacuum: the narrated neighbour is context
+    for excluded in (_TOC_LINE, table, caption):
+        assert excluded not in sent["context_before"]
+    assert "Notes" not in sent["context_after"] and entry not in sent["context_after"]
 
 
 def test_a_wholly_excluded_block_makes_no_call_and_still_reports_its_exclusions() -> None:

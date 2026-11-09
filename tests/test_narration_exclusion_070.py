@@ -129,7 +129,16 @@ def test_the_audiobook_jobs_differ_from_edit_only_in_the_narration_fields() -> N
     audiobook_jobs = build_editing_jobs(_snapshot_blocks(), max_chars=3000, processing_operation="audiobook")
 
     for edit_job, audiobook_job in zip(edit_jobs, audiobook_jobs):
-        keys_that_may_differ = {"narration_exclusion_reasons", "narration_include", "job_kind"}
+        # The context fields too (fix-1, finding 6): the audiobook builds them from narrated
+        # paragraphs only -- pinned by the context tests below.
+        keys_that_may_differ = {
+            "narration_exclusion_reasons",
+            "narration_include",
+            "job_kind",
+            "context_before",
+            "context_after",
+            "context_chars",
+        }
         assert {k: v for k, v in edit_job.items() if k not in keys_that_may_differ} == {
             k: v for k, v in audiobook_job.items() if k not in keys_that_may_differ
         }
@@ -158,6 +167,71 @@ def test_a_mixed_block_gets_one_reason_per_paragraph_and_the_prose_gets_none() -
     # The block is still narrated -- it has prose -- and still goes to the model (as a subset).
     assert job["narration_include"] is True
     assert job["job_kind"] == "llm"
+
+
+# --- fix-1, Codex acceptance finding 6: what is not narrated is not context either ------------
+
+_TOC_LINE = "One ..... 3"
+_TABLE = "<table><tr><td>17</td></tr></table>"
+_CAPTION = "Figure 1. A chart of the tides."
+_ENTRY = "1. Harbour Ledger, 2010."
+_PROSE_BEFORE = "The pilots argued about the chart until the lamps were lit and the water turned black."
+_PROSE_AFTER = "Morning came grey and quiet, and the boats went out again past the broken mole."
+
+
+def _context_blocks() -> list[DocumentBlock]:
+    return [
+        DocumentBlock(paragraphs=[_unit(_PROSE_BEFORE, "p0000")]),
+        # A mixed neighbour: a TOC line, a table and a caption beside narrated prose.
+        DocumentBlock(
+            paragraphs=[
+                _unit(_TOC_LINE, "p0001", structural_role="toc_entry"),
+                _unit(_TABLE, "p0002", role="table"),
+                _unit(_CAPTION, "p0003", role="caption"),
+            ]
+        ),
+        DocumentBlock(paragraphs=[_unit(_PROSE, "p0004")]),
+        # Recognised apparatus after the target, then the author's prose again.
+        DocumentBlock(paragraphs=[_unit("Notes", "p0005", role="heading", level=1)]),
+        DocumentBlock(paragraphs=[_unit(_ENTRY, "p0006", role="list")]),
+        DocumentBlock(
+            paragraphs=[_unit("Afterword", "p0007", role="heading", level=1), _unit(_PROSE_AFTER, "p0008")]
+        ),
+    ]
+
+
+def test_the_audiobook_context_carries_only_narrated_paragraphs() -> None:
+    jobs = build_editing_jobs(_context_blocks(), max_chars=3000, processing_operation="audiobook")
+    target = jobs[2]
+
+    # The premise: the neighbours really are excluded, and the target is narrated.
+    assert jobs[1]["narration_exclusion_reasons"] == ["toc", "table", "caption"]
+    assert jobs[3]["narration_exclusion_reasons"] == ["apparatus"]
+    assert jobs[4]["narration_exclusion_reasons"] == ["apparatus"]
+    assert target["narration_exclusion_reasons"] == [None]
+
+    before = str(target["context_before"])
+    after = str(target["context_after"])
+    for excluded in (_TOC_LINE, _TABLE, _CAPTION, "<table>"):
+        assert excluded not in before
+    for excluded in ("Notes", _ENTRY):
+        assert excluded not in after
+    # Anti-vacuum: the context is not simply dropped -- the narrated neighbours are still in it,
+    # past the excluded blocks in between.
+    assert _PROSE_BEFORE in before
+    assert "Afterword" in after and _PROSE_AFTER[:40] in after
+    assert target["context_chars"] == len(before) + len(after)
+
+
+@pytest.mark.parametrize("operation", ["translate", "edit"])
+def test_translate_and_edit_context_still_carries_every_neighbour(operation: str) -> None:
+    # Counter-proof of the scope: the same document under translate and edit keeps the old context.
+    jobs = build_editing_jobs(_context_blocks(), max_chars=3000, processing_operation=operation)
+    target = jobs[2]
+
+    assert _TOC_LINE in str(target["context_before"])
+    assert _CAPTION in str(target["context_before"])
+    assert _ENTRY in str(target["context_after"])
 
 
 def test_a_block_of_nothing_but_excluded_paragraphs_is_a_passthrough_without_a_call() -> None:
@@ -217,6 +291,119 @@ def test_a_run_of_notes_left_in_the_body_is_excluded_as_notes_in_body_and_its_ne
 
     assert reasons["p0003"] == "notes_in_body"
     assert [reasons[pid] for pid in ("p0000", "p0001", "p0002", "p0004")] == [None, None, None, None]
+
+
+# --- fix-1, Codex acceptance finding 1: a contents line naming a reference section -----------
+
+
+def _contents_line_then_prose() -> list[DocumentBlock]:
+    """The FORM of the measured case: a contents list the import did not tag as one, whose last
+    row names a reference section as a body line WITHOUT a heading level, followed by the
+    author's front sections (headings WITH a level) and only later by the real section."""
+    return [
+        DocumentBlock(paragraphs=[_unit(_PROSE, "p0000")]),
+        DocumentBlock(
+            paragraphs=[
+                _unit("Appendices", "p0001", role="heading", level=3),
+                _unit("**Acknowledgements**", "p0002"),
+                _unit("**About the authors**", "p0003"),
+                _unit("**Bibliography**", "p0004"),
+            ]
+        ),
+        DocumentBlock(paragraphs=[_unit("[[DOCX_IMAGE_img_001]]", "p0005", role="image")]),
+        DocumentBlock(
+            paragraphs=[_unit("Foreword", "p0006", role="heading", level=3), _unit(_PROSE, "p0007"), _unit(_PROSE, "p0008")]
+        ),
+        DocumentBlock(paragraphs=[_unit("Preface", "p0009", role="heading", level=2), _unit(_PROSE, "p0010")]),
+        DocumentBlock(paragraphs=[_unit("Chapter One", "p0011", role="heading", level=1), _unit(_PROSE, "p0012")]),
+        DocumentBlock(paragraphs=[_unit("Bibliography", "p0013", role="heading", level=2)]),
+        DocumentBlock(paragraphs=[_unit("Harbour, A. *Tides*. London, 2004.", "p0014", role="list")]),
+    ]
+
+
+def test_prose_after_a_contents_line_naming_a_reference_section_is_narrated() -> None:
+    reasons = _reasons_by_id(_contents_line_then_prose())
+
+    # The prose before the contents line, the line itself and the front sections after it.
+    assert [reasons[f"p{n:04d}"] for n in (0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12)] == [None] * 12
+    assert reasons["p0005"] == "image"
+    # Anti-vacuum: the real section, whose title carries a level, is still apparatus.
+    assert reasons["p0013"] == "apparatus"
+    assert reasons["p0014"] == "apparatus"
+
+
+def test_a_contents_list_without_emphasis_markup_is_refused_the_same_way() -> None:
+    # The guard reads the row in FRONT of the title (does it end a sentence?), not the bold
+    # markup of the rows: plain rows and no picture in between give the same answer.
+    blocks = [
+        DocumentBlock(
+            paragraphs=[_unit(_unwrapped(paragraph.text), str(paragraph.paragraph_id), role=paragraph.role, level=paragraph.heading_level) for paragraph in block.paragraphs]
+        )
+        for block in _contents_line_then_prose()
+        if block.paragraphs[0].role != "image"
+    ]
+
+    reasons = _reasons_by_id(blocks)
+
+    assert [reasons[f"p{n:04d}"] for n in (4, 6, 7, 8, 9, 10)] == [None] * 6
+    assert reasons["p0014"] == "apparatus"
+
+
+def _unwrapped(text: str) -> str:
+    return text[2:-2] if text.startswith("**") and text.endswith("**") else text
+
+
+def test_an_unlevelled_reference_title_still_excludes_the_entries_that_follow_it() -> None:
+    # Counter-proof of the guard: the same title line WITHOUT a level, at the tail of a block,
+    # but behind the chapter's last FINISHED sentence (the shape the tail case was built for) --
+    # it still anchors, and its entries up to the next section are still apparatus.
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                _unit("Closing thoughts", "p0000", role="heading", level=1),
+                _unit(_PROSE, "p0001"),
+                _unit("**Notes**", "p0002"),
+            ]
+        ),
+        DocumentBlock(paragraphs=[_unit("1. Harbour Ledger, 2010.", "p0003", role="list")]),
+        DocumentBlock(paragraphs=[_unit("2. Pilots' Almanac, 1999.", "p0004", role="list")]),
+        DocumentBlock(paragraphs=[_unit("Acknowledgements", "p0005", role="heading", level=1), _unit(_PROSE, "p0006")]),
+    ]
+
+    reasons = _reasons_by_id(blocks)
+
+    assert reasons["p0003"] == "apparatus"
+    assert reasons["p0004"] == "apparatus"
+    assert [reasons[pid] for pid in ("p0000", "p0001", "p0002", "p0005", "p0006")] == [None] * 5
+
+
+def test_a_levelled_reference_title_still_runs_over_its_deeper_headings() -> None:
+    # Counter-proof of the scope of the bound: only a title WITHOUT a level stops at the first
+    # heading. A titled section with per-chapter labels one level deeper keeps all of them.
+    blocks = [
+        DocumentBlock(paragraphs=[_unit("Chapter One", "p0000", role="heading", level=1), _unit(_PROSE, "p0001")]),
+        DocumentBlock(paragraphs=[_unit("Notes", "p0002", role="heading", level=1)]),
+        DocumentBlock(paragraphs=[_unit("Chapter 1", "p0003", role="heading", level=2), _unit("1. Harbour Ledger, 2010.", "p0004", role="list")]),
+        DocumentBlock(paragraphs=[_unit("Chapter 2", "p0005", role="heading", level=2), _unit("2. Pilots' Almanac, 1999.", "p0006", role="list")]),
+        DocumentBlock(paragraphs=[_unit("Acknowledgements", "p0007", role="heading", level=1), _unit(_PROSE, "p0008")]),
+    ]
+
+    reasons = _reasons_by_id(blocks)
+
+    assert [reasons[f"p000{n}"] for n in range(2, 7)] == ["apparatus"] * 5
+    assert [reasons[pid] for pid in ("p0000", "p0001", "p0007", "p0008")] == [None] * 4
+
+
+@pytest.mark.parametrize("operation", ["translate", "edit"])
+def test_the_narration_bound_does_not_change_the_translate_and_edit_jobs(operation: str) -> None:
+    # The bound is the audiobook's own (fix-1 scope): the shared back-matter fields of the jobs
+    # -- the ones translate and edit read -- are the same for the audiobook and the operation.
+    blocks = _contents_line_then_prose()
+    shared = ("paragraph_regions", "back_matter_section")
+    other = build_editing_jobs(blocks, max_chars=3000, processing_operation=operation)
+    audiobook = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [[job[key] for key in shared] for job in audiobook] == [[job[key] for key in shared] for job in other]
 
 
 def test_every_reason_the_document_layer_produces_is_in_the_closed_vocabulary() -> None:
@@ -345,6 +532,69 @@ def test_the_letter_share_boundary_is_exact() -> None:
     assert is_fragment_without_connected_text("abc 123") is False  # 3 of 6
     assert is_fragment_without_connected_text("abc 1234") is True  # 3 of 7, fewer than half
     assert is_fragment_without_connected_text("Hello, 1234567") is True  # a real word, but mostly digits
+
+
+# --- fix-1, Codex acceptance finding 2: a short sentence is speech, not a fragment ------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Да.",  # no run of three letters
+        "Я и ты.",  # no run of three letters
+        "Go!",  # no run of three letters
+        "你好。",  # ideographic full stop, two letters
+        "От 10 до 20.",  # letters fewer than half of the non-space characters
+        "Ну?",
+        "Ah…",  # an ellipsis ends a sentence too
+        "«Да.»",  # closing quote after the terminal
+        "(Go!)",  # closing bracket after the terminal
+        "*Да.*",  # the importer's emphasis markup after the terminal
+        "So 1, 2, 3.",
+    ],
+)
+def test_a_short_sentence_with_a_letter_and_a_terminal_mark_is_connected_text(text: str) -> None:
+    assert is_fragment_without_connected_text(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "(i)",
+        "( i)",
+        "11 vv",
+        "ri1*",
+        "O",
+        "30",
+        "1",
+        "1.",  # a terminal mark without a single letter is still a fragment
+        "— 42 —",
+        "Да",  # the same letters as above without the terminal mark
+        "Go",
+        "От 10 до 20",
+        "¿Si",  # an INVERTED mark opens a sentence; it does not end one
+    ],
+)
+def test_without_a_letter_or_without_a_terminal_mark_the_form_rule_still_holds(text: str) -> None:
+    assert is_fragment_without_connected_text(text) is True
+
+
+def test_a_short_reply_in_a_body_paragraph_is_narrated_through_the_document_layer() -> None:
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                _unit(_PROSE, "p0000"),
+                _unit("Да.", "p0001"),
+                _unit("Go!", "p0002"),
+                _unit("От 10 до 20.", "p0003"),
+                _unit("(i)", "p0004"),
+            ]
+        )
+    ]
+
+    reasons = _reasons_by_id(blocks)
+
+    assert [reasons[f"p000{n}"] for n in range(5)] == [None, None, None, None, "fragment"]
 
 
 def test_an_empty_paragraph_is_excluded_under_any_role_so_a_request_never_carries_one() -> None:
