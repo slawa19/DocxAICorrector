@@ -9,7 +9,7 @@
 `D:\Temp\docxai-research\elevenlabs-studio\` (`RESEARCH.md`, раздел «Проба владельца»; `el_probe_C.transcript.json`),
 `D:\Temp\docxai-research\070-fr009\` (вывод замера спеки 070))
 
-**Status**: **IN PROGRESS (2026-11-10) — реализация по пакетам идёт в `073/integration` (влиты WP-A, WP-B, WP-C, WP-D); спека переписана по ревью Codex (`docs/reviews/CODEX_REVIEW_073_SPEC_2026-11-10.md`,
+**Status**: **IN PROGRESS (2026-11-10) — реализация по пакетам идёт в `073/integration` (влиты WP-A…WP-E); спека переписана по ревью Codex (`docs/reviews/CODEX_REVIEW_073_SPEC_2026-11-10.md`,
 «СТРОИТЬ ПОСЛЕ ПРАВОК», 3 P1 + 7 P2 + 1 P3, все приняты) и уточнена планированием по замерам без модели; план и задачи
 написаны (`plan.md`, `tasks.md`, ветка `073/integration` от `main` @ `7347bd3`, спека 072 влита).**
 Tier: **полный цикл** (Конституция III): новый вызов модели на книгу,

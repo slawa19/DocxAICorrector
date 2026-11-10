@@ -316,6 +316,25 @@ Notice экрана результата: `result.audiobook_studio_limits_exceed
 
 ---
 
+### 3.13 Спека 073: словарь чтения сокращений
+
+Обязательный шаг прогона аудиокниги перед первым блоком (`src/docxaicorrector/pipeline/reading_glossary.py`): кандидаты
+пакетами по 40, повторы по политике вызова блока, один повторный запрос недостающих. Стадия учёта
+`audiobook_reading_glossary`. Полный контракт — `specs/073-narration-for-the-ear/contracts/events.md`.
+
+- `audiobook_reading_glossary_built` — INFO: шаг завершён со статусом `built` или `no_candidates`. Context:
+  `{filename, status, candidate_count, sent_count, accepted_count, rerequested_count, unresolved_count,
+  dropped_by_limit_count, rejected_by_reason, batch_count, call_count, retry_count, prompt_tokens, completion_tokens,
+  cost_usd, artifact_path}`.
+- `audiobook_reading_glossary_unresolved` — WARNING (`review_data=True`): после повторного запроса у части кандидатов
+  нет принятого чтения; шаг успешен, прогон идёт. Context: `{filename, review_data, unresolved_count, sent_count,
+  rejected_by_reason, artifact_path}`; написания — только в артефакте.
+- `audiobook_reading_glossary_failed` — ERROR (через `present_error`, как `block_failed`): модель недоступна — прогон
+  завершается с ошибкой тем же путём, что неисправимый вызов блока. Context: `{filename, reason, batch_index, attempts,
+  error_class, candidate_count, sent_count, artifact_path}`.
+- Сбой записи артефакта словаря логируется существующим `run_glossary_artifact_write_failed` (§3.3) с
+  `schema=audiobook_reading_glossary/v1`.
+
 ## 4. Rules for adding new log events (AI agent checklist)
 
 При любой новой production-ветке с netrivial runtime-эффектом ИИ-агент обязан:
