@@ -43,6 +43,17 @@ def _wait_dead(pid: int, seconds: float = 3.0) -> bool:
     return not _is_alive(pid)
 
 
+def _wait_group_gone(pgid: int, seconds: float = 10.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def _run_in_thread(call, join_seconds: float):
     outcome: dict[str, object] = {}
 
@@ -129,8 +140,9 @@ def test_terminate_process_tree_kills_group_after_leader_already_exited(tmp_path
 
         assert process.poll() is not None
         assert _wait_dead(child_pid), "SIGKILL never reached the surviving child of the group"
-        with pytest.raises(ProcessLookupError):
-            os.killpg(process.pid, 0)
+        # The killed child stays a zombie of the group until init reaps it; under load (the full
+        # suite) that is not instant, so the group's disappearance is awaited, not sampled.
+        assert _wait_group_gone(process.pid), "the process group still exists after the kill"
     finally:
         if child_pid is not None and _is_alive(child_pid):
             os.kill(child_pid, signal.SIGKILL)
