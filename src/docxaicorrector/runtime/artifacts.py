@@ -203,11 +203,14 @@ def _atomic_write_group(entries: Sequence[tuple[Path, bytes | str]]) -> None:
     try:
         for final_path, data in entries:
             tmp_path = final_path.parent / f"{final_path.name}.tmp.{_new_run_id()}"
+            # Register BEFORE writing: a write that creates the file and then fails
+            # (disk full, I/O error) must still be cleaned up, since retention never
+            # prunes an unknown ``.tmp.<id>`` suffix.
+            staged.append((tmp_path, final_path))
             if isinstance(data, bytes):
                 tmp_path.write_bytes(data)
             else:
                 tmp_path.write_text(data, encoding="utf-8")
-            staged.append((tmp_path, final_path))
     except OSError:
         for tmp_path, _ in staged:
             try:
