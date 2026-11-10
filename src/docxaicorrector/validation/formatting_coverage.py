@@ -274,8 +274,11 @@ def classify_heading_demotions(
         structural_role = str(entry.get("structural_role") or "").strip().lower()
         source_text = str(entry.get("text_preview") or "")
         # A caption / part-divider that happens to carry a heading role is furniture,
-        # not a demotable body heading.
-        if role == "caption" or structural_role == "caption":
+        # not a demotable body heading. An image is not a heading either, whatever paragraph
+        # style it was anchored in: the translated Money chapter (FR-009 of spec 070,
+        # 2026-11-10) carries its four pictures in heading-styled paragraphs, and the image
+        # placeholder never becomes a heading in any output.
+        if role in {"caption", "image"} or structural_role in {"caption", "image"}:
             continue
         if _is_part_divider_text(source_text):
             continue

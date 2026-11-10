@@ -159,6 +159,24 @@ def test_heading_demotion_skips_caption_and_furniture_target():
     assert result["demotion_count"] == 0
 
 
+def test_heading_demotion_skips_an_image_anchored_in_a_heading_styled_paragraph():
+    # A picture anchored in a heading-styled paragraph keeps its heading level in the source
+    # registry, but its placeholder is never a heading in any output. A real text heading of
+    # the same document, demoted, still counts (anti-vacuum).
+    src = _base_source_rows() + [
+        _src(5, "image", 2, 5, "[[docx_image_img_001]]"),
+        _src(6, "heading", 2, 6, "chapter ii — a real heading that lost its style"),
+        _src(20, "heading", 1, None, "notes"),
+    ]
+    tgt = _base_target_rows() + [
+        _tgt(5, None, "[[docx_image_img_001]]", style="Body Text"),
+        _tgt(6, None, "глава ii — настоящий заголовок без стиля", style="Body Text"),
+    ]
+    result = classify_heading_demotions(_payload_with_boundaries(src, tgt))
+    assert result["demotion_count"] == 1
+    assert [sample["source_index"] for sample in result["samples"]] == [6]
+
+
 # --------------------------------------------------------------------------- #
 # Anti-vacuum counter-proofs                                                   #
 # --------------------------------------------------------------------------- #
