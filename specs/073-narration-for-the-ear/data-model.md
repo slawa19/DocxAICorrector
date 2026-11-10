@@ -97,7 +97,7 @@ READING_GLOSSARY_STATUSES = ("built", "no_candidates", "stopped")     # реше
     no_candidates — кандидатов нет, вызова нет
     stopped       — Stop перед шагом, перед пакетом или во время вызова
     (модель недоступна — НЕ статус: исключение ReadingGlossaryUnavailable, прогон падает — research R7)
-READING_REJECTION_REASONS = ("not_a_candidate", "empty_reading", "latin_in_reading", "digit_in_reading", "duplicate")
+READING_REJECTION_REASONS = ("not_a_candidate", "empty_reading", "latin_in_reading", "digit_in_reading", "not_cyrillic_reading", "duplicate")
 READING_UNAVAILABLE_REASONS = ("error", "empty_response", "no_json", "invalid_json", "invalid_shape", "prompt_unavailable")
     # последняя причина пакета, исчерпавшего попытки; неповторяемая ошибка транспорта — "error" сразу
 

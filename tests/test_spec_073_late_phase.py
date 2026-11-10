@@ -570,6 +570,7 @@ def test_t_h6_saved_event_carries_the_book_and_the_fr010_counters(monkeypatch, t
             "empty_reading": 0,
             "latin_in_reading": 1,
             "digit_in_reading": 0,
+            "not_cyrillic_reading": 0,
             "duplicate": 0,
         },
         "reading_glossary_rerequested_count": 1,

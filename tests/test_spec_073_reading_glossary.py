@@ -557,6 +557,11 @@ def _sent(*spellings: str) -> list[Any]:
         ([{"abbreviation": "ABC", "reading": "   "}], "empty_reading"),
         ([{"abbreviation": "ABC", "reading": "чтение abc"}], "latin_in_reading"),
         ([{"abbreviation": "ABC", "reading": "чтение 1"}], "digit_in_reading"),
+        ([{"abbreviation": "ABC", "reading": "кувэ²"}], "digit_in_reading"),
+        ([{"abbreviation": "ABC", "reading": "..."}], "not_cyrillic_reading"),
+        ([{"abbreviation": "ABC", "reading": "—"}], "not_cyrillic_reading"),
+        ([{"abbreviation": "ABC", "reading": "Ω"}], "not_cyrillic_reading"),
+        ([{"abbreviation": "ABC", "reading": "字"}], "not_cyrillic_reading"),
         ([{"abbreviation": "ABC", "reading": "чтение"}, {"abbreviation": "ABC", "reading": "другое"}], "duplicate"),
     ],
 )
@@ -890,3 +895,38 @@ def test_phase_stop_before_the_step_is_not_a_failure():
     assert completion.calls == []
     assert state.audiobook_reading_glossary.status == "stopped"  # type: ignore[attr-defined]
     assert present.calls == []
+
+
+@pytest.mark.parametrize(
+    "reading", ["чтение", "кувэ́", "два слова", "ка-вэ", "ка‐вэ", "ка‑вэ"]
+)
+def test_cyrillic_readings_are_accepted(reading):
+    from docxaicorrector.pipeline.reading_glossary import ReadingCandidate, parse_reading_glossary_response
+
+    sent = [ReadingCandidate(abbreviation="ABC", occurrences=1, first_block_index=1, context="", sent=True)]
+    accepted, rejected = parse_reading_glossary_response(
+        json.dumps({"readings": [{"abbreviation": "ABC", "reading": reading}]}), sent=sent
+    )
+    assert [entry.reading for entry in accepted] == [reading]
+    assert not any(rejected.values())
+
+
+@pytest.mark.parametrize(("narration_include", "expected"), [(False, 0), (True, 1)])
+def test_legacy_block_without_reasons_follows_narration_include(narration_include, expected):
+    from docxaicorrector.pipeline.reading_glossary import (
+        ReadingParagraph,
+        extract_reading_candidates,
+        narrated_source_paragraphs,
+    )
+
+    payload = SimpleNamespace(
+        paragraph_ids=[],
+        target_text="Сокращение XQZ встречается здесь.",
+        narration_exclusion_reasons=None,
+        narration_include=narration_include,
+    )
+    paragraphs = [
+        ReadingParagraph(paragraph_id=paragraph_id, block_index=1, text=text)
+        for paragraph_id, text in narrated_source_paragraphs(payload)
+    ]
+    assert [item.abbreviation for item in extract_reading_candidates(paragraphs)] == (["XQZ"] if expected else [])

@@ -222,7 +222,7 @@ sleep_fn=time.sleep, write_artifact_fn=_write_run_glossary_artifact) -> ReadingG
 Запрос — JSON `{"candidates": [{"abbreviation", "occurrences", "context"}]}`, контекст — до 160 знаков вокруг первого
 вхождения (смысл сокращения часто раскрыт рядом). Ответ — `{"readings": [{"abbreviation", "reading"}]}`; свой разбор
 (закрытый словарь отказов, `data-model.md` §4): `not_a_candidate` (написание не совпало побайтно с отправленным),
-`empty_reading`, `latin_in_reading`, `digit_in_reading`, `duplicate` (первое побеждает). Стоп перед шагом и перед
+`empty_reading`, `latin_in_reading`, `digit_in_reading`, `not_cyrillic_reading`, `duplicate` (первое побеждает). Стоп перед шагом и перед
 каждым пакетом → статус `stopped`, дальше вызовов нет; во время вызова — `request_text_completion` с `should_stop`
 поднимает `LatePhaseStopped` → `stopped`. Пустой список кандидатов → `no_candidates`, вызова нет. Статусы: `built`,
 `no_candidates`, `stopped`; недоступность — не статус, а исключение (R7). Учёт шага: пакетов, вызовов, повторов,

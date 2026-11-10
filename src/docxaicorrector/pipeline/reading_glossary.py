@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -48,7 +49,7 @@ from docxaicorrector.generation._generation import (
 from docxaicorrector.generation.model_response import CollapsedOutput, EmptyResponse
 from docxaicorrector.generation.output_budget import DEFAULT_OUTPUT_BUDGET_MULTIPLIER, output_budget_multiplier_for_model
 from docxaicorrector.image.shared import is_retryable_error
-from docxaicorrector.pipeline.audiobook_pass import _block_source_texts, is_audiobook_operation
+from docxaicorrector.pipeline.audiobook_pass import _block_source_texts, audiobook_block_narrates, is_audiobook_operation
 from docxaicorrector.pipeline.contracts import BlockExecutionPayload, LatePhaseStopped, PipelineResult
 from docxaicorrector.pipeline.glossary_phase import _stage_usage, _write_run_glossary_artifact
 from docxaicorrector.pipeline.job_parsing import parse_processing_job
@@ -110,7 +111,7 @@ READING_GLOSSARY_STATUSES = (
     READING_GLOSSARY_STATUS_NO_CANDIDATES,
     READING_GLOSSARY_STATUS_STOPPED,
 )
-READING_REJECTION_REASONS = ("not_a_candidate", "empty_reading", "latin_in_reading", "digit_in_reading", "duplicate")
+READING_REJECTION_REASONS = ("not_a_candidate", "empty_reading", "latin_in_reading", "digit_in_reading", "not_cyrillic_reading", "duplicate")
 # The last reason of the batch that ran out of attempts; a transport error not recognised as
 # retryable is ``error`` at once.
 READING_UNAVAILABLE_REASONS = ("error", "empty_response", "no_json", "invalid_json", "invalid_shape", "prompt_unavailable")
@@ -267,6 +268,24 @@ def _empty_rejections() -> dict[str, int]:
     return {reason: 0 for reason in READING_REJECTION_REASONS}
 
 
+_READING_JOINERS = frozenset({"-", "‐", "‑"})
+
+
+def _is_cyrillic_reading(reading: str) -> bool:
+    """A reading is Cyrillic by form (FR-004): at least one Cyrillic letter, and every character is such a
+    letter, a combining mark, whitespace or a hyphen joining words."""
+
+    has_cyrillic_letter = False
+    for character in reading:
+        if unicodedata.category(character).startswith("L") and "CYRILLIC" in unicodedata.name(character, ""):
+            has_cyrillic_letter = True
+        elif not (
+            unicodedata.category(character) == "Mn" or character.isspace() or character in _READING_JOINERS
+        ):
+            return False
+    return has_cyrillic_letter
+
+
 def parse_reading_glossary_response(
     raw_text: str, *, sent: Sequence[ReadingCandidate]
 ) -> tuple[tuple[ReadingEntry, ...], dict[str, int]]:
@@ -295,8 +314,10 @@ def parse_reading_glossary_response(
             rejected["empty_reading"] += 1
         elif any(is_latin_letter(character) for character in reading):
             rejected["latin_in_reading"] += 1
-        elif any(character.isdecimal() for character in reading):
+        elif any(character.isdigit() for character in reading):
             rejected["digit_in_reading"] += 1
+        elif not _is_cyrillic_reading(reading):
+            rejected["not_cyrillic_reading"] += 1
         else:
             accepted[abbreviation] = ReadingEntry(abbreviation=abbreviation, reading=reading)
     return tuple(accepted.values()), rejected
@@ -706,6 +727,8 @@ def narrated_source_paragraphs(payload: Any) -> tuple[tuple[str, str], ...]:
     the audiobook pass); a block without paragraph ids is its target text, unaddressed (``""``).
     """
 
+    if not audiobook_block_narrates(payload):
+        return ()
     paragraph_ids = [str(paragraph_id) for paragraph_id in (getattr(payload, "paragraph_ids", None) or [])]
     if not paragraph_ids:
         text = str(getattr(payload, "target_text", "") or "").strip()
