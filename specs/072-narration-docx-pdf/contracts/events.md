@@ -71,4 +71,8 @@
   `tts_docx_openable`, `tts_docx_paragraphs`, `tts_docx_heading1_count`, `tts_docx_other_heading_style_count`; строки
   сводки `tts_docx_path=…`, `tts_pdf_path=…` рядом с `tts_text_path=…` (`:6798`); манифест `latest` —
   `latest_tts_docx`, `latest_tts_pdf` (`_write_latest_aliases`, `:1595-1632`).
+- Ключ строки сводки — `narration_<поле>`; поле, чьё имя в событии уже начинается с `narration_`, сохраняет имя как
+  есть, без удвоения: `narration_docx_status=…`, `narration_pdf_status=…`, `narration_pdf_seconds=…`,
+  `narration_docx_paragraph_count=…`, `narration_pdf_unavailable_reason=…` (не `narration_narration_…`);
+  остальные поля — `narration_heading1_count=…` и т. д. (`_narration_summary_key`).
 - Отсутствующее событие — `not_reported`, не ноль (как сейчас).

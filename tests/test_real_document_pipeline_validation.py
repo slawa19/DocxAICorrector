@@ -8146,14 +8146,14 @@ def test_narration_report_carries_the_spec_072_fields_and_summary_lines() -> Non
     assert "narration_demoted_heading_count=5" in lines
     assert "narration_studio_max_chapter_paragraph_count=87" in lines
     assert "narration_studio_max_paragraph_chars=1200" in lines
-    assert "narration_narration_docx_status=built" in lines
-    assert "narration_narration_pdf_status=unavailable" in lines
-    assert "narration_narration_pdf_seconds=0.0" in lines
-    assert "narration_narration_docx_paragraph_count=400" in lines
+    assert "narration_docx_status=built" in lines
+    assert "narration_pdf_status=unavailable" in lines
+    assert "narration_pdf_seconds=0.0" in lines
+    assert "narration_docx_paragraph_count=400" in lines
     assert 'narration_heading_merges=[{"levels": [2, 2], "paragraph_ids": ["p0001", "p0002"], "style": "Heading 1"}]' in lines
     assert "narration_heading_levels_present=[2, 3]" in lines
     assert "narration_studio_limits_exceeded=[]" in lines
-    assert 'narration_narration_pdf_unavailable_reason="soffice_not_found"' in lines
+    assert 'narration_pdf_unavailable_reason="soffice_not_found"' in lines
 
 
 def test_narration_report_says_not_reported_for_spec_072_fields_the_event_lacks() -> None:
@@ -8163,8 +8163,8 @@ def test_narration_report_says_not_reported_for_spec_072_fields_the_event_lacks(
     lines = validation._build_narration_summary_lines({"char_count": 10})
 
     assert "narration_heading1_count=not_reported" in lines
-    assert "narration_narration_docx_status=not_reported" in lines
-    assert "narration_narration_pdf_status=not_reported" in lines
+    assert "narration_docx_status=not_reported" in lines
+    assert "narration_pdf_status=not_reported" in lines
     assert "narration_heading_merges=not_reported" in lines
     assert "narration_studio_limits_exceeded=not_reported" in lines
     assert validation._build_narration_summary_lines(None) == ["narration_artifact=not_reported"]

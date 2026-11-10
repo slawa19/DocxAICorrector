@@ -5154,16 +5154,22 @@ def _extract_narration_artifact_record(
     return record
 
 
+def _narration_summary_key(field: str) -> str:
+    """The summary line key of an event field: ``narration_<field>``, never ``narration_narration_<...>``."""
+
+    return field if field.startswith("narration_") else f"narration_{field}"
+
+
 def _build_narration_summary_lines(narration: Mapping[str, object] | None) -> list[str]:
     if narration is None:
         return ["narration_artifact=not_reported"]
     lines = [
-        f"narration_{field}={narration[field] if field in narration else 'not_reported'}"
+        f"{_narration_summary_key(field)}={narration[field] if field in narration else 'not_reported'}"
         for field in _NARRATION_SUMMARY_FIELDS
     ]
     for field in _NARRATION_SUMMARY_JSON_FIELDS:
         value = json.dumps(narration[field], ensure_ascii=False, sort_keys=True) if field in narration else "not_reported"
-        lines.append(f"narration_{field}={value}")
+        lines.append(f"{_narration_summary_key(field)}={value}")
     records = narration.get("needs_review_records")
     if isinstance(records, Sequence) and not isinstance(records, str):
         paragraph_ids = [str(record.get("paragraph_id")) for record in records if isinstance(record, Mapping)]
