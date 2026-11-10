@@ -67,6 +67,11 @@ audiobook_narration_summary(state) -> dict   # :617-672, новые ключи (
     reading_glossary_sent_count: int
     reading_glossary_accepted_count: int
     reading_glossary_dropped_by_limit_count: int
+    reading_glossary_rerequested_count: int   # кандидатов во втором (повторном) запросе
+    reading_glossary_unresolved_count: int    # без принятого чтения и после повторного запроса (SC-010: 0)
+    reading_glossary_batch_count: int         # пакетов первого прохода + повторного запроса
+    reading_glossary_call_count: int          # вызовов модели шага, включая повторы
+    reading_glossary_retry_count: int         # повторов пакетов по политике блока
     reading_glossary_rejected_by_reason: dict[str, int]
     reading_glossary_block_count: int         # len(state.audiobook_reading_glossary_block_indexes)
     reading_glossary_cost_usd: float | None
@@ -84,14 +89,19 @@ READING_GLOSSARY_SECTION_MAX_CHARS = 2000
 READING_GLOSSARY_SECTION_HEADER = <литерал contracts/prompt-and-glossary.md §2>
 READING_GLOSSARY_SCHEMA = "audiobook_reading_glossary/v1"
 
-READING_GLOSSARY_STATUSES = ("built", "partial", "no_candidates", "empty", "failed", "stopped")
-    built         — вызов сделан, принята хотя бы одна запись и отказов нет
-    partial       — принята хотя бы одна запись, есть отказы или кандидаты без ответа
+READING_GLOSSARY_BATCH_SIZE = 40
+
+READING_GLOSSARY_STATUSES = ("built", "no_candidates", "stopped")     # решение владельца 2026-11-10: нет partial/empty/failed
+    built         — все пакеты (первый проход и один повторный запрос) получили разборчивый ответ;
+                    unresolved_count == 0 — обычный исход; > 0 — WARNING audiobook_reading_glossary_unresolved (review data)
     no_candidates — кандидатов нет, вызова нет
-    empty         — вызов сделан, принятых записей 0 (ответ разобран)
-    failed        — исключение клиента / неразборчивый ответ (коды _load_json_object) / нет промпта
-    stopped       — Stop до или во время вызова
+    stopped       — Stop перед шагом, перед пакетом или во время вызова
+    (модель недоступна — НЕ статус: исключение ReadingGlossaryUnavailable, прогон падает — research R7)
 READING_REJECTION_REASONS = ("not_a_candidate", "empty_reading", "latin_in_reading", "digit_in_reading", "duplicate")
+READING_UNAVAILABLE_REASONS = ("error", "empty_response", "no_json", "invalid_json", "invalid_shape", "prompt_unavailable")
+    # последняя причина пакета, исчерпавшего попытки; неповторяемая ошибка транспорта — "error" сразу
+
+class ReadingGlossaryUnavailable(RuntimeError): reason: str, batch_index: int, attempts: int, error_class: str | None
 
 ReadingParagraph(frozen): paragraph_id: str, block_index: int, text: str    # исходник озвучиваемого абзаца
 
@@ -108,11 +118,12 @@ ReadingGlossary(frozen)
     status: str                             # READING_GLOSSARY_STATUSES
     candidates: tuple[ReadingCandidate, ...]
     entries: tuple[ReadingEntry, ...]       # принятые, порядок ответа
-    rejected_by_reason: Mapping[str, int]
-    call_made: bool
+    rejected_by_reason: Mapping[str, int]   # по всем ответам обоих проходов
+    rerequested: tuple[str, ...]            # написания, ушедшие в повторный запрос
+    unresolved: tuple[str, ...]             # без чтения и после него (только в артефакт, не в лог)
+    batch_count: int; call_count: int; retry_count: int
     prompt_tokens: int | None; completion_tokens: int | None; cost_usd: float | None
     artifact_path: str | None
-    error_class: str | None
     def entry_for(abbreviation) -> ReadingEntry | None
 
 reading_candidate_units(text: str) -> tuple[str, ...]
@@ -122,11 +133,16 @@ reading_candidate_units(text: str) -> tuple[str, ...]
 extract_reading_candidates(paragraphs) -> tuple[ReadingCandidate, ...]
     по всем абзацам; частота desc, затем первое появление; первые MAX — sent=True
 
-run_reading_glossary(*, paragraphs, client, model_id, should_stop, log_event, filename, artifact_context,
-                     request_text_completion_fn=request_text_completion,
+run_reading_glossary(*, paragraphs, client, model_id, max_retries, should_stop, log_event, filename, artifact_context,
+                     request_text_completion_fn=request_text_completion, sleep_fn=time.sleep,
                      write_artifact_fn=_write_run_glossary_artifact) -> ReadingGlossary
-    ровно 0 или 1 вызов request_text_completion_fn(_single_attempt_client(client), request,
-    usage_stage=STAGE_AUDIOBOOK_READING_GLOSSARY, should_stop=should_stop); не бросает (кроме BaseException)
+    пакеты по 40 → на пакет до max_retries попыток request_text_completion_fn(client, request,
+    usage_stage=STAGE_AUDIOBOOK_READING_GLOSSARY, should_stop=should_stop); повтор — на is_retryable_error,
+    _is_non_completed_response_error (с _boost_request_output_budget при обрезке) и неразборчивом ответе;
+    пауза sleep_fn(retry_backoff_seconds(attempt)); затем один повторный запрос кандидатов без чтения (те же правила);
+    пакет без разборчивого ответа после всех попыток → raise ReadingGlossaryUnavailable
+
+retry_backoff_seconds(attempt: int) -> float      # generation/_generation.py; min(2 ** (attempt - 1), 8), один источник для блока и словаря
 
 parse_reading_glossary_response(raw_text, *, sent: Sequence[ReadingCandidate]) -> tuple[entries, rejected_by_reason]
     _load_json_object; список "readings"; запись принимается, если abbreviation побайтно равно отправленному,
@@ -136,17 +152,22 @@ reading_section_for_block(glossary: ReadingGlossary | None, source_texts: Sequen
     кандидатные единицы исходника по порядку первого появления ∩ glossary.entries →
     render_glossary_prompt_section([GlossaryTerm(source_term=a, target_term=r)], header=HEADER, max_chars=2000); иначе ""
 
-run_reading_glossary_phase(*, context, dependencies, emitters, state, initialization) -> None
+run_reading_glossary_phase(*, context, dependencies, emitters, state, initialization, emit_failed_result_fn)
+        -> PipelineResult | None
     только операция audiobook: абзацы из context.jobs (ID, narration_exclusion_reasons is None, _block_source_texts)
-    → run_reading_glossary → state.audiobook_reading_glossary
+    → run_reading_glossary(max_retries=context.max_retries) → state.audiobook_reading_glossary; None — продолжать.
+    ReadingGlossaryUnavailable → present_error("audiobook_reading_glossary_failed", …), emit_state(last_error=…,
+    latest_docx_bytes=None), emit_failed_result_fn(...) — тот же набор, что handle_block_generation_failure
+    (pipeline/block_failures.py:135-243), без persist_terminal_job_result; возвращает этот исход (прогон «ошибка»)
 ```
 
-Артефакт (`.run/run_glossaries/<run>_<ms>.json`, пишется, если вызов сделан):
+Артефакт (`.run/run_glossaries/<run>_<ms>.json`, пишется, если вызов сделан — и при `built`, и перед падением шага):
 
 ```text
 {schema: "audiobook_reading_glossary/v1", filename, run_id, model, status,
- candidates: [{abbreviation, occurrences, sent}], readings: [{abbreviation, reading}],
- rejected_by_reason: {...}, usage: {prompt_tokens, completion_tokens, cost_usd}}
+ candidates: [{abbreviation, occurrences, sent, rerequested, resolved}], readings: [{abbreviation, reading}],
+ unresolved: [...], rejected_by_reason: {...}, batches: [{index, pass: "first"|"rerequest", size, attempts}],
+ usage: {prompt_tokens, completion_tokens, cost_usd}}
 ```
 
 Изоляция (Anti-regression 6): словарь живёт в `ProcessingState` этого прогона и в артефакте с его `run_id`; модуль не

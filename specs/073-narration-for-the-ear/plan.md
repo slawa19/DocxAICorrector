@@ -17,8 +17,10 @@
 (2) Знак ударения не ломает лексические сравнения: один помощник «текст без знаков» с картой смещений
 (`text/narration_forms.py`) обслуживает покрытие, остаток, обрывок и проверку протечки контекста; точная сборка остаётся
 побайтной (R1). (3) Остаток получает исправимый класс `latin` — единица по форме Unicode, без списков (R2). (4) Перед
-первым блоком — ровно один вызов «словаря чтения» сокращений (кандидаты по форме, предел 200, на полной Money их 68),
-собранный из частей механизма 063 без вызова его фазы (R4, R5); записи идут в основной и исправляющий промпт каждого
+первым блоком — обязательный шаг «словаря чтения» сокращений (кандидаты по форме, предел 200, на полной Money их 67):
+пакеты по 40 с политикой повторов вызова блока, один повторный запрос кандидатов без чтения, при недоступной модели —
+сбой прогона тем же путём, что у блока (решение владельца; R4, R5, R7); собран из частей механизма 063 без вызова его
+фазы; записи идут в основной и исправляющий промпт каждого
 блока — только свои, по исходнику блока (R6, R7). (5) Исключённый разделитель сцены оставляет в сборке отметку, которая
 запрещает склейку через него (R8). (6) `.tts.minimax.txt` — те же группы и `"\n\n"`, что `.tts.txt`, плюс метки `<#x#>`
 по серии и рангу главы плана 072 и по отметке разделителя (R9); он едет теми же путями 072 — экспорт, ключ
@@ -43,12 +45,14 @@ Streamlit — рендер-тесты; платный замер — `scripts/ru
 
 **Project Type**: одно Python-приложение (`src/docxaicorrector/`), тесты в `tests/`.
 
-**Performance Goals**: +1 вызов модели на книгу (≈ 5 тыс. токенов входа на полной Money); детерминированная часть —
+**Performance Goals**: шаг словаря — 2 вызова на полной Money (+ ≤ 1 повторного запроса), по 1 на главах, ≈ 0,004–0,006 $
+на книгу (R5, R13); детерминированная часть —
 линейна по числу абзацев; прогноз цены полной Money 0,335 → ≈ 0,36 $ (R13).
 
 **Constraints**: перевод и редактура — ни байта нового (SC-008); озвучка не блокирует выдачу (Anti-regression 2); ни
-словаря омографов, транслитерации, сокращений или чисел — ни в коде, ни в тестах (VII); строго один вызов исправления
-на блок и один вызов словаря на книгу (Anti-regression 4); только штатные примитивы Streamlit.
+словаря омографов, транслитерации, сокращений или чисел — ни в коде, ни в тестах (VII); строго один оплачиваемый вызов
+исправления на блок; словарь — один логический шаг с политикой повторов блока и без ветки «книга без словаря»
+(Anti-regression 2, 4); только штатные примитивы Streamlit.
 
 **Scale/Scope**: книги до ~1 400 абзацев / 300 блоков; ≈ 18 файлов продукта (4 новых модуля, 1 новый промпт),
 ≈ 11 новых тестовых файлов, 5 документов.
@@ -111,7 +115,8 @@ src/docxaicorrector/
 │   ├── narration_coverage.py       # WP-A: сравнение без знаков
 │   └── narration_residue.py        # WP-A: all_caps/roman без знаков + публичные формы; затем WP-C: класс latin
 ├── document/narration_exclusion.py # WP-A: помощник из общего модуля, has_no_letter_or_digit, is_scene_break_text
-├── generation/_generation.py       # WP-A: только _normalize_leakage_comparison_text, _detect_context_leakage
+├── generation/_generation.py       # WP-A: только _normalize_leakage_comparison_text, _detect_context_leakage;
+│                                   # затем WP-E: только вынос retry_backoff_seconds из цикла блока (:3606)
 ├── resources/prompts/
 │   ├── operation_audiobook.txt, operation_audiobook_repair.txt, example_audiobook.txt   # WP-B
 │   └── audiobook_reading_glossary.txt                                                 # НОВЫЙ WP-E
@@ -165,8 +170,9 @@ R2; `data-model.md` §2. Исправимый; маска адресов и ри
 ### FR-004 — словарь чтения (WP-E ядро, WP-F проводка и доставка)
 
 R4–R7; `data-model.md` §4; `contracts/prompt-and-glossary.md` §2–3. Кандидаты по форме «≥ 2 заглавных, заглавных больше
-строчных»; один вызов без повторов SDK; свой разбор, частичный ответ используется; секция блока по исходнику блока —
-побайтно одна у основного и исправляющего запроса.
+строчных»; пакеты по 40, повторы пакета по политике вызова блока, один повторный запрос кандидатов без чтения, при
+недоступной модели — сбой прогона тем же путём, что неисправимый вызов блока (`pipeline/block_failures.py:135-243`);
+свой разбор; секция блока по исходнику блока — побайтно одна у основного и исправляющего запроса.
 
 ### FR-006 — разделитель сцены (WP-D)
 
@@ -207,16 +213,18 @@ R13, R14; `quickstart.md` §6.
 - **О-2. Отметку разделителя даёт форма исходника исключённого абзаца с причиной `fragment`**, а не ветвь правила
   `document/narration_exclusion.py:161-167` (там — только роли вне правила обрывка; `***` тела исключает `:168-169`).
   Другие исключения прозрачны: не ставят и не гасят отметку (R8).
-- **О-3. Stop перед вызовом словаря** — фаза не делает вызов, прогон останавливается на проверке перед первым блоком
-  (`pipeline/block_execution.py:2614-2615`) — та же граница, что после фазы 063 сегодня (R7).
+- **О-3. Stop перед шагом словаря или между пакетами** — дальше вызовов нет, прогон останавливается на проверке перед
+  первым блоком (`pipeline/block_execution.py:2614-2615`) — та же граница, что после фазы 063 сегодня (R7).
 - **О-4. У экрана нет строки причины для MiniMax**: собрать его мешает только ошибка кода; причина — WARNING в логе (R10).
-- **О-5. Уведомления на экране о сбое словаря нет**: книга выдаётся полностью, статус — в событии и отчёте раннера.
+- ~~О-5. Уведомления на экране о сбое словаря нет, книга выдаётся без словаря~~ — **снято решением владельца
+  2026-11-10**: сбой словаря не обычный исход; недоступная модель роняет прогон тем же путём, что неисправимый вызов
+  блока; кандидат без чтения после повтора — review data (R5, R7).
 
 ## Дефекты спеки, найденные при планировании (исправлены в этой же ветке — Changelog спеки)
 
 1. **FR-004, форма кандидата.** «Все буквы заглавные» исключает `CoR-EU`, который спека же называет кандидатом. Замер:
-   форма «≥ 2 заглавных и заглавных больше строчных» даёт 68 против 67 на полной Money, разница — ровно `CoR-EU` (R4).
-   Предел `N = 200` записан (замер: 68 / 17 / 4).
+   форма «≥ 2 заглавных и заглавных больше строчных» даёт 67 против 66 на полной Money, разница — ровно `CoR-EU` (R4;
+   числа — по правилу цифр Nd, пересчитаны после ревью плана). Предел `N = 200` записан (замер: 67 / 17 / 4).
 2. **SC-001, знаменатель.** «Единиц до исправления — не ноль на трёх входах» неисполнимо: база RM — 0. Знаменатель —
    единицы `latin` в исходнике (5 / 44 / 528), новое поле `latin_source_unit_count` в FR-010 (R2).
 3. **FR-006, ссылка на правило.** Уточнено по О-2.
@@ -235,15 +243,15 @@ R13, R14; `quickstart.md` §6.
 
 | Пакет | Объём | Агент / усилие | Владеет файлами | Доказывающие тесты (анти-вакуум) | Зависит от |
 |---|---|---|---|---|---|
-| **WP-A** Формы текста и лексические сравнения (FR-002) | средний, точный | Sonnet / high | `text/narration_forms.py` (нов.), `text/narration_coverage.py`, `text/narration_residue.py` (только `all_caps`, `roman_numerals` и публичные формы `is_all_caps_paragraph`, `is_roman_numeral_form`, `mask_url_or_domain`), `document/narration_exclusion.py`, `generation/_generation.py` (только `_normalize_leakage_comparison_text`, `_detect_context_leakage`), `tests/test_spec_073_narration_forms.py` (нов.) | SC-005: пара текстов (≥ 4 длинных слов, ≥ 6 токенов) со знаками и без — равные покрытие, остаток, протечка; контрпример настоящей потери предложения ловится; `А́ЛМАЗ ВЕ́ТЕР` → `all_caps`, `ÍV` → `roman_numerals` (падают сейчас); образец остатка и фрагмент протечки — срезы исходной строки со знаками; точная сборка видит потерю знака (характеристика); `without_combining_marks` тот же, что был в исключении | — (волна 1) |
-| **WP-B** Правила промпта (FR-001, FR-003, FR-005) | малый, тонкий | **Opus** / high | `resources/prompts/operation_audiobook.txt`, `operation_audiobook_repair.txt`, `example_audiobook.txt`, `tests/test_audiobook_prompt.py` (только новые свойства), `tests/test_spec_073_prompt_rules.py` (нов.) | свойства `contracts/prompt-and-glossary.md` §1: U+0301 в правиле, порядок четырёх пунктов приоритета, правило номера по форме; пример со знаком и транслитерацией; существующие гарды промпта зелёные; золотые 070 (перевод/редактура) — без изменений | — (волна 1) |
+| **WP-A** Формы текста и лексические сравнения (FR-002) | средний, точный | Sonnet / high | `text/narration_forms.py` (нов.), `text/narration_coverage.py`, `text/narration_residue.py` (только `all_caps`, `roman_numerals` и публичные формы `is_all_caps_paragraph`, `is_roman_numeral_form`, `mask_url_or_domain`), `document/narration_exclusion.py`, `generation/_generation.py` (только `_normalize_leakage_comparison_text`, `_detect_context_leakage`), `tests/test_spec_073_narration_forms.py` (нов.) | SC-005: пара текстов (≥ 4 длинных слов, ≥ 6 токенов) со знаками и без — равные покрытие, остаток, протечка; контрпример настоящей потери предложения ловится; `А́ЛМАЗ ВЕ́ТЕР` → `all_caps`, `I` + U+0301 + `V` → `roman_numerals` (падают сейчас); образец остатка и фрагмент протечки — срезы исходной строки со знаками; точная сборка видит потерю знака (характеристика); `without_combining_marks` тот же, что был в исключении | — (волна 1) |
+| **WP-B** Правила промпта (FR-001, FR-003, FR-005) | малый, тонкий | **Opus** / high | `resources/prompts/operation_audiobook.txt`, `operation_audiobook_repair.txt`, `example_audiobook.txt`, `tests/test_audiobook_prompt.py` (только новые свойства), `tests/test_spec_073_prompt_rules.py` (нов.) | свойства `contracts/prompt-and-glossary.md` §1 — в отрендеренных ОСНОВНОМ и ИСПРАВЛЯЮЩЕМ промптах: U+0301 в правиле, порядок четырёх пунктов приоритета, правило номера по форме (в том числе `**1. …**`); пример со знаком, транслитерацией и выделенным номером; существующие гарды промпта зелёные; золотые 070 (перевод/редактура) — без изменений | — (волна 1) |
 | **WP-G** Текст для MiniMax (FR-007) | средний | Sonnet / high | `pipeline/narration_minimax.py` (нов.), `tests/test_spec_073_narration_minimax.py` (нов.) | таблица `data-model.md` §7 целиком; удаление вставленных меток = `"\n\n".join(group.text)` побайтно (на синтетике с U+0301 и `\n` внутри); нет двух меток подряд; пауза внутри серии `2 → 1` не ставится (анти-вакуум: тот же набор без серии даёт метку); расхождение шагов плана и групп → исключение | — (волна 1) |
-| **WP-J** Член группы и bundle (FR-008 файлы) | малый | Sonnet / medium | `runtime/artifacts.py`, `runtime/artifact_retention.py`, `processing/processing_runtime.py` (только `_normalize_narration_exports`), `tests/test_spec_073_result_group.py` (нов.) | `narration_minimax_text` → файл и `tts_minimax_path`; `None`/`""` → нет ни файла, ни ключа, группа побайтно как в 072 (характеристика); сбой записи члена откатывает группу; хранение удаляет `.tts.minimax.txt` вместе с группой (падает: сегодня «passthrough»); нормализация bundle: пять ключей, не-`str` → `None` | — (волна 1) |
+| **WP-J** Член группы и bundle (FR-008 файлы) | малый | Sonnet / medium | `runtime/artifacts.py`, `runtime/artifact_retention.py`, `processing/processing_runtime.py` (только `_normalize_narration_exports`), `tests/test_spec_073_result_group.py` (нов.), `tests/test_spec_072_state_bundle.py` (только три равенства словаря `:74`, `:92`, `:120` — добавить новый ключ) | `narration_minimax_text` → файл и `tts_minimax_path`; `None`/`""` → нет ни файла, ни ключа, группа побайтно как в 072 (характеристика); сбой записи члена откатывает группу; хранение удаляет `.tts.minimax.txt` вместе с группой (падает: сегодня «passthrough»); нормализация bundle: пять ключей, не-`str` → `None` | — (волна 1) |
 | **WP-K** Кнопка MiniMax (FR-008 экран) | малый | Sonnet / medium | `ui/_ui.py`, `ui/locales/ru.json`, `ui/locales/en.json`, `tests/test_spec_073_result_screen.py` (нов.) | четыре кнопки по порядку DOCX/PDF/TXT/MiniMax, имя `<stem>.tts.minimax.txt`, MIME; без `minimax_text` — три кнопки 072 (характеристика экрана 072 зелёная); заблокированная выдача — вторичная метка; ключи в обоих каталогах; перевод/редактура — те же кнопки | — (волна 1; ключ bundle фиксирован) |
 | **WP-C** Класс `latin` (FR-003 детектор) | малый | Sonnet / medium | `text/narration_residue.py` (класс `latin`), `tests/test_narration_residue.py` (только множества классов `:114-116`), `tests/test_spec_073_latin_residue.py` (нов.) | единица по правилу; маска адреса и римского числа с анти-вакуумом (латинское слово рядом с адресом и `IV` — считается); `Юромaни`-форма (кириллица с латинской буквой) — найдена; `latin` исправим; SC-007: блок с `digits`+`all_caps`+`latin` — ровно одна попытка HTTP (настоящий `repair_block_residue`, подменённый клиент с `with_options`) | A слит |
 | **WP-D** Разделитель сцены и объявления (FR-006) | средний | **Opus** / high | `pipeline/audiobook_pass.py` (только `register_audiobook_block`, `NARRATION_PARAGRAPH_KINDS`), `pipeline/narration_postprocess.py`, `pipeline/contracts.py` (все объявления 073: `narration_paragraph_kinds`, `audiobook_reading_glossary`, `audiobook_reading_glossary_block_indexes`, аргумент `narration_minimax_text`), `tests/test_spec_073_scene_breaks.py` (нов.) | таблица `data-model.md` §6 целиком (через `register_audiobook_block` по блокам и чистую функцию); золотой SHA-256 `.tts.txt` 072 (`tests/test_spec_072_narration_groups.py`) зелёный без изменений; склейка без разделителя — как раньше (анти-вакуум); `text == "\n\n".join(groups)` | A слит |
-| **WP-E** Словарь чтения: ядро (FR-004) | средний | **Opus** / high | `pipeline/reading_glossary.py` (нов.), `resources/prompts/audiobook_reading_glossary.txt` (нов.), `core/model_accounting.py` (константа стадии), `pipeline/glossary_phase.py` (только параметр стадии `_stage_usage`), `tests/test_spec_073_reading_glossary.py` (нов.) | кандидаты по форме (синтетика: `ABC`, `AbC-DE`, `XY-12`, `IV` — нет, `Abc` — нет, абзац заглавными — нет, внутри адреса — нет, `ЖЗИ⁷` → `ЖЗИ`); предел и порядок; ровно 1 попытка HTTP (клиент считает транспорт, `max_retries=0`); 0 попыток при пустом списке и Stop; частичный ответ — принятые используются; все пять отказов; артефакт с `run_id`; секция блока — только записи его исходника; тесты 063 (`tests/test_glossary_pass.py`, `tests/test_document_pipeline.py`) зелёные | A слит |
-| **WP-F** Проводка словаря и доставка секции (FR-004) | средний | **Opus** / high | `pipeline/setup.py`, `pipeline/_pipeline.py` (только проводка фазы), `pipeline/block_execution.py` (части `_generate_block_chunk`, `_audiobook_repair_call`, передача `payload` из `finalize_audiobook_block_for_delivery`), `tests/test_spec_073_reading_glossary_delivery.py` (нов.) | SC-007: реальные аргументы `generate_markdown_block` двух блоков и исправления — секция блока 1 только с его записями, у блока 2 нет записей блока 1, исправление блока 1 — побайтно та же секция; блок без записей — промпт побайтно прежний (характеристика); фаза вызывается до первого блока, ровно один раз; перевод/редактура — фаза не вызывается, промпт тот же (золотые 070) | D, E слиты |
+| **WP-E** Словарь чтения: ядро (FR-004) | средний | **Opus** / high | `pipeline/reading_glossary.py` (нов.), `resources/prompts/audiobook_reading_glossary.txt` (нов.), `core/model_accounting.py` (константа стадии), `pipeline/glossary_phase.py` (только параметр стадии `_stage_usage`), `generation/_generation.py` (только вынос `retry_backoff_seconds` из цикла блока, `:3606`), `tests/test_spec_073_reading_glossary.py` (нов.) | кандидаты по форме (синтетика: `ABC`, `AbC-DE`, `XY-12`, `IV` — нет, `Abc` — нет, абзац заглавными — нет, внутри адреса — нет, `ЖЗИ⁷` → `ЖЗИ`); предел и порядок; пакеты по 40 — `ceil(sent/40)` вызовов при разборчивых ответах; сбойный пакет повторяется сам (повторяемая ошибка, неразборчивый ответ), остальные — нет; кандидаты без чтения — ровно один повторный запрос; недоступность → `ReadingGlossaryUnavailable`; 0 вызовов при пустом списке и Stop; все пять отказов; уровни событий; артефакт с `run_id`; секция блока — только записи его исходника; тесты 063 (`tests/test_glossary_pass.py`, `tests/test_document_pipeline.py`) зелёные | A слит |
+| **WP-F** Проводка словаря и доставка секции (FR-004) | средний | **Opus** / high | `pipeline/setup.py`, `pipeline/_pipeline.py` (только проводка фазы), `pipeline/block_execution.py` (части `_generate_block_chunk`, `_audiobook_repair_call`, передача `payload` из `finalize_audiobook_block_for_delivery`), `tests/test_spec_073_reading_glossary_delivery.py` (нов.) | SC-007: реальные аргументы `generate_markdown_block` двух блоков и исправления — секция блока 1 только с его записями, у блока 2 нет записей блока 1, исправление блока 1 — побайтно та же секция; блок без записей — промпт побайтно прежний (характеристика); фаза вызывается до первого блока, ровно один раз; недоступная модель — итог прогона «ошибка» тем же набором, что `handle_block_generation_failure`, блоки не выполняются (анти-вакуум: тот же запуск с доступной моделью — блоки выполняются); перевод/редактура — фаза не вызывается, промпт тот же (золотые 070) | D, E слиты |
 | **WP-H** Поздний этап: MiniMax, писатель, учёт (FR-007 интеграция, FR-008, FR-009, FR-010) | средний | **Opus** / high | `pipeline/narration_exports.py`, `pipeline/late_phases.py`, `pipeline/audiobook_pass.py` (только поле записи `source_latin_unit_count`, его счёт в `finalize_audiobook_block`, `audiobook_narration_summary`), `tests/test_spec_073_late_phase.py` (нов.), `tests/test_late_phases_finalize_gate_persistence.py` (только если ожидания писателя меняются) | записи → `_build_narration_text` → поздний этап с подменённым писателем: `.tts.minimax.txt` без меток = `.tts.txt` побайтно; U+0301 побайтно в TXT, DOCX и MiniMax (FR-009); сбой MiniMax → WARNING, TXT/DOCX/PDF выданы; сбой DOCX → MiniMax всё равно есть; поля события по `contracts/events.md` (все ключи 070/072 на месте); перевод/редактура — аргумент писателя не передаётся | C, D, G, J слиты |
 | **WP-I** Раннер, гард событий, документы (FR-008 раннер) | средний | Sonnet / medium (документы — можно Haiku) | `tests/artifacts/real_document_pipeline/run_lietaer_validation.py`, `tests/test_real_document_pipeline_validation.py`, `scripts/_list_log_events.py`, `docs/LOGGING_AND_ARTIFACT_RETENTION.md`, `AGENTS.md` (только «UI result artifacts», `:462-467`), `README.md` (`:512`), `docs/WORKFLOW_AND_IMAGE_MODES.md` (`:145`) | `_SPEC_073_LOG_EVENTS`: каждое событие эмитится и зарегистрировано; отчёт на синтетическом логе и состоянии несёт поля `contracts/events.md`, нет события — `not_reported`; раннер пишет `.tts.minimax.txt` и копию артефакта словаря в каталог прогона и `latest`; цена стадии словаря — строка сводки | F, H слиты |
 
@@ -255,13 +263,15 @@ R13, R14; `quickstart.md` §6.
 волна 2:  WP-C ← A    WP-D ← A    WP-E ← A                       (общих файлов нет)
 волна 3:  WP-F ← D, E     WP-H ← C, D, G, J                      (общих файлов нет)
 волна 4:  WP-I ← F, H
-приёмка:  полный `scripts/test.sh tests/ -q` в ГЛАВНОМ дереве, `git status --porcelain` пуст → проверка экрана в
+приёмка:  задача VS Code `Run Full Pytest` в ГЛАВНОМ дереве (где путь задачи недоступен — сказано прямо, доказательство —
+          shell-прогон `scripts/test.sh tests/ -q`), `git status --porcelain` пуст → проверка экрана в
           браузере (кнопка MiniMax) → расширенное ревью Codex по всем затронутым поверхностям (SC-009) → слияние в main
           → FR-012 (платно, по согласию владельца)
 ```
 
 Критический путь: **WP-A → WP-E → WP-F → WP-I** (и параллельно **WP-A → WP-C/WP-D → WP-H → WP-I**). Файлы, переходящие
-между волнами: `text/narration_residue.py` (A, затем C), `pipeline/audiobook_pass.py` (D — `register_audiobook_block`,
+между волнами: `text/narration_residue.py` (A, затем C), `generation/_generation.py` (A — протечка, затем E — пауза
+повтора), `pipeline/audiobook_pass.py` (D — `register_audiobook_block`,
 затем H — запись и сводка). `pipeline/contracts.py` целиком у WP-D; `pipeline/block_execution.py` — у WP-F;
 `pipeline/late_phases.py` — у WP-H; `TEST_TIER_INVENTORY.md`, `docs/WHERE_WE_ARE.md`, статус спеки — у оркестратора. После
 КАЖДОГО переноса пакета на свежую `073/integration` — повторный полный прогон в главном дереве (AGENTS.md, 2026-08-08).
@@ -276,7 +286,9 @@ R13, R14; `quickstart.md` §6.
 | Транслитерация снижает покрытие (основы слов меняются) → больше `low_coverage` | review data, не отказ; FR-012 публикует `coverage_low_count` до/после; SC-005 изолирует эффект знака |
 | `.tts.txt` изменится из-за отметки разделителя | меняется только склейка через разделитель — на корпусе 0 мест (R8); золотой SHA 072 зелёный |
 | Секция словаря протечёт в соседний блок | функция без состояния; SC-007 сравнивает реальные аргументы двух блоков |
-| Словарь сделает больше одного HTTP | `_single_attempt_client` + тест, считающий попытки транспорта |
+| Словарь упадёт или останется пустым из-за одного плохого ответа | пакеты по 40, повтор пакета по политике блока, один повторный запрос; тесты на подменённом клиенте (WP-E) |
+| Словарь сделает лишние вызовы | вызовы считаются (`call_count`, `retry_count`); тест: разборчивые ответы — ровно `ceil(sent/40)` вызовов |
+| Сбой словаря тихо даст книгу без словаря | ветки нет: недоступность — `ReadingGlossaryUnavailable` → сбой прогона тем же путём, что у блока (WP-F, T-F5) |
 | Переводческий путь изменится от параметра `_stage_usage` | параметр по умолчанию прежний; тесты 063 и золотые 070 в проверке WP-E |
 | `.tts.minimax.txt` разойдётся с `.tts.txt` | метки — единственное отличие по построению; тест на синтетике (WP-G) и на позднем этапе (WP-H) |
 | Новый файл никогда не удалится | суффикс хранения + тест (WP-J) |
@@ -287,8 +299,10 @@ R13, R14; `quickstart.md` §6.
 - **WSL runtime:** тесты и диагностические импорты — `wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh <selector>
   -q`, один selector на команду; Windows `python` и `.venv-win` не используются; в боковых worktree — литеральные пути,
   без `$VAR` и циклов на границе Git Bash → `wsl.exe`.
-- **Каноническая проверка:** «зелёное» — полный `scripts/test.sh tests/ -q` в главном дереве при пустом
-  `git status --porcelain`; debug-путь помечается `debug-only`.
+- **Каноническая проверка:** пакеты — `scripts/test.sh <selector>` через WSL; финальное user-visible доказательство —
+  задача VS Code `Run Full Pytest` в главном дереве при пустом `git status --porcelain` (AGENTS.md «Финальная
+  верификация»); где путь задачи недоступен оркестратору, это сказано прямо, и доказательством служит shell-прогон
+  `scripts/test.sh tests/ -q`; debug-путь помечается `debug-only`.
 - **Real-document evidence:** FR-012 — только `scripts/run-real-document-validation.sh`; при падении профиля — сначала
   свежий run report и `failed_checks` с `actual`/`threshold`; полный прогон — веха, не цикл.
 - **Логирование и артефакты:** события и поля — `contracts/events.md`; полные тексты не в лог; новый член группы — с

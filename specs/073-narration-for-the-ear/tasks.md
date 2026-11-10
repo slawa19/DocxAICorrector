@@ -70,8 +70,9 @@ T-01 (оркестратор): worktrees от 073/integration
 
 **A. Характеристика (ДО любой правки, зелёные на `7347bd3`)**
 - [ ] **T-A1** Без знаков ничего не меняется: на синтетическом наборе (≥ 20 абзацев: проза, заглавные, римские, адрес,
-  цифры, латиница) `paragraph_coverage`, `detect_narration_residue` (классы, счёт, образцы), `is_fragment_without_connected_text`,
-  `_detect_context_leakage` — снимок литералом.
+  цифры, латиница) `paragraph_coverage`, `detect_narration_residue` (классы, счёт, образцы — как ПРОЕКЦИЯ на классы до 073:
+  находки фильтруются по кортежу классов `7347bd3`, записанному в тесте литералом, чтобы класс `latin` пакета WP-C не
+  противоречил снимку), `is_fragment_without_connected_text`, `_detect_context_leakage` — снимок литералом.
 - [ ] **T-A2** Точная сборка видит потерю знака: `assemble_narration_records` с записью `за\u0301мок`, чей собранный
   абзац подменён на `замок`, даёт расхождение (`pipeline/narration_postprocess.py:188-215`, ветвь `mismatch`).
 
@@ -131,13 +132,18 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 - [ ] **T-B3** Приоритет латиницы: четыре пункта в порядке «раздел сокращений → сокращение без записи → инициал →
   кириллические как есть» — проверка позиций якорных слов каждого пункта в тексте правила (`index` возрастает); правило
   инициалов 070 («не восстанавливайте имя по памяти») на месте.
-- [ ] **T-B4** Правило номера раздела: упоминает заголовок, число и римское число с точкой, порядковое числительное
+- [ ] **T-B4** Правило номера раздела: упоминает заголовок, число и римское число с точкой, в том числе внутри разметки
+  выделения в начале заголовка (`**1. …**` — 10 из 46 заголовков полной Money, research R3), порядковое числительное
   среднего рода и запрет добавлять слова (проверка — наличие правила одной строкой с этими свойствами; пример формы
   «Первое.» допустим как иллюстрация, не как список чисел).
-- [ ] **T-B5** Промпт исправления: называет латиницу среди остатка; ссылается на раздел сокращений; «как есть» — только
-  кириллические.
-- [ ] **T-B6** Пример: одна пара — латинское название в исходнике и кириллица в результате, U+0301 в результате;
-  существующие гарды примеров (`tests/test_audiobook_prompt.py:117-139`) зелёные.
+- [ ] **T-B5** ОТРЕНДЕРЕННЫЙ промпт исправления (`load_system_prompt(operation="audiobook", prompt_variant="repair")` —
+  вариант читает свой файл, `core/config.py:1773`): называет латиницу среди остатка; содержит правило ударения (U+0301 в
+  слове правила, нет «+» перед гласной, нет заглавной гласной внутри строчного слова); тот же приоритет латиницы из
+  четырёх пунктов в порядке (проверка T-B3 на этом тексте); ссылается на раздел сокращений; «как есть» — только
+  кириллические (падает: в инструкциях исправления этого нет).
+- [ ] **T-B6** Пример: одна пара — латинское название в исходнике и кириллица в результате, U+0301 в результате; одна пара
+  — заголовок `## **N. …**` (синтетический) и результат в форме «Первое. …»; существующие гарды примеров
+  (`tests/test_audiobook_prompt.py:117-139`) зелёные.
 
 **C. Реализация**
 - [ ] **T-B7** Правки трёх файлов промпта по `contracts/prompt-and-glossary.md` §1; правила 1, 3, 4, 6, 7 по смыслу не
@@ -183,13 +189,15 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 **Ветка**: `073/wp-j-result-group` | **Worktree**: `D:\Temp\claude\wt-073-group` | **Агент**: Sonnet / medium |
 **Сначала слиты**: ничего | **Владеет**: `src/docxaicorrector/runtime/artifacts.py`,
 `src/docxaicorrector/runtime/artifact_retention.py`, `src/docxaicorrector/processing/processing_runtime.py` (только
-`_normalize_narration_exports`, `:1657-1675`), `tests/test_spec_073_result_group.py` (нов.). Решение — research R10;
-контракт — `contracts/result-and-screen.md` §1–2.
+`_normalize_narration_exports`, `:1657-1675`), `tests/test_spec_073_result_group.py` (нов.),
+`tests/test_spec_072_state_bundle.py` (только три равенства всего словаря `:74`, `:92`, `:120` — добавить ключ
+`minimax_text`; ревью плана Codex, находка 5). Решение — research R10; контракт — `contracts/result-and-screen.md` §1–2.
 
 **A. Характеристика**
 - [ ] **T-J1** Без нового аргумента: состав группы, имена и `artifact_paths` `write_ui_result_artifacts` для аудиокниги с
-  DOCX/PDF и для перевода — снимок, зелёный до и после; `tests/test_spec_072_result_group.py`, `tests/test_spec_072_state_bundle.py`
-  — зелёные без изменений.
+  DOCX/PDF и для перевода — снимок, зелёный до и после; `tests/test_spec_072_result_group.py` — зелёный без изменений;
+  `tests/test_spec_072_state_bundle.py` — меняется ТОЛЬКО на новый ключ (`"minimax_text": None` в трёх ожидаемых словарях),
+  остальные ожидания побайтно прежние.
 
 **B. Падающие тесты** (`tests/test_spec_073_result_group.py`)
 - [ ] **T-J2** `narration_minimax_text="…<#1.5#>…"` → файл `<stem>.tts.minimax.txt` с этим текстом (UTF-8, LF), ключ
@@ -200,7 +208,8 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
   (падает: файл уходит в «passthrough», `runtime/artifact_retention.py:199`, `:212`); ключ группы
   `x.result.tts.minimax.txt` → `x`; `x.result.tts.txt` по-прежнему → `x`.
 - [ ] **T-J5** `_normalize_narration_exports({..., "minimax_text": "t"})` сохраняет `minimax_text`; не-`str` и `""` →
-  `None`; лишние ключи отброшены, четыре ключа 072 как были.
+  `None`; лишние ключи отброшены, четыре ключа 072 как были; три равенства `tests/test_spec_072_state_bundle.py:74`,
+  `:92`, `:120` обновлены на пятый ключ и зелёные.
 
 **C. Реализация**
 - [ ] **T-J6** `runtime/artifacts.py:366-461` (аргумент, путь, член группы, ключ); `runtime/artifact_retention.py:90-99`
@@ -263,8 +272,11 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
   обновлён осознанно (множества с `latin`).
 - [ ] **T-C5** SC-007: `finalize_audiobook_block` + настоящий `repair_block_residue` (через `_audiobook_repair_call` не нужно —
   прямой вызов с подменённым клиентом, у которого `with_options(max_retries=0)` возвращает считающий транспорт): блок с
-  остатком `digits`, `all_caps` и `latin` в трёх абзацах → ровно ОДНА попытка HTTP; ответ без латиницы → `residue_after`
-  пусто; ответ с латиницей → `needs_review`, второй попытки нет.
+  остатком `digits`, `all_caps` и `latin` в трёх абзацах → ровно ОДИН оплачиваемый вызов: успешная первая отправка —
+  ровно один запрос транспорта; обычное исключение транспорта не повторяется (одна отправка, `needs_review`); повторная
+  отправка допустима только после отклонённого запроса без ответа (FR-003; отдельным случаем не проверяется — это
+  поведение `request_text_completion`, не 073); ответ без латиницы → `residue_after` пусто; ответ с латиницей →
+  `needs_review`, второго вызова нет.
 
 **C. Реализация**
 - [ ] **T-C6** `text/narration_residue.py`: `RESIDUE_LATIN`, `latin_units` по `data-model.md` §2, место в кортежах, докстринг
@@ -321,45 +333,70 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 **Сначала слиты**: WP-A | **Владеет**: `src/docxaicorrector/pipeline/reading_glossary.py` (нов.),
 `src/docxaicorrector/resources/prompts/audiobook_reading_glossary.txt` (нов.), `src/docxaicorrector/core/model_accounting.py`
 (только константа стадии), `src/docxaicorrector/pipeline/glossary_phase.py` (только необязательный параметр стадии у
-`_stage_usage`, `:147-161`), `tests/test_spec_073_reading_glossary.py` (нов.). Решения — research R4–R7; сущности —
-`data-model.md` §4; контракт — `contracts/prompt-and-glossary.md` §2–3, `contracts/events.md`.
+`_stage_usage`, `:147-161`), `src/docxaicorrector/generation/_generation.py` (только вынос `retry_backoff_seconds` из
+цикла блока, `:3606`; после WP-A), `tests/test_spec_073_reading_glossary.py` (нов.). Решения — research R4–R7 (R5 — в
+редакции решения владельца 2026-11-10: пакеты, повторы как у блока, повторный запрос, сбой прогона при недоступности);
+сущности — `data-model.md` §4; контракт — `contracts/prompt-and-glossary.md` §2–3, `contracts/events.md`.
 
 **A. Характеристика**
-- [ ] **T-E1** `tests/test_glossary_pass.py`, `tests/test_document_pipeline.py` (фаза 063), `tests/test_spec_070_request_golden.py`
-  — зелёные до и после; `_stage_usage()` без аргумента возвращает то же, что раньше (стадия `glossary_extraction`).
+- [ ] **T-E1** `tests/test_glossary_pass.py`, `tests/test_document_pipeline.py` (фаза 063), `tests/test_spec_070_request_golden.py`,
+  `tests/test_generation.py` (цикл повторов блока: те же паузы после выноса `retry_backoff_seconds`) — зелёные до и после;
+  `_stage_usage()` без аргумента возвращает то же, что раньше (стадия `glossary_extraction`); две стадии в одном
+  журнале учёта — `_stage_usage()` и `_stage_usage(stage_name="audiobook_reading_glossary")` возвращают каждая своё.
 
 **B. Падающие тесты** (`tests/test_spec_073_reading_glossary.py`; модуля нет — все падают)
 - [ ] **T-E2** Форма кандидата: `ABC`, `AbC-DE`, `XY-12`, `ЖЗИ`, `ЖЗИ⁷` → `ЖЗИ` — кандидаты; `Abc`, `aBc`, `IV`, `MMXX`,
   единица внутри `www.abc.example`, любое слово абзаца целиком заглавными — нет; точное написание (`ABC` ≠ `Abc`).
 - [ ] **T-E3** Отбор: частота desc, затем первое появление; 201 различный кандидат → 200 `sent`, 1 отброшен пределом
   (самый редкий/поздний); `context` ≤ 160 знаков и содержит первое вхождение.
-- [ ] **T-E4** Один вызов: клиент-двойник с `with_options(max_retries=…)`, транспорт считает попытки → ровно 1 при
-  непустом списке, 0 при пустом (`no_candidates`), 0 при Stop до вызова (`stopped`); `max_retries=0` передан;
-  `usage_stage == "audiobook_reading_glossary"`; `should_stop` передан; исключение транспорта → `failed`, WARNING
-  `audiobook_reading_glossary_failed`, функция не бросает.
-- [ ] **T-E5** Разбор: все пять отказов `data-model.md` §4 (каждый отдельным случаем); частичный ответ (часть кандидатов
-  без записи) → `partial`, принятые записи есть; ответ без JSON → `failed` с кодом `no_json`; `empty` при нуле принятых.
-- [ ] **T-E6** Артефакт: пишется через подменённый `write_artifact_fn` с `schema`, `run_id`, кандидатами (`sent`), записями,
-  отказами, usage; не пишется без вызова; путь — в событии `audiobook_reading_glossary_built`.
+- [ ] **T-E4** Пакеты и повторы (подменённый `request_text_completion_fn`, считающий вызовы, и `sleep_fn`, записывающий
+  паузы): 85 кандидатов → пакеты 40 / 40 / 5 и ровно 3 вызова при разборчивых ответах; успешная первая отправка пакета —
+  ровно один вызов; `usage_stage == "audiobook_reading_glossary"`, `should_stop` передан, клиент — тот, что передан (не
+  `with_options(max_retries=0)`); 0 вызовов при пустом списке (`no_candidates`) и при Stop до шага или перед вторым
+  пакетом (`stopped`, вызовов ровно 1).
+- [ ] **T-E4a** Повтор сбойного пакета САМ: второй пакет отвечает повторяемой ошибкой (`status_code=503`) один раз, затем
+  ответом → вызовов 4 (пакеты 1 и 3 — по одному), `retry_count == 1`, пауза `retry_backoff_seconds(1)`; неразборчивый
+  ответ (нет JSON) один раз — тоже повтор; обрезанный ответ — бюджет растёт (`_boost_request_output_budget`); обычное
+  исключение, не признанное повторяемым, — без повтора, сразу недоступность (падает: модуля нет).
+- [ ] **T-E4b** Повторный запрос: первый проход оставил 3 кандидата без чтения (один не отвечен, два отклонены формой) →
+  ровно один дополнительный пакет из этих трёх; ответ на него принят → `unresolved_count == 0`, `rerequested_count == 3`;
+  если и он оставил один без чтения — `unresolved_count == 1`, третьего запроса нет, статус `built`.
+- [ ] **T-E4c** Недоступность: пакет исчерпал `max_retries` попыток повторяемой ошибкой → `ReadingGlossaryUnavailable`
+  (`reason`, `batch_index`, `attempts == max_retries`); артефакт с принятыми до сбоя пакетами записан; ERROR
+  `audiobook_reading_glossary_failed`; статусов `partial` / `empty` / `failed` у результата нет (анти-вакуум: тот же сценарий
+  с ответом на последней попытке — исключения нет, `built`).
+- [ ] **T-E5** Разбор и уровни: все пять отказов `data-model.md` §4 (каждый отдельным случаем); полный ответ — INFO
+  `audiobook_reading_glossary_built`; `unresolved_count > 0` — дополнительно WARNING `audiobook_reading_glossary_unresolved`
+  (`review_data=True`); недоступность — ERROR (проверка уровня у двойника `log_event`); в событиях нет написаний и чтений.
+- [ ] **T-E6** Артефакт: пишется через подменённый `write_artifact_fn` с `schema`, `run_id`, кандидатами (`sent`,
+  `rerequested`, `resolved`), записями, `unresolved`, пакетами (`pass`, `size`, `attempts`), отказами, usage; не пишется
+  без вызова; путь — в событии `audiobook_reading_glossary_built` (или `_failed`).
 - [ ] **T-E7** `reading_section_for_block`: заголовок — литерал контракта; только записи, чьи кандидаты есть в переданных
   текстах, в порядке первого появления; нет таких — `""`; запись, принятая для другого блока, отсутствует (два вызова с
   разными текстами — разные секции, функция без состояния); бюджет 2 000 знаков → `- ...`.
 - [ ] **T-E8** `run_reading_glossary_phase` на двойниках контекста/состояния: операция `translate`/`edit` — ничего не
   делает и не зовёт клиент; `audiobook` — берёт только озвучиваемые абзацы (`narration_exclusion_reasons[i] is None`),
-  пишет `state.audiobook_reading_glossary`, контекст не меняется (функция возвращает `None`, `data-model.md` §4).
+  передаёт `max_retries=context.max_retries`, пишет `state.audiobook_reading_glossary`, контекст не меняется и
+  возвращается `None`; при `ReadingGlossaryUnavailable` — `present_error("audiobook_reading_glossary_failed", …)`,
+  `emit_state(last_error=…, latest_docx_bytes=None)`, `emit_failed_result_fn(...)` вызваны (двойники) и их исход
+  возвращён — тот же набор, что `handle_block_generation_failure` (`pipeline/block_failures.py:135-243`), без
+  `persist_terminal_job_result`.
 
 **C. Реализация**
 - [ ] **T-E9** `core/model_accounting.py` — `STAGE_AUDIOBOOK_READING_GLOSSARY`; `pipeline/glossary_phase.py:147` —
-  `_stage_usage(stage: str = STAGE_GLOSSARY_EXTRACTION)`.
-- [ ] **T-E10** `pipeline/reading_glossary.py` по `data-model.md` §4 — переиспользуя `_single_attempt_client`,
-  `request_text_completion`, `_request_envelope`, `glossary_max_output_tokens`, `_load_json_object`,
+  `_stage_usage(stage_name: str = STAGE_GLOSSARY_EXTRACTION)` (локальная `stage` внутри уже занята);
+  `generation/_generation.py:3606` — `retry_backoff_seconds(attempt)`, цикл блока зовёт её.
+- [ ] **T-E10** `pipeline/reading_glossary.py` по `data-model.md` §4 — переиспользуя `request_text_completion`,
+  `is_retryable_error`, `_is_non_completed_response_error`, `_is_incomplete_response_error`, `_boost_request_output_budget`,
+  `retry_backoff_seconds`, `_request_envelope`, `glossary_max_output_tokens`, `_load_json_object`,
   `render_glossary_prompt_section`, `_write_run_glossary_artifact`, `_stage_usage` (research R5, таблица). Ни одной копии.
 - [ ] **T-E11** [P] `resources/prompts/audiobook_reading_glossary.txt` (`contracts/prompt-and-glossary.md` §3); без
   примеров из корпуса.
 
 **D. Проверка**
 - [ ] **T-E12** Отдельными командами: `tests/test_spec_073_reading_glossary.py`, `tests/test_glossary_pass.py`,
-  `tests/test_document_pipeline.py`, `tests/test_spec_070_request_golden.py`, `tests/test_audiobook_repair.py`. Done: зелёные.
+  `tests/test_document_pipeline.py`, `tests/test_spec_070_request_golden.py`, `tests/test_audiobook_repair.py`,
+  `tests/test_generation.py`. Done: зелёные.
 
 ---
 
@@ -387,10 +424,16 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
   `_generate_block_chunk` блока 1 не удваивает счёт).
 - [ ] **T-F5** `execute_processing_run`: фаза словаря вызвана ровно один раз, после фазы 063 и до первого блока (порядок
   вызовов двойников); Stop, взведённый в фазе, — блоков не выполняется, итог «остановлено».
+- [ ] **T-F5a** Недоступная модель словаря (двойник `request_text_completion_fn` всегда отвечает повторяемой ошибкой):
+  `execute_processing_run` возвращает итог «ошибка», `run_block_processing_phase_fn` НЕ вызван, `last_error` в состоянии,
+  `latest_docx_bytes is None`, выдачи нет — те же наблюдаемые следствия, что у неисправимого вызова блока аудиокниги
+  (сравнить с прогоном, где падает вызов блока 1, на том же двойнике эмиттеров). Анти-вакуум: доступная модель — блоки
+  выполняются, итог успешен.
 
 **C. Реализация**
-- [ ] **T-F6** `pipeline/setup.py:356-406` — параметр `run_reading_glossary_phase_fn`, вызов после `:389-399`;
-  `pipeline/_pipeline.py` — обёртка и проводка.
+- [ ] **T-F6** `pipeline/setup.py:356-406` — параметр `run_reading_glossary_phase_fn`, вызов после `:389-399`; не-`None`
+  исход фазы возвращается сразу, как `block_phase_outcome` (`:400-406`); `pipeline/_pipeline.py` — обёртка и проводка
+  (передаёт `emit_failed_result_fn`).
 - [ ] **T-F7** `pipeline/block_execution.py`: `_audiobook_reading_section(state, payload)`; часть в `_generate_block_chunk`
   (только `audiobook`); `_audiobook_repair_call(..., payload)` дописывает секцию к промпту исправления через
   `_combine_system_prompt_with_block_focus`.
@@ -427,8 +470,9 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
   выданы; рендерер DOCX бросает → MiniMax всё равно собран.
 - [ ] **T-H5** FR-010: поля `ui_audiobook_artifact_saved` по `contracts/events.md` — все новые ключи всегда; прежние ключи
   070/072 на месте; `stress_mark_count` и на 1 000 слов по синтетике; `latin_source_unit_count` = сумма по записям (запись
-  с латиницей в исходнике и без — анти-вакуум); `scene_break_count`; поля словаря из `state.audiobook_reading_glossary`
-  (`None` → `not_applicable` и нули); в событии нет текстов абзацев и чтений.
+  с латиницей в исходнике и без — анти-вакуум); `scene_break_count`; поля словаря из `state.audiobook_reading_glossary`,
+  включая `rerequested_count`, `unresolved_count`, `batch_count`, `call_count`, `retry_count` (`None` → `not_applicable` и
+  нули); в событии нет текстов абзацев и чтений.
 
 **C. Реализация**
 - [ ] **T-H6** `pipeline/narration_exports.py:61-199` — `minimax`, `minimax_error`, `state_value` (+`minimax_text`),
@@ -452,7 +496,7 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 (`:145`). Решение — research R12; контракт — `contracts/events.md`.
 
 **B. Падающие тесты** (`tests/test_real_document_pipeline_validation.py`)
-- [ ] **T-I1** `_SPEC_073_LOG_EVENTS` = три новых события + `ui_audiobook_artifact_saved`: каждое эмитится в `src/` и
+- [ ] **T-I1** `_SPEC_073_LOG_EVENTS` = четыре новых события (`contracts/events.md`) + `ui_audiobook_artifact_saved`: каждое эмитится в `src/` и
   зарегистрировано в документе логирования; `_SPEC_073_NEW_UI_ARTIFACT_FIELDS` — все ключи `contracts/events.md`
   перечислены в §5.5 (по образцу `:8036-8074`).
 - [ ] **T-I2** Отчёт на синтетическом логе и состоянии: `narration_artifact` несёт новые поля; строки сводки
@@ -460,12 +504,13 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
   `latest_tts_minimax_path`, `reading_glossary_path`; строка цены стадии `audiobook_reading_glossary`; нет события —
   `not_reported`, не 0.
 - [ ] **T-I3** Раннер пишет `<basename>.tts.minimax.txt` из `state["latest_narration_exports"]["minimax_text"]` и копию
-  артефакта словаря (путь из события) в каталог прогона и `latest`; без ключа / без события — пути `null`, исключения нет.
+  артефакта словаря (путь из `audiobook_reading_glossary_built`, а в прогоне, упавшем на словаре, — из
+  `audiobook_reading_glossary_failed`) в каталог прогона и `latest`; без ключа / без события — пути `null`, исключения нет.
 
 **C. Реализация**
 - [ ] **T-I4** Раннер (`:5096-5121`, `:1596-…`, `:5051-5093`, `:5209`, `:6648-6669`, `:6933-6935`, образец копии `:4913-4933`).
 - [ ] **T-I5** [P] `scripts/_list_log_events.py` — `TARGETS` += `pipeline/reading_glossary.py`.
-- [ ] **T-I6** [P] Документы: `docs/LOGGING_AND_ARTIFACT_RETENTION.md` — §3.13 (три события), §5.5 (поля), retention
+- [ ] **T-I6** [P] Документы: `docs/LOGGING_AND_ARTIFACT_RETENTION.md` — §3.13 (четыре события), §5.5 (поля), retention
   `.run/ui_results/` (`.result.tts.minimax.txt` в группе), артефакт словаря в семье `.run/run_glossaries/`, Changelog;
   AGENTS.md «UI result artifacts» (`:464-466`) — `.result.tts.minimax.txt`, `tts_minimax_path`; README (`:512`) и
   `docs/WORKFLOW_AND_IMAGE_MODES.md` (`:145`) — четвёртый формат озвучки.
@@ -483,7 +528,9 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
   `docs/testing/TEST_TIER_INVENTORY.md` (`## Unit-Contract`).
 - [ ] **T-Z2** После КАЖДОГО слияния — полный прогон в ГЛАВНОМ дереве:
   `wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/ -q`; перед «всё зелёное» —
-  `git status --porcelain` пуст, `git diff --check` чист.
+  `git status --porcelain` пуст, `git diff --check` чист. Финальное user-visible доказательство перед слиянием в `main` —
+  задача VS Code `Run Full Pytest` (AGENTS.md «Финальная верификация и CI»); если путь задачи оркестратору недоступен —
+  сказать это прямо в отчёте, доказательством служит shell-прогон выше.
 - [ ] **T-Z3** Гарды в главном дереве, каждый отдельной командой: `tests/test_spec_status_consistency.py`,
   `tests/test_where_we_are_freshness.py`, `tests/test_documentation_links.py`, `tests/test_script_contract_static.py`,
   `tests/test_layer_boundaries.py`, `tests/test_typecheck.py` (≥ 180 с; новых ошибок нет).
@@ -508,13 +555,18 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 
 ## WP-Y. Замер FR-012 (оркестратор, ПЛАТНО — нужно согласие владельца)
 
-- [ ] **T-Y1** Бесплатно: проверка базы по истории кода (`quickstart.md` §6, research R14). Если база устарела — [?] [$]
-  согласие на новую базу (≈ 0,39 $).
+- [ ] **T-Y1** Бесплатно: проверка базы по SHA каждого базового прогона (`6379154`, `8adf780`, `cf86245` — `git_head` их
+  отчётов): полный diff `src/` и входных документов до HEAD, оценка каждого коммита (`quickstart.md` §6, research R14).
+  Если база устарела — [?] [$] согласие на новую базу (≈ 0,39 $).
 - [ ] **T-Y2** [?] [$] Согласие владельца на сумму (≈ 0,42 $: RM гл. 3, Money гл. 3, полная Money с 073; research R13).
 - [ ] **T-Y3** [$] Канонические прогоны (`quickstart.md` §6), по одному. При падении профиля — свежий run report,
   `failed_checks` дословно с `actual` / `threshold` и отношением, только потом гипотезы.
-- [ ] **T-Y4** Читать по таблице `quickstart.md` §6; SC-002/SC-003 — скрипт оркестратора вне git по образцу
-  `D:\Temp\docxai-research\073\baseline_forms.py` над базой и новым прогоном; 30 пар на главу — чтение; набор омографов для
-  SC-004 составляет читающий.
+- [ ] **T-Y4** Читать по таблице `quickstart.md` §6. SC-002 — скрипт оркестратора вне git (сопоставление абзацев —
+  приём `D:\Temp\docxai-research\073\baseline_forms.py`): по КАЖДОЙ принятой записи артефакта словаря — исходные вхождения
+  с ID абзацев, сопоставленный абзац выхода, подтверждённые / отсутствующие / неоднозначные по правилу формы SC-002
+  (слово чтения или его основа без двух последних букв, без знаков ударения и регистра); пустой словарь или 0
+  проверенных — «не проверено». SC-003 — заголовки с «N.», номер виден и сквозь `**…**` (на полной Money 46, из них 10
+  выделенных; синтетический `## **1. …**` — проверка самого скрипта). SC-010 — `reading_glossary_unresolved_count == 0`
+  на трёх входах. 30 пар на главу — чтение; набор омографов для SC-004 составляет читающий.
 - [ ] **T-Y5** [?] Владелец слушает главу в ElevenLabs (`.tts.docx`) и в Voice Studio (`.tts.minimax.txt`). Итоги — в
   Changelog спеки как есть.
