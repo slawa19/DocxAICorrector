@@ -76,6 +76,7 @@ def test_build_result_bundle_normalises_narration_exports():
         "pdf_bytes": None,
         "docx_unavailable_reason": None,
         "pdf_unavailable_reason": "timeout",
+        "book_json": None,
     }
 
 
@@ -94,6 +95,7 @@ def test_build_result_bundle_empty_bytes_and_bad_reasons_become_none():
         "pdf_bytes": None,
         "docx_unavailable_reason": None,
         "pdf_unavailable_reason": None,
+        "book_json": None,
     }
 
 
@@ -117,7 +119,7 @@ def test_get_current_result_bundle_carries_exports_with_narration_text(monkeypat
     bundle = processing_runtime.get_current_result_bundle()
 
     assert bundle is not None
-    assert bundle["narration_exports"] == _FULL_EXPORTS
+    assert bundle["narration_exports"] == {**_FULL_EXPORTS, "book_json": None}
 
 
 def test_get_current_result_bundle_drops_exports_when_narration_text_is_gone(monkeypatch):

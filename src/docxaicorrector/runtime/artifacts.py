@@ -379,6 +379,7 @@ def write_ui_result_artifacts(
     run_id: str | None = None,
     narration_docx_bytes: bytes | None = None,
     narration_pdf_bytes: bytes | None = None,
+    narration_book_json: str | None = None,
 ) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     artifact_stem = _build_ui_result_stem(source_name, created_at=created_at, run_id=run_id)
@@ -388,6 +389,8 @@ def write_ui_result_artifacts(
     # Spec 072 FR-007: narration DOCX/PDF join the group only when their bytes are non-empty.
     tts_docx_path = output_dir / f"{artifact_stem}.tts.docx"
     tts_pdf_path = output_dir / f"{artifact_stem}.tts.pdf"
+    # Spec 073 FR-008: the book file for the narration tool joins the group only when non-empty.
+    narration_book_path = output_dir / f"{artifact_stem}.narration.json"
     meta_path = output_dir / f"{artifact_stem}.meta.json"
     manifest_path = output_dir / f"{artifact_stem}.manifest.json"
     formatting_review_path = output_dir / f"{artifact_stem}.formatting_review.txt"
@@ -420,6 +423,8 @@ def write_ui_result_artifacts(
         group_entries.append((tts_docx_path, narration_docx_bytes))
     if narration_pdf_bytes:
         group_entries.append((tts_pdf_path, narration_pdf_bytes))
+    if narration_book_json:
+        group_entries.append((narration_book_path, narration_book_json))
     if quality_warning:
         group_entries.append(
             (
@@ -455,6 +460,8 @@ def write_ui_result_artifacts(
         artifact_paths["tts_docx_path"] = str(tts_docx_path)
     if narration_pdf_bytes:
         artifact_paths["tts_pdf_path"] = str(tts_pdf_path)
+    if narration_book_json:
+        artifact_paths["narration_book_path"] = str(narration_book_path)
     if write_meta:
         artifact_paths["metadata_path"] = str(meta_path)
     if quality_warning:

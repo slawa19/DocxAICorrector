@@ -163,6 +163,7 @@ class ResultArtifactWriter(Protocol):
         model_accounting: Mapping[str, object] | None = None,
         narration_docx_bytes: bytes | None = None,
         narration_pdf_bytes: bytes | None = None,
+        narration_book_json: str | None = None,
     ) -> Mapping[str, str]: ...
 
 

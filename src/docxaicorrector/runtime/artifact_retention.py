@@ -94,6 +94,7 @@ _UI_RESULT_GROUP_SUFFIXES = (
     ".result.formatting_review.txt",
     ".result.tts.docx",
     ".result.tts.pdf",
+    ".result.narration.json",
     ".result.docx",
     ".result.md",
 )
