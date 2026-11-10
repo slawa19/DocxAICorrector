@@ -2605,6 +2605,16 @@ def _is_retryable_empty_generation_error(exc: BaseException) -> bool:
     return isinstance(exc, (EmptyResponse, CollapsedOutput, IncompleteResponse))
 
 
+def retry_backoff_seconds(attempt: int) -> float:
+    """The pause after failed attempt ``attempt`` (1-based) of a model call, before the next one.
+
+    One source for the block call and the audiobook reading glossary (spec 073 FR-004): the step
+    retries its batches by the block's policy, never by a policy of its own.
+    """
+
+    return min(2 ** (attempt - 1), 8)
+
+
 def _raise_if_stop_requested(should_stop: Callable[[], bool] | None) -> None:
     """FR-022: the Stop button is honoured before a model call, not only between blocks.
 
@@ -3614,7 +3624,7 @@ def generate_markdown_block(
                 )
             if _is_retryable_context_leakage_error(exc):
                 request_kwargs = _inject_context_leakage_retry_warning(request_kwargs)
-            time.sleep(min(2 ** (attempt - 1), 8))
+            time.sleep(retry_backoff_seconds(attempt))
 
     if last_exception is not None and (
         _is_retryable_empty_generation_error(last_exception)

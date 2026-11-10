@@ -88,6 +88,9 @@ STAGE_LITERARY_POLISH = "literary_polish"
 # Spec 070 FR-006: the one residue-repair call per audiobook block; booked apart from
 # ``text_generation`` so the price of the repair is visible on its own (SC-005).
 STAGE_AUDIOBOOK_REPAIR = "audiobook_repair"
+# Spec 073 FR-004: the reading glossary of an audiobook run -- the batches of one step before the
+# first block that fix how the book's abbreviations are read; booked apart so its price is visible.
+STAGE_AUDIOBOOK_READING_GLOSSARY = "audiobook_reading_glossary"
 # Spec 069 FR-004 (6): the only counter scope name the snapshot reports a section for.
 PASS_LITERARY_POLISH = "literary_polish"
 STAGE_IMAGE_ANALYSIS = "image_analysis"

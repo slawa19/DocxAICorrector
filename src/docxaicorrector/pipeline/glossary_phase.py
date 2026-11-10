@@ -144,12 +144,18 @@ def build_run_glossary_notice(*, status: str, term_count: int) -> dict[str, obje
     return None
 
 
-def _stage_usage() -> dict[str, object]:
+def _stage_usage(stage_name: str = STAGE_GLOSSARY_EXTRACTION) -> dict[str, object]:
+    """The tokens and the price booked under ``stage_name`` in this run (``None``: not reported).
+
+    Spec 073 FR-004: the audiobook reading glossary reads its own stage through this function;
+    without an argument it is the stage of this phase, as before.
+    """
+
     try:
         stages = snapshot_run_model_accounting().get("stages") or {}
     except Exception:
         return {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}
-    stage = stages.get(STAGE_GLOSSARY_EXTRACTION) if isinstance(stages, Mapping) else None
+    stage = stages.get(stage_name) if isinstance(stages, Mapping) else None
     if not isinstance(stage, Mapping):
         return {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}
     cost_known = int(stage.get("model_calls_without_cost", 0) or 0) == 0 and int(stage.get("model_call_count", 0) or 0) > 0
