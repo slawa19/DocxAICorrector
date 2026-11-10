@@ -93,6 +93,39 @@ def _build_narration_filename(filename: str) -> str:
     return f"{Path(filename).stem}.tts.txt"
 
 
+def _build_narration_docx_filename(filename: str) -> str:
+    return f"{Path(filename).stem}.tts.docx"
+
+
+def _build_narration_pdf_filename(filename: str) -> str:
+    return f"{Path(filename).stem}.tts.pdf"
+
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# Spec 072 FR-005: the closed set of reasons a narration PDF can be missing (data-model.md §4).
+# Literal keys, so the catalog guard sees every one; an unknown code degrades to ``failed``.
+_NARRATION_PDF_UNAVAILABLE_KEYS = {
+    "docx_not_built": "result.narration_pdf_unavailable.docx_not_built",
+    "soffice_not_found": "result.narration_pdf_unavailable.soffice_not_found",
+    "timeout": "result.narration_pdf_unavailable.timeout",
+    "failed": "result.narration_pdf_unavailable.failed",
+    "missing_output": "result.narration_pdf_unavailable.missing_output",
+    "empty_output": "result.narration_pdf_unavailable.empty_output",
+    "not_pdf": "result.narration_pdf_unavailable.not_pdf",
+}
+
+
+def _narration_export_bytes(narration_exports: Mapping[str, object] | None, key: str) -> bytes | None:
+    value = narration_exports.get(key) if isinstance(narration_exports, Mapping) else None
+    return bytes(value) if isinstance(value, (bytes, bytearray)) and len(value) > 0 else None
+
+
+def _narration_export_reason(narration_exports: Mapping[str, object] | None, key: str) -> str | None:
+    value = narration_exports.get(key) if isinstance(narration_exports, Mapping) else None
+    return value if isinstance(value, str) and value else None
+
+
 def _resolve_result_download_labels(
     *,
     original_filename: str,
@@ -1075,6 +1108,94 @@ def _render_formatting_review_block(
         st.caption(t("result.review_accepted_note"))
 
 
+def _render_audiobook_downloads(
+    *,
+    docx_bytes: bytes | None,
+    markdown_text: str,
+    original_filename: str,
+    narration_text: str,
+    narration_exports: Mapping[str, object] | None,
+    blocked: bool,
+) -> None:
+    """Spec 072 FR-009: a narration row (DOCX, PDF, TXT) and a review row (DOCX, Markdown).
+
+    Buttons exist only for formats that were built; a bundle without ``narration_exports``
+    (an old session, SC-007) offers the TXT alone, as before.
+    """
+    secondary_or_primary = "secondary" if blocked else "primary"
+    narration_docx = _narration_export_bytes(narration_exports, "docx_bytes")
+    narration_pdf = _narration_export_bytes(narration_exports, "pdf_bytes")
+    docx_reason = _narration_export_reason(narration_exports, "docx_unavailable_reason")
+    pdf_reason = _narration_export_reason(narration_exports, "pdf_unavailable_reason")
+
+    narration_buttons: list[dict[str, object]] = []
+    if narration_docx is not None:
+        narration_buttons.append(
+            {
+                "label": t("result.blocked_download_narration_docx") if blocked else t("result.narration_docx"),
+                "data": narration_docx,
+                "file_name": _build_narration_docx_filename(original_filename),
+                "mime": _DOCX_MIME,
+                "type": secondary_or_primary,
+            }
+        )
+    if narration_pdf is not None:
+        narration_buttons.append(
+            {
+                "label": t("result.blocked_download_narration_pdf") if blocked else t("result.narration_pdf"),
+                "data": narration_pdf,
+                "file_name": _build_narration_pdf_filename(original_filename),
+                "mime": "application/pdf",
+                "type": "secondary",
+            }
+        )
+    narration_buttons.append(
+        {
+            "label": t("result.blocked_download_narration") if blocked else t("result.narration_elevenlabs"),
+            "data": narration_text.encode("utf-8"),
+            "file_name": _build_narration_filename(original_filename),
+            "mime": "text/plain",
+            "type": "secondary",
+        }
+    )
+
+    st.caption(t("result.narration_section_title"))
+    for column, button in zip(st.columns(len(narration_buttons)), narration_buttons):
+        column.download_button(on_click="ignore", width="stretch", **cast(dict[str, Any], button))
+    if docx_reason is not None:
+        st.caption(t("result.narration_docx_unavailable"))
+    if pdf_reason is not None:
+        st.caption(
+            t(
+                _NARRATION_PDF_UNAVAILABLE_KEYS.get(
+                    pdf_reason, _NARRATION_PDF_UNAVAILABLE_KEYS["failed"]
+                )
+            )
+        )
+
+    st.caption(t("result.review_section_title"))
+    col_docx, col_md = st.columns(2)
+    if docx_bytes is not None:
+        col_docx.download_button(
+            label=t("result.blocked_download_docx") if blocked else t("result.docx_inspection"),
+            data=docx_bytes,
+            file_name=_build_output_filename(original_filename),
+            mime=_DOCX_MIME,
+            on_click="ignore",
+            type="secondary",
+            width="stretch",
+        )
+    col_md.download_button(
+        label=t("result.blocked_download_markdown") if blocked else t("result.markdown_inspection"),
+        data=markdown_text.encode("utf-8"),
+        file_name=_build_markdown_filename(original_filename),
+        mime="text/markdown",
+        on_click="ignore",
+        type="secondary",
+        width="stretch",
+    )
+
+
 def render_result_bundle(
     *,
     docx_bytes: bytes | None,
@@ -1089,6 +1210,7 @@ def render_result_bundle(
     controlled_block_fallback_artifact: str | None = None,
     cost_estimate_snapshot: Mapping[str, object] | None = None,
     cost_actual: Mapping[str, object] | None = None,
+    narration_exports: Mapping[str, object] | None = None,
 ) -> None:
     delivery_status = str((delivery_disposition or {}).get("status", "accepted") or "accepted")
     blocked = delivery_status == "blocked"
@@ -1192,22 +1314,32 @@ def render_result_bundle(
             t("result.blocked_download_narration") if narration_text is not None else None
         )
     download_type = "secondary" if blocked else "primary"
+    if narration_text is not None and operation == "audiobook":
+        _render_audiobook_downloads(
+            docx_bytes=docx_bytes,
+            markdown_text=markdown_text,
+            original_filename=original_filename,
+            narration_text=narration_text,
+            narration_exports=narration_exports,
+            blocked=blocked,
+        )
+        _render_formatting_review_block(
+            original_filename=original_filename,
+            quality_warning=quality_warning,
+        )
+        return
     if narration_text is not None:
-        columns = st.columns(3)
-        if operation == "audiobook":
-            col_tts, col_md, col_docx = columns
-        else:
-            col_docx, col_md, col_tts = columns
-            if docx_bytes is not None:
-                col_docx.download_button(
-                    label=docx_label,
-                    data=docx_bytes,
-                    file_name=_build_output_filename(original_filename),
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    on_click="ignore",
-                    type=download_type,
-                    width="stretch",
-                )
+        col_docx, col_md, col_tts = st.columns(3)
+        if docx_bytes is not None:
+            col_docx.download_button(
+                label=docx_label,
+                data=docx_bytes,
+                file_name=_build_output_filename(original_filename),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                on_click="ignore",
+                type=download_type,
+                width="stretch",
+            )
         col_tts.download_button(
             label=narration_label or t("result.narration_elevenlabs"),
             data=narration_text.encode("utf-8"),
@@ -1226,16 +1358,6 @@ def render_result_bundle(
             type=download_type,
             width="stretch",
         )
-        if operation == "audiobook" and docx_bytes is not None:
-            col_docx.download_button(
-                label=docx_label,
-                data=docx_bytes,
-                file_name=_build_output_filename(original_filename),
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                on_click="ignore",
-                type=download_type,
-                width="stretch",
-            )
         _render_formatting_review_block(
             original_filename=original_filename,
             quality_warning=quality_warning,

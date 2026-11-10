@@ -918,6 +918,8 @@ def _render_completed_result_view(result: Mapping[str, object]) -> None:
         # current sidebar estimate is deliberately not an input here.
         cost_estimate_snapshot=cast(Mapping[str, object] | None, result.get("cost_estimate_snapshot")),
         cost_actual=cast(Mapping[str, object] | None, result.get("cost_actual")),
+        # Spec 072 FR-008: absent on a bundle from an older session -> None -> the TXT alone.
+        narration_exports=cast(Mapping[str, object] | None, result.get("narration_exports")),
     )
 
 
