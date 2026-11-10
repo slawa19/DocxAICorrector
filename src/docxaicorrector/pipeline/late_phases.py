@@ -46,6 +46,7 @@ from docxaicorrector.pipeline.narration_postprocess import (  # noqa: F401
     _collect_narration_artifact_review_findings,
     _summarize_narration_review_findings,
 )
+from docxaicorrector.pipeline.narration_exports import NarrationExports, build_narration_exports
 from docxaicorrector.reader_cleanup_mvp import write_reader_cleanup_diagnostics
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
@@ -1296,6 +1297,26 @@ def finalize_processing_success(
                     "rules": ", ".join(narration_review_rules),
                 },
             })
+    # Spec 072 FR-003 (в), FR-005, FR-006 (research R9): the narration DOCX and PDF are two more
+    # projections of the groups the ``.tts.txt`` was just joined from. Built HERE -- after the text
+    # and before the one ``emit_state`` that publishes it -- so the bytes reach session state in the
+    # same event as the text and the result-group writer below gets them too. Stop is checked once,
+    # before the conversion starts (FR-005), and ends the run as stopped like every neighbouring
+    # late-phase boundary (plan deviation О-3). A failure here never blocks delivery
+    # (Anti-regression 3): ``build_narration_exports`` logs it and returns what was built.
+    narration_exports: NarrationExports | None = None
+    if narration_text is not None and is_audiobook_operation(getattr(context, "processing_operation", None)):
+        stopped_result = _stop_at_late_boundary("Обработка остановлена перед сборкой DOCX и PDF озвучки.")
+        if stopped_result is not None:
+            return stopped_result
+        narration_exports = build_narration_exports(
+            groups=tuple(getattr(state, "narration_groups", None) or ()),
+            source_name=context.uploaded_filename,
+            log_event=dependencies.log_event,
+        )
+        studio_limits_notice = narration_exports.studio_limits_notice()
+        if studio_limits_notice is not None:
+            result_notices.append(studio_limits_notice)
     # spec 059 FR-B4/FR-B5: what the DOCX carries is a fact about the DOCUMENT, so it is
     # published in every mode. It used to ride on ``narration_text is not None`` (the two
     # blocks above), which meant the default ``edit`` path and every ``translate`` run showed
@@ -1369,6 +1390,12 @@ def finalize_processing_success(
     stopped_result = _stop_at_late_boundary("Обработка остановлена до публикации результата после проверки качества и narration.")
     if stopped_result is not None:
         return stopped_result
+    # Spec 072 FR-008 (contracts/state-bundle.md §1): the narration exports ride in the SAME state
+    # event as the narration text -- never a second one -- and only on an audiobook run that has a text;
+    # translate and edit do not write the key at all (Anti-regression 2).
+    narration_exports_state: dict[str, object] = (
+        {"latest_narration_exports": narration_exports.state_value()} if narration_exports is not None else {}
+    )
     emitters.emit_state(
         context.runtime,
         final_generated_paragraph_registry=cast(
@@ -1377,6 +1404,7 @@ def finalize_processing_success(
         latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
         latest_markdown=runtime_display_markdown,
         latest_narration_text=narration_text,
+        **narration_exports_state,
         latest_quality_warning=quality_warning,
         latest_delivery_disposition={
             "status": (
@@ -1430,6 +1458,12 @@ def finalize_processing_success(
             artifact_writer_kwargs["quality_warning"] = quality_warning
         if narration_text is not None:
             artifact_writer_kwargs["narration_text"] = narration_text
+        # Spec 072 FR-007: the narration DOCX / PDF join the result group only when they were built;
+        # one writer call, so the whole group is still published by one ``_atomic_write_group``.
+        if narration_exports is not None and narration_exports.docx_bytes is not None:
+            artifact_writer_kwargs["narration_docx_bytes"] = narration_exports.docx_bytes
+        if narration_exports is not None and narration_exports.pdf_bytes is not None:
+            artifact_writer_kwargs["narration_pdf_bytes"] = narration_exports.pdf_bytes
         result_artifact_paths = dict(
             dependencies.write_ui_result_artifacts(**artifact_writer_kwargs)
         )
@@ -1561,6 +1595,14 @@ def finalize_processing_success(
                     # findable from one log line. Zero here is a positive statement that the
                     # text was reviewed and nothing matched — not an absent field.
                     **narration_review_summary,
+                    # Spec 072 FR-003 (в), FR-006, FR-007 (contracts/events.md): the narration DOCX / PDF
+                    # paths (``None`` when not built), the heading merges by id, the Studio counters and the
+                    # reason a PDF is missing. Ids, numbers and codes only -- no paragraph text.
+                    **(
+                        narration_exports.event_fields(artifact_paths=result_artifact_paths)
+                        if narration_exports is not None
+                        else {}
+                    ),
                 )
         except Exception as exc:
             _log_post_delivery_secondary_failure(
