@@ -20,12 +20,16 @@ import unicodedata
 from dataclasses import dataclass
 
 from docxaicorrector.text.narration_cleanup import find_emoji_sequences, find_html_tags
+from docxaicorrector.text.narration_forms import without_combining_marks, without_combining_marks_with_offsets
 
 __all__ = [
     "REPAIRABLE_RESIDUE_CLASSES",
     "RESIDUE_CLASSES",
     "ResidueFinding",
     "detect_narration_residue",
+    "is_all_caps_paragraph",
+    "is_roman_numeral_form",
+    "mask_url_or_domain",
 ]
 
 RESIDUE_DIGITS = "digits"
@@ -65,7 +69,9 @@ _ALL_CAPS_MIN_WORDS = 2
 _SIGN_CHARS = frozenset("%№§&")
 _SUPERSCRIPT_SUBSCRIPT_DIGITS = frozenset("²³¹")
 _LETTER_RUN = re.compile(r"[^\W\d_]+")
-_ROMAN_TOKEN = re.compile(r"(?<![^\W\d_])[IVXLCDM]{2,}(?![^\W\d_])")
+_ROMAN_RUN = "[IVXLCDM]{2,}"
+_ROMAN_TOKEN = re.compile(rf"(?<![^\W\d_]){_ROMAN_RUN}(?![^\W\d_])")
+_ROMAN_FORM = re.compile(_ROMAN_RUN)
 _TAG_FORM = re.compile(r"\[[a-z]+(?: [a-z]+)?\]")
 # Scheme or ``www.`` ... or ``label.label`` with no space, ending in >= 2 letters. The label before
 # the last dot must start with a letter, so numbers (``3.14``) and one-letter abbreviation tails
@@ -120,14 +126,41 @@ def _char_runs(text: str, predicate) -> list[int]:
 
 
 def _is_all_caps_paragraph(text: str) -> tuple[bool, int]:
-    letters = [char for char in text if char.isalpha()]
+    """``(is it, position of its first long word)``. The letters are read without stress marks
+    (spec 073 FR-002); the position is a position of the original string."""
+
+    stripped, offsets = without_combining_marks_with_offsets(text)
+    letters = [char for char in stripped if char.isalpha()]
     cased = [char for char in letters if char.lower() != char.upper()]
     if not cased or not all(char.isupper() for char in cased):
         return False, -1
-    long_words = [match for match in _LETTER_RUN.finditer(text) if len(match.group()) >= _ALL_CAPS_MIN_WORD_LETTERS]
+    long_words = [match for match in _LETTER_RUN.finditer(stripped) if len(match.group()) >= _ALL_CAPS_MIN_WORD_LETTERS]
     if len(long_words) < _ALL_CAPS_MIN_WORDS:
         return False, -1
-    return True, long_words[0].start()
+    return True, offsets[long_words[0].start()]
+
+
+def is_all_caps_paragraph(text: str) -> bool:
+    """The form of the ``all_caps`` class: every cased letter is capital and there are at least two long words."""
+
+    return _is_all_caps_paragraph(text)[0]
+
+
+def is_roman_numeral_form(token: str) -> bool:
+    """The form of the ``roman_numerals`` class for ONE token: at least two characters of ``[IVXLCDM]`` and
+    nothing else, or only characters of category Nl (``Ⅳ``). Stress marks are not read."""
+
+    stripped = without_combining_marks(token)
+    if not stripped:
+        return False
+    return _ROMAN_FORM.fullmatch(stripped) is not None or all(_is_roman_numeral_char(char) for char in stripped)
+
+
+def mask_url_or_domain(text: str) -> str:
+    """``text`` with every address (scheme, ``www.`` or ``label.label``) replaced by spaces of the same length,
+    so the length of the string and the positions of everything else are kept."""
+
+    return _URL_OR_DOMAIN.sub(lambda match: " " * len(match.group()), text)
 
 
 def detect_narration_residue(text: str) -> tuple[ResidueFinding, ...]:
@@ -139,8 +172,10 @@ def detect_narration_residue(text: str) -> tuple[ResidueFinding, ...]:
     if digit_starts:
         findings.append(ResidueFinding(RESIDUE_DIGITS, len(digit_starts), _sample(text, digit_starts[0])))
 
-    roman_positions = [match.start() for match in _ROMAN_TOKEN.finditer(text)]
-    roman_positions += _char_runs(text, _is_roman_numeral_char)
+    # Spec 073 FR-002: a roman numeral is read without stress marks; positions are the original string's.
+    stripped, offsets = without_combining_marks_with_offsets(text)
+    roman_positions = [offsets[match.start()] for match in _ROMAN_TOKEN.finditer(stripped)]
+    roman_positions += [offsets[position] for position in _char_runs(stripped, _is_roman_numeral_char)]
     if roman_positions:
         roman_positions.sort()
         findings.append(ResidueFinding(RESIDUE_ROMAN_NUMERALS, len(roman_positions), _sample(text, roman_positions[0])))

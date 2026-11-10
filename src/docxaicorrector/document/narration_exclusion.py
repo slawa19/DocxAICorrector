@@ -34,6 +34,7 @@ from docxaicorrector.core.models import (
     PARAGRAPH_REGION_TOC,
     BACK_MATTER_SECTION_INDEX,
 )
+from docxaicorrector.text.narration_forms import without_combining_marks as _without_combining_marks
 
 # The roles whose paragraphs are never judged by the fragment rule (plan deviation O-1).
 FRAGMENT_RULE_EXEMPT_ROLES = frozenset({"heading", "epigraph", "attribution", "dedication"})
@@ -90,10 +91,16 @@ def ends_as_a_sentence(text: str) -> bool:
     return end > 0 and _is_sentence_terminal(value[end - 1])
 
 
-def _without_combining_marks(text: str) -> str:
-    """Drop combining marks (Unicode category M*): a diacritic belongs to its letter, so it is
-    neither a letter run of its own nor a non-letter that dilutes the share of letters."""
-    return "".join(character for character in text if not unicodedata.category(character).startswith("M"))
+def has_no_letter_or_digit(text: str) -> bool:
+    """True when ``text`` has not one letter or digit: empty, white space, or only signs (``***``)."""
+    return not any(character.isalnum() for character in str(text or ""))
+
+
+def is_scene_break_text(text: str) -> bool:
+    """The FORM of a scene separator (spec 073 FR-006): a non-empty text, past white space, with no
+    letter and no digit -- ``***``, ``# %``, ``— — —``. A lone ``1`` or ``I`` is not one."""
+    value = str(text or "")
+    return value.strip() != "" and has_no_letter_or_digit(value)
 
 
 def is_fragment_without_connected_text(text: str) -> bool:
@@ -164,7 +171,7 @@ def resolve_narration_exclusion_reason(
         # import styled as a heading (FR-009 run 2026-11-10: the model rightly answered it
         # empty, and the empty-answer rule then narrated the asterisks from source). A request
         # must never carry an empty paragraph either.
-        return NARRATION_EXCLUSION_FRAGMENT if not any(character.isalnum() for character in str(text or "")) else None
+        return NARRATION_EXCLUSION_FRAGMENT if has_no_letter_or_digit(text) else None
     if is_fragment_without_connected_text(text):
         return NARRATION_EXCLUSION_FRAGMENT
     return None
