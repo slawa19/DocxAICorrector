@@ -877,16 +877,14 @@ def render_sidebar(
 
             model = custom_model or selected_model
 
+        image_vision_model = ""
+        image_draw_model = ""
         if processing_operation == "audiobook":
+            # The audiobook narrates text only: images are never processed, so no image control
+            # is drawn at all (owner, 2026-11-10) -- a disabled selector and a checkbox that
+            # change nothing were noise.
             image_mode = ImageMode.NO_CHANGE.value
-            st.selectbox(
-                t("sidebar.image_mode_label"),
-                [IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value]],
-                index=0,
-                key="sidebar_image_mode",
-                disabled=True,
-            )
-            st.caption(t("sidebar.image_mode_audiobook_caption"))
+            keep_all_image_variants = False
         else:
             image_mode_default = str(config.get("image_mode_default", ImageMode.NO_CHANGE.value))
             image_mode_options = list(IMAGE_MODE_LABELS.values())
@@ -899,20 +897,18 @@ def render_sidebar(
                 key="sidebar_image_mode",
             )
             image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.NO_CHANGE.value)
-        st.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
-        image_vision_model = ""
-        image_draw_model = ""
-        # Spec 062 FR-033: ``safe`` calls no image model at all (the analysis runs without
-        # vision), so a model selector there would be a control that changes nothing
-        # (acceptance review 2026-11-07, note on ``_ui.py:725``).
-        if image_mode in _IMAGE_DRAW_MODES:
-            image_vision_model, image_draw_model = _render_image_model_selectors(config, image_mode)
-        keep_all_image_variants = st.checkbox(
-            t("sidebar.keep_variants_label"),
-            value=bool(config.get("keep_all_image_variants", False)),
-            help=t("sidebar.keep_variants_help"),
-            key="sidebar_keep_all_image_variants",
-        )
+            st.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
+            # Spec 062 FR-033: ``safe`` calls no image model at all (the analysis runs without
+            # vision), so a model selector there would be a control that changes nothing
+            # (acceptance review 2026-11-07, note on ``_ui.py:725``).
+            if image_mode in _IMAGE_DRAW_MODES:
+                image_vision_model, image_draw_model = _render_image_model_selectors(config, image_mode)
+            keep_all_image_variants = st.checkbox(
+                t("sidebar.keep_variants_label"),
+                value=bool(config.get("keep_all_image_variants", False)),
+                help=t("sidebar.keep_variants_help"),
+                key="sidebar_keep_all_image_variants",
+            )
 
     # Model-availability warning stays at the sidebar root (outside the collapsed
     # expander) so a missing API key is always visible.

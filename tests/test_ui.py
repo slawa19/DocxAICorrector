@@ -706,7 +706,8 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
             type("Lang", (), {"code": "en", "label": "English"})(),
         ],
         "image_mode_default": "semantic_redraw_direct",
-        "keep_all_image_variants": False,
+        # A configured default must not leak into a mode that processes no image.
+        "keep_all_image_variants": True,
     }
     captions = []
     checkbox_calls = []
@@ -743,24 +744,10 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
     assert result == ("gpt-5-mini", 6000, 3, "no_change", False, "audiobook", None, None, "literary", "", "", "")
     # Spec 070 FR-001: neither language selector is drawn for audiobook and the pair is absent.
     assert not [call for call in selectbox_calls if call[0] in {"Язык оригинала", "Целевой язык"}]
-    assert checkbox_calls == [
-        (
-            "Сохранять все варианты изображений",
-            False,
-            "sidebar_keep_all_image_variants",
-            "Сохраняет все сгенерированные варианты изображений для последующего сравнения.",
-        )
-    ]
-    assert captions == [
-        "Для режима аудиокниги изображения всегда оставляются без изменений.",
-        ui.IMAGE_MODE_DESCRIPTIONS["no_change"],
-    ]
-    assert (
-        "Режим обработки изображений",
-        (ui.IMAGE_MODE_LABELS["no_change"],),
-        "sidebar_image_mode",
-        True,
-    ) in selectbox_calls
+    # The audiobook processes no image: no image control at all (owner, 2026-11-10).
+    assert checkbox_calls == []
+    assert captions == []
+    assert not [call for call in selectbox_calls if call[2] == "sidebar_image_mode"]
 
 
 def _editorial_intensity_sidebar_config(processing_operation, editorial_intensity_default=None):

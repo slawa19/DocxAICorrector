@@ -50,7 +50,6 @@
   "sidebar.custom_model_help": "Можно указать provider-qualified selector, например openrouter:google/gemini-3.1-flash-lite-preview.",
   "sidebar.advanced_expander": "Дополнительно",
   "sidebar.image_mode_label": "Режим обработки изображений",
-  "sidebar.image_mode_audiobook_caption": "Для режима аудиокниги изображения всегда оставляются без изменений.",
   "sidebar.keep_variants_label": "Сохранять все варианты изображений",
   "sidebar.keep_variants_help": "Сохраняет все сгенерированные варианты изображений для последующего сравнения.",
   "sidebar.image_vision_model_label": "Модель разбора изображений",
