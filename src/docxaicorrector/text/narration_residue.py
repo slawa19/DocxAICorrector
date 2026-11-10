@@ -7,10 +7,11 @@ syntax; nothing here knows a word of any book (Constitution VII).
 Occurrence counting (REVIEW №18, data-model §3.3): ``count`` is the number of OCCURRENCES, not of
 paragraphs. A number counts once (a maximal run of digit characters), a symbol counts once per
 character, a roman numeral / URL / tag-form counts once per token, ``all_caps`` is one condition per
-paragraph (count 1).
+paragraph (count 1), a ``latin`` unit is one series of letters (spec 073 FR-003) that holds at least
+one Latin letter, outside an address and not a roman numeral.
 
-The first six classes are repairable by the one repair call; ``html_left`` and ``emoji_left`` are a
-check on the deterministic cleanup itself and are only reported.
+The first seven classes (up to and including ``latin``) are repairable by the one repair call;
+``html_left`` and ``emoji_left`` are a check on the deterministic cleanup itself and are only reported.
 """
 
 from __future__ import annotations
@@ -20,7 +21,13 @@ import unicodedata
 from dataclasses import dataclass
 
 from docxaicorrector.text.narration_cleanup import find_emoji_sequences, find_html_tags
-from docxaicorrector.text.narration_forms import without_combining_marks, without_combining_marks_with_offsets
+from docxaicorrector.text.narration_forms import (
+    LetterSeries,
+    is_latin_letter,
+    letter_series,
+    without_combining_marks,
+    without_combining_marks_with_offsets,
+)
 
 __all__ = [
     "REPAIRABLE_RESIDUE_CLASSES",
@@ -29,6 +36,7 @@ __all__ = [
     "detect_narration_residue",
     "is_all_caps_paragraph",
     "is_roman_numeral_form",
+    "latin_units",
     "mask_url_or_domain",
 ]
 
@@ -38,6 +46,7 @@ RESIDUE_SYMBOLS = "symbols"
 RESIDUE_ALL_CAPS = "all_caps"
 RESIDUE_URL_OR_DOMAIN = "url_or_domain"
 RESIDUE_TAG_FORM = "tag_form"
+RESIDUE_LATIN = "latin"
 RESIDUE_HTML_LEFT = "html_left"
 RESIDUE_EMOJI_LEFT = "emoji_left"
 
@@ -48,6 +57,7 @@ RESIDUE_CLASSES: tuple[str, ...] = (
     RESIDUE_ALL_CAPS,
     RESIDUE_URL_OR_DOMAIN,
     RESIDUE_TAG_FORM,
+    RESIDUE_LATIN,
     RESIDUE_HTML_LEFT,
     RESIDUE_EMOJI_LEFT,
 )
@@ -59,6 +69,7 @@ REPAIRABLE_RESIDUE_CLASSES = frozenset(
         RESIDUE_ALL_CAPS,
         RESIDUE_URL_OR_DOMAIN,
         RESIDUE_TAG_FORM,
+        RESIDUE_LATIN,
     }
 )
 
@@ -163,6 +174,19 @@ def mask_url_or_domain(text: str) -> str:
     return _URL_OR_DOMAIN.sub(lambda match: " " * len(match.group()), text)
 
 
+def latin_units(text: str) -> tuple[LetterSeries, ...]:
+    """The units of the ``latin`` class: series of letters (stress marks, hyphens and apostrophes inside)
+    that hold at least one Latin letter. Addresses are masked first (same length, so positions are the
+    original string's) and a series that is wholly a roman numeral form is not Latin."""
+
+    masked = mask_url_or_domain(text)
+    return tuple(
+        unit
+        for unit in letter_series(masked, digits_inside=False)
+        if any(is_latin_letter(char) for char in unit.text) and not is_roman_numeral_form(unit.text)
+    )
+
+
 def detect_narration_residue(text: str) -> tuple[ResidueFinding, ...]:
     """The residue classes present in ``text`` (empty tuple = clean), in the fixed class order."""
 
@@ -195,6 +219,10 @@ def detect_narration_residue(text: str) -> tuple[ResidueFinding, ...]:
     tag_positions = [match.start() for match in _TAG_FORM.finditer(text)]
     if tag_positions:
         findings.append(ResidueFinding(RESIDUE_TAG_FORM, len(tag_positions), _sample(text, tag_positions[0])))
+
+    latin = latin_units(text)
+    if latin:
+        findings.append(ResidueFinding(RESIDUE_LATIN, len(latin), _sample(text, latin[0].start)))
 
     html_spans = find_html_tags(text)
     if html_spans:
