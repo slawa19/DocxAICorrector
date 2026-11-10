@@ -52,12 +52,11 @@ def _apply_explicit_font(style) -> None:
             del rfonts.attrib[key]
 
 
-def render_narration_docx(
-    paragraphs: Sequence[NarrationDocumentParagraphLike],
-    *,
-    title: str,
-) -> bytes:
+def render_narration_docx(paragraphs: Sequence[NarrationDocumentParagraphLike]) -> bytes:
     """Return the bytes of a DOCX holding ``paragraphs`` verbatim.
+
+    The core-properties title stays empty: ElevenLabs Studio inserts a non-empty title as
+    a narrated first paragraph (owner probe 2026-11-10).
 
     Raises ``ValueError`` for a style other than ``Normal`` / ``Heading 1`` and for text
     python-docx rejects (XML-incompatible control characters).
@@ -74,7 +73,7 @@ def render_narration_docx(
         document.add_paragraph(style=paragraph.style).add_run(paragraph.text)
 
     properties = document.core_properties
-    properties.title = title
+    properties.title = ""
     properties.author = ""
     properties.comments = ""
     properties.last_modified_by = ""

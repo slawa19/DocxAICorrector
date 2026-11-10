@@ -163,7 +163,7 @@ def test_t_h7_records_to_tts_docx_and_tts_pdf_through_the_product_chain():
     document = docx.Document(io.BytesIO(exports.docx_bytes))
     paragraphs = [(paragraph.style.name if paragraph.style is not None else "", paragraph.text) for paragraph in document.paragraphs]
     assert {style for style, _text in paragraphs} == {"Heading 1", "Normal"}
-    assert document.core_properties.title == "synthetic book"
+    assert document.core_properties.title == ""
     tts_paragraphs = tts_text.split("\n\n")
     assert [text for _style, text in paragraphs] == ["Часть первая. Тихая дорога", *tts_paragraphs[2:]]
     headings_1 = [text for style, text in paragraphs if style == "Heading 1"]

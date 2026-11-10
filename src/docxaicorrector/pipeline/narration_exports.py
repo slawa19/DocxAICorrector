@@ -139,7 +139,7 @@ def build_narration_exports(
 ) -> NarrationExports:
     """Plan -> DOCX -> PDF for one run's narration groups; logs the three spec 072 events. Never raises ``Exception``."""
 
-    title = Path(str(source_name or "")).stem
+    source_stem = Path(str(source_name or "")).stem
     plan: NarrationDocumentPlan | None = None
     docx_bytes: bytes | None = None
     docx_error: str | None = None
@@ -147,7 +147,7 @@ def build_narration_exports(
         if not groups:
             raise ValueError("narration groups are empty")
         plan = build_narration_document_plan(groups)
-        docx_bytes = render_narration_docx(plan.paragraphs, title=title) or None
+        docx_bytes = render_narration_docx(plan.paragraphs) or None
         if docx_bytes is None:
             raise ValueError("narration DOCX renderer returned no bytes")
     except Exception as exc:
@@ -166,7 +166,7 @@ def build_narration_exports(
     if docx_bytes is None:
         pdf = NarrationPdfOutcome(pdf_bytes=None, reason=NARRATION_PDF_NOT_ATTEMPTED_REASON, seconds=0.0, detail="")
     else:
-        pdf = _export_pdf(export_pdf, docx_bytes, stem=_temporary_file_stem(title))
+        pdf = _export_pdf(export_pdf, docx_bytes, stem=_temporary_file_stem(source_stem))
 
     if not pdf.pdf_bytes:
         log_event(
@@ -215,10 +215,10 @@ def _export_pdf(export_pdf: PdfExporter | None, docx_bytes: bytes, *, stem: str)
     )
 
 
-def _temporary_file_stem(title: str) -> str:
-    """The name of the converter's temporary ``<stem>.tts.docx``; the PDF's title comes from the DOCX properties."""
+def _temporary_file_stem(source_stem: str) -> str:
+    """The name of the converter's temporary ``<stem>.tts.docx``."""
 
-    stem = _UNSAFE_STEM_CHARACTERS.sub("_", title).strip("._")
+    stem = _UNSAFE_STEM_CHARACTERS.sub("_", source_stem).strip("._")
     return stem or "narration"
 
 

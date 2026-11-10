@@ -49,8 +49,8 @@ _LITERAL_TEXTS = (
 )
 
 
-def _render(paragraphs, title: str = "Вымышленная книга") -> bytes:
-    return render_narration_docx(paragraphs, title=title)
+def _render(paragraphs) -> bytes:
+    return render_narration_docx(paragraphs)
 
 
 def _open(data: bytes):
@@ -155,10 +155,11 @@ def test_package_has_no_headers_footers_toc_images_or_tables() -> None:
 # --- T-C4: properties ---------------------------------------------------------
 
 
-def test_core_properties_carry_title_and_no_generator_traces() -> None:
-    data = _render([_normal("Текст")], title="Вымышленное название")
+def test_core_properties_have_an_empty_title_and_no_generator_traces() -> None:
+    # Studio inserts a non-empty core title as a narrated first paragraph (owner probe 2026-11-10).
+    data = _render([_normal("Текст")])
     properties = _open(data).core_properties
-    assert properties.title == "Вымышленное название"
+    assert properties.title == ""
     assert properties.author == ""
     assert properties.comments == ""
     core_xml = _zip_text(data, "docProps/core.xml")
