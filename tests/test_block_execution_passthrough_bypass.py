@@ -142,6 +142,17 @@ _ENGLISH_SOURCE_BLOCK = (
 )
 
 
+# Audiobook input is the already translated book: its own text is Russian (spec 073 FR-003, class ``latin``).
+_CYRILLIC_SOURCE_BLOCK = (
+    "Много приливов назад, в маленькой деревушке у старого болота, рыбаки вели счёт всему своему "
+    "грузу. В каждый портовый день рыбаки ходили с сетями, канатами, лампами и бочками и подолгу "
+    "торговались между собой, чтобы обменять то, что нужно для предстоящего плавания."
+)
+_CYRILLIC_OMITTED_PARAGRAPH = "Эта глава рассматривает обычные рыночные институты и мобилизацию капитала."
+_CYRILLIC_RESTORED_PARAGRAPH = "Смотрите, например, серый реестр о способах управления кризисом портовой системы."
+_CYRILLIC_FIRST_SOURCE = "Исходный абзац."
+
+
 def _recording_run_harness():
     events: list[tuple[str, dict[str, object]]] = []
 
@@ -206,18 +217,18 @@ def test_source_text_fallback_block_is_narrated_from_its_source_and_kept_in_the_
     dependencies, emitters, events = _recording_run_harness()
 
     outcome, state, _classifier_calls = _run_single_block(
-        payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
+        payload=_llm_payload(target_text=_CYRILLIC_SOURCE_BLOCK),
         context=_audiobook_context(),
         # The controlled fallback delivers the block's own source text verbatim.
-        processed_chunk=_ENGLISH_SOURCE_BLOCK,
+        processed_chunk=_CYRILLIC_SOURCE_BLOCK,
         classification="source_text_fallback",
         dependencies=dependencies,
         emitters=emitters,
     )
 
     assert outcome is None  # the run continues; this is a controlled fallback, not a failure
-    assert state.processed_chunks == [_ENGLISH_SOURCE_BLOCK]  # the DOCX keeps the source
-    assert _texts(state) == {"p0001": _ENGLISH_SOURCE_BLOCK}  # ...and so does the narration
+    assert state.processed_chunks == [_CYRILLIC_SOURCE_BLOCK]  # the DOCX keeps the source
+    assert _texts(state) == {"p0001": _CYRILLIC_SOURCE_BLOCK}  # ...and so does the narration
     assert _reasons(state) == {"p0001": ("source_fallback",)}
     assert state.narration_expected_paragraph_ids == ["p0001"]
     fallback_events = [context for event, context in events if event == "block_controlled_fallback"]
@@ -258,7 +269,7 @@ def test_an_audiobook_fallback_narrates_the_source_not_the_rejected_output(monke
     model_output = "Компании постоянно сталкиваются с нехваткой персонала, отмечает cash flow отчёт."
 
     outcome, state, _classifier_calls = _run_single_block(
-        payload=_llm_payload(target_text=_ENGLISH_SOURCE_BLOCK),
+        payload=_llm_payload(target_text=_CYRILLIC_SOURCE_BLOCK),
         context=_audiobook_context(),
         processed_chunk=model_output,
         classification="english_residual_output",
@@ -267,9 +278,9 @@ def test_an_audiobook_fallback_narrates_the_source_not_the_rejected_output(monke
     )
 
     assert outcome is None
-    assert _texts(state) == {"p0001": _ENGLISH_SOURCE_BLOCK}
+    assert _texts(state) == {"p0001": _CYRILLIC_SOURCE_BLOCK}
     assert _reasons(state) == {"p0001": ("source_fallback",)}
-    assert state.processed_chunks == [_ENGLISH_SOURCE_BLOCK]
+    assert state.processed_chunks == [_CYRILLIC_SOURCE_BLOCK]
 
 
 def test_a_normal_block_still_reaches_the_narration() -> None:
@@ -468,16 +479,16 @@ def test_an_audiobook_fallback_narrates_every_paragraph_of_the_block_from_its_so
     dependencies, emitters, _events = _recording_run_harness()
     russian = "Почему вообще следует мобилизовать капитал?"
     processed_chunk = _disposition_block(
-        ("p0001", _ENGLISH_OMITTED_PARAGRAPH, "omitted"),
+        ("p0001", _CYRILLIC_OMITTED_PARAGRAPH, "omitted"),
         ("p0002", russian, "accepted"),
     )
-    source_second = "Why should capital be mobilised at all?"
+    source_second = "Почему вообще нужен капитал?"
     payload = SimpleNamespace(
         job_kind="llm",
         toc_dominant=False,
-        target_text=f"{_ENGLISH_OMITTED_PARAGRAPH}\n\n{source_second}",
+        target_text=f"{_CYRILLIC_OMITTED_PARAGRAPH}\n\n{source_second}",
         target_text_with_markers=(
-            f"[[DOCX_PARA_p0001]]\n{_ENGLISH_OMITTED_PARAGRAPH}\n\n[[DOCX_PARA_p0002]]\n{source_second}"
+            f"[[DOCX_PARA_p0001]]\n{_CYRILLIC_OMITTED_PARAGRAPH}\n\n[[DOCX_PARA_p0002]]\n{source_second}"
         ),
         paragraph_ids=["p0001", "p0002"],
         narration_include=True,
@@ -495,10 +506,10 @@ def test_an_audiobook_fallback_narrates_every_paragraph_of_the_block_from_its_so
     )
 
     assert outcome is None
-    assert _texts(state) == {"p0001": _ENGLISH_OMITTED_PARAGRAPH, "p0002": source_second}
+    assert _texts(state) == {"p0001": _CYRILLIC_OMITTED_PARAGRAPH, "p0002": source_second}
     assert _reasons(state) == {"p0001": ("source_fallback",), "p0002": ("source_fallback",)}
     assert state.narration_expected_paragraph_ids == ["p0001", "p0002"]
-    assert state.processed_chunks == [f"{_ENGLISH_OMITTED_PARAGRAPH}\n\n{source_second}"]
+    assert state.processed_chunks == [f"{_CYRILLIC_OMITTED_PARAGRAPH}\n\n{source_second}"]
 
 
 _ENGLISH_RESTORED_PARAGRAPH = (
@@ -506,18 +517,24 @@ _ENGLISH_RESTORED_PARAGRAPH = (
 )
 
 
-def _run_restored_paragraph_block(*, operation: str, classification: str):
+def _run_restored_paragraph_block(
+    *,
+    operation: str,
+    classification: str,
+    restored: str = _ENGLISH_RESTORED_PARAGRAPH,
+    first_source: str = "Source paragraph.",
+):
     dependencies, emitters, _events = _recording_run_harness()
     processed_chunk = _disposition_block(
         ("p0001", "Переведённый абзац.", "accepted"),
-        ("p0002", _ENGLISH_RESTORED_PARAGRAPH, "source_restored"),
+        ("p0002", restored, "source_restored"),
     )
     payload = SimpleNamespace(
         job_kind="llm",
         toc_dominant=False,
-        target_text=f"Source paragraph.\n\n{_ENGLISH_RESTORED_PARAGRAPH}",
+        target_text=f"{first_source}\n\n{restored}",
         target_text_with_markers=(
-            f"[[DOCX_PARA_p0001]]\nSource paragraph.\n\n[[DOCX_PARA_p0002]]\n{_ENGLISH_RESTORED_PARAGRAPH}"
+            f"[[DOCX_PARA_p0001]]\n{first_source}\n\n[[DOCX_PARA_p0002]]\n{restored}"
         ),
         paragraph_ids=["p0001", "p0002"],
         narration_include=True,
@@ -541,19 +558,29 @@ def test_a_restored_paragraph_is_narrated_and_addressed_in_the_audiobook(monkeyp
     """Spec 061 FR-006 withheld it as source-language text; under R7 it is the book's own text."""
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
 
-    state = _run_restored_paragraph_block(operation="audiobook", classification="valid")
+    state = _run_restored_paragraph_block(
+        operation="audiobook",
+        classification="valid",
+        restored=_CYRILLIC_RESTORED_PARAGRAPH,
+        first_source=_CYRILLIC_FIRST_SOURCE,
+    )
 
-    assert state.processed_chunks == [f"Переведённый абзац.\n\n{_ENGLISH_RESTORED_PARAGRAPH}"]
-    assert _texts(state) == {"p0001": "Переведённый абзац.", "p0002": _ENGLISH_RESTORED_PARAGRAPH}
+    assert state.processed_chunks == [f"Переведённый абзац.\n\n{_CYRILLIC_RESTORED_PARAGRAPH}"]
+    assert _texts(state) == {"p0001": "Переведённый абзац.", "p0002": _CYRILLIC_RESTORED_PARAGRAPH}
     assert _reasons(state) == {"p0001": (), "p0002": ("source_restored",)}
 
 
 def test_a_restored_paragraph_in_a_rejected_audiobook_block_is_a_source_fallback(monkeypatch) -> None:
     monkeypatch.setattr(block_execution, "_write_controlled_block_fallback_artifact", lambda **_kwargs: None)
 
-    state = _run_restored_paragraph_block(operation="audiobook", classification="english_residual_output")
+    state = _run_restored_paragraph_block(
+        operation="audiobook",
+        classification="english_residual_output",
+        restored=_CYRILLIC_RESTORED_PARAGRAPH,
+        first_source=_CYRILLIC_FIRST_SOURCE,
+    )
 
-    assert _texts(state) == {"p0001": "Source paragraph.", "p0002": _ENGLISH_RESTORED_PARAGRAPH}
+    assert _texts(state) == {"p0001": _CYRILLIC_FIRST_SOURCE, "p0002": _CYRILLIC_RESTORED_PARAGRAPH}
     assert _reasons(state) == {"p0001": ("source_fallback",), "p0002": ("source_fallback",)}
 
 
