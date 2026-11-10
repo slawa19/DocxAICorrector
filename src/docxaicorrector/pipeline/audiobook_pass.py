@@ -52,11 +52,13 @@ from docxaicorrector.text.narration_coverage import (
     CoverageResult,
     paragraph_coverage,
 )
+from docxaicorrector.text.narration_forms import without_combining_marks
 from docxaicorrector.text.narration_residue import (
     REPAIRABLE_RESIDUE_CLASSES,
     RESIDUE_CLASSES,
     ResidueFinding,
     detect_narration_residue,
+    latin_units,
 )
 
 __all__ = [
@@ -141,6 +143,9 @@ class NarrationParagraphRecord:
     # Spec 072 FR-002 / R1: 1..6 only for a HEADING-role paragraph whose source carries a Markdown
     # prefix (``narration_heading_level``); ``None`` otherwise. Computed once, when the record is made.
     heading_level: int | None = None
+    # Spec 073 FR-010 (data-model §3): units of the ``latin`` residue class in the paragraph's SOURCE -- the
+    # denominator of SC-001. 0 for an unaddressed record without a source.
+    source_latin_unit_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -282,6 +287,7 @@ def finalize_audiobook_block(
                 residue_after=residue_after,
                 coverage=coverage,
                 heading_level=heading_level,
+                source_latin_unit_count=len(latin_units(item.source_text)) if item.source_text else 0,
             )
         )
         if item.paragraph_id:
@@ -687,6 +693,82 @@ def audiobook_narration_summary(state: Any) -> dict[str, object]:
         "coverage_low_count": sum(
             1 for record in records if record.coverage.ratio is not None and record.coverage.ratio < COVERAGE_REVIEW_THRESHOLD
         ),
+        # Spec 073 FR-010 (data-model §3, research R11): each number once, where its data lives.
+        "scene_break_count": sum(
+            1 for group in (getattr(state, "narration_groups", None) or ()) if getattr(group, "after_scene_break", False)
+        ),
+        **_stress_mark_counts(records),
+        "latin_source_unit_count": sum(record.source_latin_unit_count for record in records),
+        **_reading_glossary_summary(state),
+    }
+
+
+_STRESS_MARK = "́"
+_WORD = re.compile(r"[^\W\d_]+")
+READING_GLOSSARY_NOT_APPLICABLE = "not_applicable"
+
+
+def _stress_mark_counts(records: Sequence[NarrationParagraphRecord]) -> dict[str, object]:
+    """U+0301 in the narration, in all and per 1 000 words; a word is a letter series of the text WITHOUT combining
+    marks, so a stressed word is still one word (spec 073 FR-002)."""
+
+    marks = sum(record.text.count(_STRESS_MARK) for record in records)
+    words = sum(len(_WORD.findall(without_combining_marks(record.text))) for record in records)
+    return {
+        "stress_mark_count": marks,
+        "stress_marks_per_1000_words": round(marks * 1000 / max(1, words), 3),
+    }
+
+
+def _reading_glossary_summary(state: Any) -> dict[str, object]:
+    """The reading-glossary counters of the run (spec 073 FR-004, FR-010) off ``state.audiobook_reading_glossary``.
+
+    No glossary (not an audiobook step, or a state from before it) -- ``not_applicable`` and zeros: every key is always
+    present. Counts and codes only; spellings and readings stay in the glossary artifact (LOGGING §1.5).
+    """
+
+    # Imported here: ``pipeline.reading_glossary`` imports this module.
+    from docxaicorrector.pipeline.reading_glossary import READING_REJECTION_REASONS
+
+    glossary = getattr(state, "audiobook_reading_glossary", None)
+    block_count = len(getattr(state, "audiobook_reading_glossary_block_indexes", None) or ())
+    if glossary is None:
+        return {
+            "reading_glossary_status": READING_GLOSSARY_NOT_APPLICABLE,
+            "reading_glossary_candidate_count": 0,
+            "reading_glossary_sent_count": 0,
+            "reading_glossary_accepted_count": 0,
+            "reading_glossary_dropped_by_limit_count": 0,
+            "reading_glossary_rerequested_count": 0,
+            "reading_glossary_unresolved_count": 0,
+            "reading_glossary_batch_count": 0,
+            "reading_glossary_call_count": 0,
+            "reading_glossary_retry_count": 0,
+            "reading_glossary_rejected_by_reason": {reason: 0 for reason in READING_REJECTION_REASONS},
+            "reading_glossary_block_count": block_count,
+            "reading_glossary_cost_usd": None,
+            "reading_glossary_artifact_path": None,
+        }
+    candidates = tuple(glossary.candidates)
+    sent_count = sum(1 for candidate in candidates if candidate.sent)
+    rejected = glossary.rejected_by_reason or {}
+    return {
+        "reading_glossary_status": str(glossary.status),
+        "reading_glossary_candidate_count": len(candidates),
+        "reading_glossary_sent_count": sent_count,
+        "reading_glossary_accepted_count": len(glossary.entries),
+        "reading_glossary_dropped_by_limit_count": len(candidates) - sent_count,
+        "reading_glossary_rerequested_count": len(glossary.rerequested),
+        "reading_glossary_unresolved_count": len(glossary.unresolved),
+        "reading_glossary_batch_count": int(glossary.batch_count),
+        "reading_glossary_call_count": int(glossary.call_count),
+        "reading_glossary_retry_count": int(glossary.retry_count),
+        "reading_glossary_rejected_by_reason": {
+            reason: int(rejected.get(reason, 0)) for reason in READING_REJECTION_REASONS
+        },
+        "reading_glossary_block_count": block_count,
+        "reading_glossary_cost_usd": glossary.cost_usd,
+        "reading_glossary_artifact_path": glossary.artifact_path,
     }
 
 
