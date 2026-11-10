@@ -38,6 +38,7 @@ from docxaicorrector.pipeline.block_execution import (
     run_block_processing_phase as _run_block_processing_phase_impl,
 )
 from docxaicorrector.pipeline.glossary_phase import run_glossary_phase as _run_glossary_phase_impl
+from docxaicorrector.pipeline.reading_glossary import run_reading_glossary_phase as _run_reading_glossary_phase_impl
 from docxaicorrector.pipeline.job_parsing import (
     coerce_job_kind as _coerce_job_kind_impl,
     coerce_optional_string_list as _coerce_optional_string_list_impl,
@@ -485,6 +486,7 @@ def _execute_processing_run(
         finalize_processing_success_fn=_finalize_processing_success,
         initialization_type=ProcessingInitialization,
         run_glossary_phase_fn=_run_glossary_phase,
+        run_reading_glossary_phase_fn=_run_reading_glossary_phase,
     )
 
 
@@ -792,6 +794,24 @@ def _run_glossary_phase(
         emitters=emitters,
         state=state,
         initialization=initialization,
+    )
+
+
+def _run_reading_glossary_phase(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+) -> PipelineResult | None:
+    return _run_reading_glossary_phase_impl(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        initialization=initialization,
+        emit_failed_result_fn=_emit_failed_result,
     )
 
 

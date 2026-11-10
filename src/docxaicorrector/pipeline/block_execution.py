@@ -61,6 +61,7 @@ from docxaicorrector.pipeline.output_validation import (
     notes_run_reads_as_citations,
     validate_translated_toc_block,
 )
+from docxaicorrector.pipeline.reading_glossary import narrated_source_paragraphs, reading_section_for_block
 from docxaicorrector.pipeline.support import resolve_system_prompt as _resolve_system_prompt_default
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 
@@ -1209,6 +1210,19 @@ def _combine_system_prompt_with_block_focus(*, system_prompt: str, block_focus_p
     return f"{base_prompt}\n\n{focus_prompt}"
 
 
+def _audiobook_reading_section(*, state: Any, payload: Any) -> str:
+    """Spec 073 FR-004: the reading-glossary section of ONE audiobook block, ``""`` without entries.
+
+    The main call and the repair call of a block ask this with the same inputs, so both get the
+    same section byte for byte; the block's source is read the way the step read it
+    (``narrated_source_paragraphs``), never the model's answer."""
+
+    glossary = getattr(state, "audiobook_reading_glossary", None)
+    if glossary is None:
+        return ""
+    return reading_section_for_block(glossary, [text for _paragraph_id, text in narrated_source_paragraphs(payload)])
+
+
 def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, resolve_system_prompt_fn: Any, prompt_variant: str) -> str:
     if prompt_variant == LITERARY_POLISH_PROMPT_VARIANT:
         # Spec 069 FR-004 (2): the second pass's prompt has a cache entry of its own and the
@@ -1263,6 +1277,16 @@ def _generate_block_chunk(
 ) -> str:
     client = initialization.text_client or initialization.client
     model_id = context.model_id or initialization.text_model_id or context.model
+    # Spec 073 FR-004: an audiobook block reads its abbreviations as the run's reading glossary
+    # says -- only the entries of ITS source, last of the block's parts (the cached base prompt
+    # is not touched). A block that got a section is counted once, however often it is asked.
+    reading_section = (
+        _audiobook_reading_section(state=state, payload=payload)
+        if is_audiobook_operation(getattr(context, "processing_operation", None))
+        else ""
+    )
+    if reading_section:
+        state.audiobook_reading_glossary_block_indexes.add(index)
     block_system_prompt = _combine_system_prompt_with_block_focus(
         system_prompt=system_prompt,
         block_focus_prompt="\n\n".join(
@@ -1285,6 +1309,7 @@ def _generate_block_chunk(
                     payload=payload,
                     marker_mode_enabled=marker_mode_enabled,
                 ),
+                reading_section,
             )
             if part
         ),
@@ -1516,8 +1541,14 @@ def _audiobook_repair_system_prompt(*, context: Any, dependencies: Any, state: A
     return prompt
 
 
-def _audiobook_repair_call(*, context: Any, dependencies: Any, state: Any, initialization: Any, index: int):
-    """The block's one repair call (FR-006): the same client and model as its main call (R6)."""
+def _audiobook_repair_call(
+    *, context: Any, dependencies: Any, state: Any, initialization: Any, index: int, payload: Any
+):
+    """The block's one repair call (FR-006): the same client and model as its main call (R6).
+
+    Spec 073 FR-004: its system prompt ends with the same reading-glossary section as the block's
+    main call (``_audiobook_reading_section`` on the same ``state`` and ``payload``); without one the
+    repair prompt is the one of before, byte for byte."""
 
     log_event = getattr(dependencies, "log_event", None)
     emit = log_event if callable(log_event) else (lambda *_args, **_kwargs: None)
@@ -1529,6 +1560,11 @@ def _audiobook_repair_call(*, context: Any, dependencies: Any, state: Any, initi
     def call(items: Sequence[RepairItem], context_before: str, context_after: str) -> RepairOutcome:
         try:
             system_prompt = _audiobook_repair_system_prompt(context=context, dependencies=dependencies, state=state)
+            reading_section = _audiobook_reading_section(state=state, payload=payload)
+            if reading_section:
+                system_prompt = _combine_system_prompt_with_block_focus(
+                    system_prompt=system_prompt, block_focus_prompt=reading_section
+                )
         except Exception as exc:  # noqa: BLE001 - no prompt, no call: the previous text stays
             emit(
                 logging.WARNING,
@@ -1601,7 +1637,12 @@ def finalize_audiobook_block_for_delivery(
         block_index=index,
         paragraphs=paragraphs,
         repair=_audiobook_repair_call(
-            context=context, dependencies=dependencies, state=state, initialization=initialization, index=index
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
         ),
         forced_reason=NEEDS_REVIEW_SOURCE_FALLBACK if source_fallback else None,
     )
