@@ -9,7 +9,7 @@ Tier: полный цикл (Конституция, принцип III). Зад
 (анти-вакуум: у каждого сказано, чем доказано, что он падает без правки) → (C) реализация → (D) каноническая проверка
 пакета. Пакет владеет ТОЛЬКО перечисленными у него файлами (Конституция VI); правка вне перечня запрещена — нужда в
 ней возвращается оркестратору вопросом. Связь с историями спеки: US1 (голос не спотыкается) — WP-A, B, C, D, E, F; US2
-(версия для MiniMax) — WP-G, H, J, K, I.
+(файл книги для инструмента озвучки, решение D-4) — WP-G, H, J, K, I.
 
 ## Формат и общие правила
 
@@ -39,20 +39,24 @@ Tier: полный цикл (Конституция, принцип III). Зад
 
 ```text
 T-01 (оркестратор): worktrees от 073/integration
-волна 1 (параллельно):  WP-A  WP-B  WP-G  WP-J  WP-K          слияние: любой порядок, полный прогон после каждого
-волна 2 (параллельно):  WP-C ← A   WP-D ← A   WP-E ← A
-волна 3 (параллельно):  WP-F ← D, E   WP-H ← C, D, G, J
+волна 1:                WP-A  WP-B                            ВЛИТЫ
+волна 2:                WP-C ← A   WP-D ← A   WP-E ← A        ВЛИТЫ (073/integration @ 852d9d2)
+волна 3:                WP-F ← D, E                           в работе
+── решение D-4 (2026-11-10): файл книги вместо .tts.minimax.txt; WP-G/J/K/H/I переписаны ──
+волна 1-бис (сразу, параллельно между собой и с WP-F):  WP-G   WP-J   WP-K
+волна 3-бис:            WP-H ← G, J                           (с WP-F общих файлов нет)
 волна 4:                WP-I ← F, H
-приёмка:                T-Z1…T-Z7 → WP-Y (платно, по согласию владельца)
+приёмка:                T-Z1…T-Z7 → WP-Y (платно; одобрено владельцем заранее; только текст, без аудио)
 ```
 
-Критический путь: **WP-A → WP-E → WP-F → WP-I**.
+Критический путь: **WP-G / WP-J → WP-H → WP-I** и **WP-F → WP-I**.
 
 ## Подготовка (оркестратор)
 
-- [ ] **T-01** Ветка `073/integration` от `main`; worktrees `D:\Temp\claude\wt-073-{forms,prompt,minimax,group,screen}` для
-  волны 1 (ветки `073/wp-a-forms`, `073/wp-b-prompt`, `073/wp-g-minimax`, `073/wp-j-result-group`, `073/wp-k-screen`),
-  симлинк `.venv` на главное дерево.
+- [x] **T-01** Ветка `073/integration` от `main`; worktrees волн 1–2 (WP-A…WP-E) — сделано.
+- [ ] **T-01a** После решения D-4: worktrees `D:\Temp\claude\wt-073-{book,group,screen}` от свежей `073/integration`
+  (ветки `073/wp-g-book`, `073/wp-j-result-group`, `073/wp-k-screen`), симлинк `.venv` на главное дерево; затем
+  `wt-073-late` (`073/wp-h-late-phase`) после слияния WP-G и WP-J.
 - [ ] **T-02** При первом слиянии кода — статус спеки `IN PROGRESS` и абзац спеки 073 в `docs/WHERE_WE_ARE.md` (иначе
   `test_spec_status_consistency` / `test_where_we_are_freshness` красны в главном дереве).
 
@@ -155,65 +159,74 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 
 ---
 
-## WP-G. Текст для MiniMax (FR-007, SC-006)
+## WP-G. Файл книги: чистый сборщик (FR-007, решение D-4, SC-006)
 
-**Ветка**: `073/wp-g-minimax` | **Worktree**: `D:\Temp\claude\wt-073-minimax` | **Агент**: Sonnet / high |
-**Сначала слиты**: ничего | **Владеет**: `src/docxaicorrector/pipeline/narration_minimax.py` (нов.),
-`tests/test_spec_073_narration_minimax.py` (нов.). Решение — research R9; сущности и таблица — `data-model.md` §7;
-метки — `contracts/prompt-and-glossary.md` §4. Вход — `NarrationMinimaxGroupLike` (Protocol) и настоящий план 072
-(`build_narration_document_plan`, тесты строят свои группы с полем `after_scene_break`); от WP-D не зависит.
+**Ветка**: `073/wp-g-book` | **Worktree**: `D:\Temp\claude\wt-073-book` | **Агент**: **Opus** / high |
+**Сначала слиты**: ничего нового (WP-D влит — `NarrationGroup.after_scene_break` есть; можно параллельно с WP-F) |
+**Владеет**: `src/docxaicorrector/pipeline/narration_book.py` (нов.), `tests/test_spec_073_narration_book.py` (нов.).
+Решения — research R9, R18; сущности и таблица — `data-model.md` §7; схема — `contracts/narration-book.md`. Вход —
+`NarrationBookGroupLike`/`NarrationBookGlossaryEntryLike` (Protocol) и настоящий план 072 (`build_narration_document_plan`);
+тесты строят свои группы с полем `after_scene_break`.
 
 **B. Падающие тесты** (модуля нет — все падают)
-- [ ] **T-G1** Таблица `data-model.md` §7 — каждая строка отдельным параметризованным случаем: метки в конце групп,
-  `pause_counts`, `pauses_by_group`.
-- [ ] **T-G2** Равенство: удаление вставленных меток (по `pauses_by_group`, с конца каждой группы) =
-  `"\n\n".join(g.text for g in groups)` побайтно — на наборе с U+0301, `\n` внутри группы, `#` в начале тела.
-  Отрицательный контроль той же функцией сравнения: лишний пробел перед меткой — не равно.
-- [ ] **T-G3** Нет двух меток подряд (регулярное выражение `#>\s*<#` пусто) на всех случаях; последняя группа — без метки;
-  меток ровно `sum(pause_counts.values())`.
-- [ ] **T-G4** Анти-вакуум серий: `H2, H1, B` — нет метки после `H2`; тот же набор с телом между `H2` и `H1` — метка после
-  `H2` есть (`<#0.8#>`).
-- [ ] **T-G5** Шаги плана и групп не сходятся (группа-заголовок из двух записей, подложенная вручную) → исключение
-  `ValueError` наружу.
+- [ ] **T-G1** Таблица `data-model.md` §7 — каждая строка отдельным параметризованным случаем: `pause_after.kind` и
+  `seconds` по сегментам, главы (`ordinal`, `title`, `segment_ordinals`), `pause_counts`, `chapter_count`.
+- [ ] **T-G2** Контракт текста: `"\n\n".join(s["text"] for s in payload["segments"]) == "\n\n".join(g.text for g in groups)`
+  побайтно — на наборе с U+0301, `\n` внутри группы, `#` в начале тела, неадресуемой записью (`""` в
+  `source_paragraph_ids`). Отрицательный контроль той же функцией сравнения: сегмент с лишним пробелом — не равно.
+- [ ] **T-G3** Главы по правилу 072: `len(chapters) == plan.studio_limits.chapter_count_for_limits` на всех случаях T-G1;
+  каждый сегмент — ровно в одной главе, объединение `segment_ordinals` = `1..N` по порядку; глава до первого `Heading 1`
+  — `title: null`; книга без `Heading 1` — одна глава `null`; `title` главы — текст абзаца плана (слитая серия).
+- [ ] **T-G4** Анти-вакуум серий: `H2, H1, B` — у `H2` паузы нет; тот же набор с телом между `H2` и `H1` — у `H2` есть
+  (`heading`). Совпадение `chapter` + `scene_break` — `scene_break` (2,0 > 1,5).
+- [ ] **T-G5** Форма файла: ключи верхнего уровня == `NARRATION_BOOK_TOP_LEVEL_KEYS` (порядок и набор); `schema_version == 1`;
+  `book` — только `source_name`, `source_token` (нет `title`/`author`/`language`); `producer.name == "DocxAICorrector"`,
+  `producer.version` — переданное значение или `null`; `reading_glossary` — переданные записи по порядку; `to_json()` —
+  `json.loads` возвращает `payload`, в тексте нет `\u0301`-экранирования (U+0301 — сам символ), LF, завершающий `\n`.
+- [ ] **T-G6** Шаги плана и групп не сходятся (группа-заголовок из двух записей, подложенная вручную) → `ValueError`
+  наружу; пустые группы → `ValueError`.
 
 **C. Реализация**
-- [ ] **T-G6** `pipeline/narration_minimax.py` по `data-model.md` §7. Без I/O, без Streamlit, без импорта `docx`.
+- [ ] **T-G7** `pipeline/narration_book.py` по `data-model.md` §7. Без I/O, без Streamlit, без импорта `docx`; никаких
+  слов книги в правилах (VII).
 
 **D. Проверка**
-- [ ] **T-G7** `tests/test_spec_073_narration_minimax.py`, `tests/test_spec_072_narration_document.py`. Done: зелёные.
+- [ ] **T-G8** `tests/test_spec_073_narration_book.py`, `tests/test_spec_072_narration_document.py`. Done: зелёные.
 
 ---
 
-## WP-J. Член группы и bundle (FR-008, файлы)
+## WP-J. Член группы, писатель, bundle (FR-008, файлы)
 
 **Ветка**: `073/wp-j-result-group` | **Worktree**: `D:\Temp\claude\wt-073-group` | **Агент**: Sonnet / medium |
-**Сначала слиты**: ничего | **Владеет**: `src/docxaicorrector/runtime/artifacts.py`,
+**Сначала слиты**: ничего нового (параллельно с WP-F, WP-G, WP-K) | **Владеет**: `src/docxaicorrector/runtime/artifacts.py`,
 `src/docxaicorrector/runtime/artifact_retention.py`, `src/docxaicorrector/processing/processing_runtime.py` (только
-`_normalize_narration_exports`, `:1657-1675`), `tests/test_spec_073_result_group.py` (нов.),
-`tests/test_spec_072_state_bundle.py` (только три равенства всего словаря `:74`, `:92`, `:120` — добавить ключ
-`minimax_text`; ревью плана Codex, находка 5). Решение — research R10; контракт — `contracts/result-and-screen.md` §1–2.
+`_normalize_narration_exports`, `:1657-1675`), `src/docxaicorrector/pipeline/contracts.py` (только аргумент
+`narration_book_json` протокола `ResultArtifactWriter`, `:151-166` — WP-D его не добавлял), `tests/test_spec_073_result_group.py`
+(нов.), `tests/test_spec_072_state_bundle.py` (только три равенства всего словаря `:74`, `:92`, `:120` — добавить ключ
+`book_json`; ревью плана Codex, находка 5). Решение — research R10, R18; контракт — `contracts/result-and-screen.md` §1–2.
 
 **A. Характеристика**
 - [ ] **T-J1** Без нового аргумента: состав группы, имена и `artifact_paths` `write_ui_result_artifacts` для аудиокниги с
   DOCX/PDF и для перевода — снимок, зелёный до и после; `tests/test_spec_072_result_group.py` — зелёный без изменений;
-  `tests/test_spec_072_state_bundle.py` — меняется ТОЛЬКО на новый ключ (`"minimax_text": None` в трёх ожидаемых словарях),
+  `tests/test_spec_072_state_bundle.py` — меняется ТОЛЬКО на новый ключ (`"book_json": None` в трёх ожидаемых словарях),
   остальные ожидания побайтно прежние.
 
 **B. Падающие тесты** (`tests/test_spec_073_result_group.py`)
-- [ ] **T-J2** `narration_minimax_text="…<#1.5#>…"` → файл `<stem>.tts.minimax.txt` с этим текстом (UTF-8, LF), ключ
-  `tts_minimax_path`; `None` или `""` → нет ни файла, ни ключа (падает: аргумента нет).
-- [ ] **T-J3** Сбой записи члена `.tts.minimax.txt` (подмена записи временного файла → `OSError`) — в каталоге не остаётся
+- [ ] **T-J2** `narration_book_json='{"schema_version": 1}\n'` → файл `<stem>.narration.json` с этим текстом (UTF-8, LF),
+  ключ `narration_book_path`; `None` или `""` → нет ни файла, ни ключа (падает: аргумента нет); протокол
+  `ResultArtifactWriter` принимает `narration_book_json` (проверка сигнатуры).
+- [ ] **T-J3** Сбой записи члена `.narration.json` (подмена записи временного файла → `OSError`) — в каталоге не остаётся
   ни одного файла группы, ни временных.
-- [ ] **T-J4** Хранение: группа с `.tts.minimax.txt` старше срока или сверх числа удаляется ЦЕЛИКОМ, вместе с ним
-  (падает: файл уходит в «passthrough», `runtime/artifact_retention.py:199`, `:212`); ключ группы
-  `x.result.tts.minimax.txt` → `x`; `x.result.tts.txt` по-прежнему → `x`.
-- [ ] **T-J5** `_normalize_narration_exports({..., "minimax_text": "t"})` сохраняет `minimax_text`; не-`str` и `""` →
-  `None`; лишние ключи отброшены, четыре ключа 072 как были; три равенства `tests/test_spec_072_state_bundle.py:74`,
-  `:92`, `:120` обновлены на пятый ключ и зелёные.
+- [ ] **T-J4** Хранение: группа с `.narration.json` старше срока или сверх числа удаляется ЦЕЛИКОМ, вместе с ним (падает:
+  файл уходит в «passthrough», `runtime/artifact_retention.py:199`, `:212`); ключ группы `x.result.narration.json` → `x`;
+  `x.result.manifest.json` и `x.result.meta.json` по-прежнему → `x` (анти-вакуум: суффиксы не перепутаны).
+- [ ] **T-J5** `_normalize_narration_exports({..., "book_json": "t"})` сохраняет `book_json`; не-`str` и `""` → `None`;
+  лишние ключи отброшены, четыре ключа 072 как были; три равенства `tests/test_spec_072_state_bundle.py:74`, `:92`,
+  `:120` обновлены на пятый ключ и зелёные.
 
 **C. Реализация**
 - [ ] **T-J6** `runtime/artifacts.py:366-461` (аргумент, путь, член группы, ключ); `runtime/artifact_retention.py:90-99`
-  (+`.result.tts.minimax.txt`, длинный суффикс раньше); `processing/processing_runtime.py:1657-1675`.
+  (+`.result.narration.json`); `processing/processing_runtime.py:1657-1675`; `pipeline/contracts.py:151-166` (аргумент).
 
 **D. Проверка**
 - [ ] **T-J7** Отдельными командами: `tests/test_spec_073_result_group.py`, `tests/test_spec_072_result_group.py`,
@@ -222,27 +235,30 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 
 ---
 
-## WP-K. Кнопка MiniMax (FR-008, экран)
+## WP-K. Кнопка файла книги (FR-008, экран)
 
 **Ветка**: `073/wp-k-screen` | **Worktree**: `D:\Temp\claude\wt-073-screen` | **Агент**: Sonnet / medium |
-**Сначала слиты**: ничего (ключ bundle — `contracts/result-and-screen.md` §2, фиксирован) | **Владеет**:
+**Сначала слиты**: ничего нового (ключ bundle `book_json` — `contracts/result-and-screen.md` §2, фиксирован) | **Владеет**:
 `src/docxaicorrector/ui/_ui.py`, `src/docxaicorrector/ui/locales/ru.json`, `src/docxaicorrector/ui/locales/en.json`,
-`tests/test_spec_073_result_screen.py` (нов.). Контракт — `contracts/result-and-screen.md` §3.
+`tests/test_spec_073_result_screen.py` (нов.). Контракт — `contracts/result-and-screen.md` §3; почему строка озвучки, а
+не проверки — research R10.
 
 **A. Характеристика**
 - [ ] **T-K1** `tests/test_spec_072_result_screen.py` и `tests/test_ui.py` зелёные до и после без изменений (bundle без
-  `minimax_text` — экран 072 побайтно).
+  `book_json` — экран 072 побайтно).
 
 **B. Падающие тесты** (`tests/test_spec_073_result_screen.py`; рендер с двойником `st`)
-- [ ] **T-K2** Аудиокнига со всеми форматами: строка «Текст для озвучки» — DOCX, PDF, TXT, MiniMax в этом порядке; у
-  MiniMax имя `<stem>.tts.minimax.txt`, MIME `text/plain`, `type="secondary"`, `width="stretch"` (падает: кнопки нет).
-- [ ] **T-K3** `minimax_text=None` — три кнопки 072, строки причины нет; заблокированная выдача — метка
-  `result.blocked_download_narration_minimax`; перевод/редактура — кнопок MiniMax нет.
-- [ ] **T-K4** Ключи `result.narration_minimax`, `result.blocked_download_narration_minimax` — в обоих каталогах; в `ui/`
-  нет `use_container_width`.
+- [ ] **T-K2** Аудиокнига со всеми форматами: строка «Текст для озвучки» — DOCX, PDF, TXT, файл книги в этом порядке; у
+  файла книги метка «Файл книги для озвучки (.json)», имя `<stem>.narration.json`, MIME `application/json`,
+  `type="secondary"`, `width="stretch"`, данные — байты UTF-8 `book_json` (падает: кнопки нет).
+- [ ] **T-K3** `book_json=None` — три кнопки 072, строки причины нет; заблокированная выдача — метка
+  `result.blocked_download_narration_book`; перевод/редактура — кнопки файла книги нет; строка «Для проверки» — без
+  изменений.
+- [ ] **T-K4** Ключи `result.narration_book`, `result.blocked_download_narration_book` — в обоих каталогах; в `ui/` нет
+  `use_container_width`.
 
 **C. Реализация**
-- [ ] **T-K5** `ui/_ui.py`: `_build_narration_minimax_filename` (рядом с `:92-101`), кнопка в `_render_audiobook_downloads`
+- [ ] **T-K5** `ui/_ui.py`: `_build_narration_book_filename` (рядом с `:92-101`), кнопка в `_render_audiobook_downloads`
   (`:1111-1196`) после TXT. Ветвь перевода/редактуры не трогать.
 - [ ] **T-K6** [P] Локали.
 
@@ -311,8 +327,8 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 - [ ] **T-D4** Анти-вакуум запрета склейки: пара `B1` (без точки) + `B2` (со строчной) без разделителя — склеена (как
   сейчас); та же пара с `***` между ними — две группы, `after_scene_break` у второй; `text == "\n\n".join(g.text …)`.
 - [ ] **T-D5** Объявления: `ProcessingState()` имеет `narration_paragraph_kinds == []`, `audiobook_reading_glossary is None`,
-  `audiobook_reading_glossary_block_indexes == set()`; `ResultArtifactWriter` принимает `narration_minimax_text` (проверка
-  сигнатуры протокола).
+  `audiobook_reading_glossary_block_indexes == set()`. (Аргумент писателя для MiniMax WP-D не добавил — решение D-4
+  пришло позже; аргумент `narration_book_json` и проверка сигнатуры — у WP-J, T-J2.)
 
 **C. Реализация**
 - [ ] **T-D6** `pipeline/contracts.py` — объявления; `pipeline/audiobook_pass.py:533-564` — виды абзацев (исходник —
@@ -445,45 +461,58 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 
 ---
 
-## WP-H. Поздний этап: MiniMax, писатель, учёт (FR-007 интеграция, FR-008, FR-009, FR-010)
+## WP-H. Поздний этап: файл книги, писатель, учёт (FR-007 интеграция, FR-008, FR-009, FR-010)
 
 **Ветка**: `073/wp-h-late-phase` | **Worktree**: `D:\Temp\claude\wt-073-late` | **Агент**: **Opus** / high |
-**Сначала слиты**: WP-C, WP-D, WP-G, WP-J | **Владеет**: `src/docxaicorrector/pipeline/narration_exports.py`,
-`src/docxaicorrector/pipeline/late_phases.py`, `src/docxaicorrector/pipeline/audiobook_pass.py` (только поле записи
-`source_latin_unit_count`, его счёт в `finalize_audiobook_block`, `audiobook_narration_summary` `:617-672`),
+**Сначала слиты**: WP-G, WP-J (WP-C, WP-D, WP-E уже влиты; WP-F не нужен — общих файлов нет) | **Владеет**:
+`src/docxaicorrector/pipeline/narration_exports.py`, `src/docxaicorrector/pipeline/late_phases.py`,
+`src/docxaicorrector/pipeline/audiobook_pass.py` (только поле записи `source_latin_unit_count`, его счёт в
+`finalize_audiobook_block`, `audiobook_narration_summary` `:617-672`), `src/docxaicorrector/runtime/build_info.py` (нов.:
+`resolve_git_head` — перенос `_safe_git_head` / `_resolve_git_pointer_path` / `_read_git_head_from_files` из
+`tests/artifacts/real_document_pipeline/run_lietaer_validation.py:479-566`; сам раннер не трогать — его переводит WP-I),
 `tests/test_spec_073_late_phase.py` (нов.), `tests/test_late_phases_finalize_gate_persistence.py` (только если ожидания
-писателя меняются). Решения — research R9–R11; контракты — `contracts/events.md`, `contracts/result-and-screen.md` §2;
-сущности — `data-model.md` §3, §8.
+писателя меняются). Решения — research R9–R11, R18; контракты — `contracts/narration-book.md`, `contracts/events.md`,
+`contracts/result-and-screen.md` §2; сущности — `data-model.md` §3, §7, §8.
 
 **A. Характеристика**
 - [ ] **T-H1** Перевод/редактура через поздний этап с двойниками: аргументы `emit_state` и писателя — снимок (нет
-  `narration_minimax_text`), зелёный до и после; `tests/test_spec_072_late_phase_exports.py` — зелёный без изменений.
+  `narration_book_json`), зелёный до и после; `tests/test_spec_072_late_phase_exports.py` — зелёный без изменений;
+  `build_narration_exports` без `book_inputs` — результат побайтно как в 072.
 
 **B. Падающие тесты** (`tests/test_spec_073_late_phase.py`; записи → `_build_narration_text` → поздний этап, писатель и
 экспорт PDF подменены)
-- [ ] **T-H2** SC-006 на позднем этапе: синтетический набор (серия `2 → 1`, подзаголовки, `***` между телом, U+0301, `\n`
-  внутри) → `latest_narration_exports.minimax_text` без меток == `latest_narration_text` побайтно; писатель получил
-  `narration_minimax_text`; метки по `data-model.md` §7 (падает: ключа нет).
-- [ ] **T-H3** FR-009: U+0301 побайтно в `.tts.txt`, в абзацах `.tts.docx` (открыть байты) и в `.tts.minimax.txt` одного
-  прогона.
-- [ ] **T-H4** `build_minimax_text` бросает → WARNING `audiobook_narration_minimax_failed`, `minimax_text=None`, TXT/DOCX/PDF
-  выданы; рендерер DOCX бросает → MiniMax всё равно собран.
-- [ ] **T-H5** FR-010: поля `ui_audiobook_artifact_saved` по `contracts/events.md` — все новые ключи всегда; прежние ключи
-  070/072 на месте; `stress_mark_count` и на 1 000 слов по синтетике; `latin_source_unit_count` = сумма по записям (запись
-  с латиницей в исходнике и без — анти-вакуум); `scene_break_count`; поля словаря из `state.audiobook_reading_glossary`,
-  включая `rerequested_count`, `unresolved_count`, `batch_count`, `call_count`, `retry_count` (`None` → `not_applicable` и
-  нули); в событии нет текстов абзацев и чтений.
+- [ ] **T-H2** SC-006 / Anti-regression 10 на позднем этапе: синтетический набор (серия `2 → 1`, подзаголовки, `***` между
+  телом, U+0301, `\n` внутри) → `json.loads(latest_narration_exports["book_json"])`: `"\n\n".join(segment.text)` ==
+  `latest_narration_text` побайтно; писатель получил `narration_book_json` (тот же текст); виды пауз по
+  `data-model.md` §7; `chapters` по правилу 072 (падает: ключа нет).
+- [ ] **T-H3** FR-009: U+0301 побайтно в `.tts.txt`, в абзацах `.tts.docx` (открыть байты) и в текстах сегментов файла
+  книги одного прогона.
+- [ ] **T-H4** Входы файла книги: `reading_glossary` = принятые записи `state.audiobook_reading_glossary` по порядку
+  (`None` → `[]`); `producer.run_id` = `context.run_id`, `producer.produced_at` — UTC `…Z`; `book` = `{source_name:
+  context.uploaded_filename, source_token: context.source_token}`; `stats.excluded_*` = сводка прогона;
+  `resolve_git_head` в каталоге без `.git` → `None` → `producer.version is null` (анти-вакуум: в дереве с `.git` — строка
+  из 7+ шестнадцатеричных знаков).
+- [ ] **T-H5** `build_narration_book` бросает → WARNING `audiobook_narration_book_failed`, `book_json=None`, TXT/DOCX/PDF
+  выданы; рендерер DOCX бросает → файл книги всё равно собран.
+- [ ] **T-H6** FR-010: поля `ui_audiobook_artifact_saved` по `contracts/events.md` — все новые ключи всегда
+  (`narration_book_path`, `narration_book_status`, `narration_book_chapter_count`, `narration_book_pause_counts`,
+  сводка); прежние ключи 070/072 на месте; `stress_mark_count` и на 1 000 слов по синтетике; `latin_source_unit_count`
+  = сумма по записям (запись с латиницей в исходнике и без — анти-вакуум); `scene_break_count`; поля словаря из
+  `state.audiobook_reading_glossary` (`None` → `not_applicable` и нули); в событии нет текстов абзацев и чтений.
 
 **C. Реализация**
-- [ ] **T-H6** `pipeline/narration_exports.py:61-199` — `minimax`, `minimax_error`, `state_value` (+`minimax_text`),
-  `event_fields` (+поля), событие сбоя.
-- [ ] **T-H7** `pipeline/late_phases.py:1439-1466` — `narration_minimax_text` писателю; `pipeline/audiobook_pass.py` — поле
-  записи, счёт, сводка.
+- [ ] **T-H7** `runtime/build_info.py` — перенос помощника версии кода (дословно, под публичным именем
+  `resolve_git_head(project_root=None)`).
+- [ ] **T-H8** `pipeline/narration_exports.py:61-199` — `NarrationBookInputs`, `book`, `book_error`, `state_value`
+  (+`book_json`), `event_fields` (+поля), событие сбоя; `pipeline/late_phases.py:1307-1319` — собрать `book_inputs`
+  (словарь из состояния, `producer`, `source`, исключения из сводки), `:1439-1466` — `narration_book_json` писателю;
+  `pipeline/audiobook_pass.py` — поле записи, счёт, сводка.
 
 **D. Проверка**
-- [ ] **T-H8** Отдельными командами: `tests/test_spec_073_late_phase.py`, `tests/test_spec_072_late_phase_exports.py`,
+- [ ] **T-H9** Отдельными командами: `tests/test_spec_073_late_phase.py`, `tests/test_spec_072_late_phase_exports.py`,
   `tests/test_spec_072_exports_system.py -m system_deps`, `tests/test_late_phases_finalize_gate_persistence.py`,
-  `tests/test_audiobook_pass.py`, `tests/test_document_pipeline.py`, `tests/test_spec_070_request_golden.py`. Done: зелёные.
+  `tests/test_audiobook_pass.py`, `tests/test_document_pipeline.py`, `tests/test_spec_070_request_golden.py`,
+  `tests/test_layer_boundaries.py`. Done: зелёные.
 
 ---
 
@@ -496,27 +525,36 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 (`:145`). Решение — research R12; контракт — `contracts/events.md`.
 
 **B. Падающие тесты** (`tests/test_real_document_pipeline_validation.py`)
-- [ ] **T-I1** `_SPEC_073_LOG_EVENTS` = четыре новых события (`contracts/events.md`) + `ui_audiobook_artifact_saved`: каждое эмитится в `src/` и
-  зарегистрировано в документе логирования; `_SPEC_073_NEW_UI_ARTIFACT_FIELDS` — все ключи `contracts/events.md`
-  перечислены в §5.5 (по образцу `:8036-8074`).
+- [ ] **T-I1** `_SPEC_073_LOG_EVENTS` = четыре новых события (`contracts/events.md`; три события словаря уже вписаны в
+  документ при слиянии WP-E) + `ui_audiobook_artifact_saved`: каждое эмитится в `src/` и зарегистрировано в документе
+  логирования; `_SPEC_073_NEW_UI_ARTIFACT_FIELDS` — все ключи `contracts/events.md` перечислены в §5.5 (по образцу
+  `:8036-8074`).
 - [ ] **T-I2** Отчёт на синтетическом логе и состоянии: `narration_artifact` несёт новые поля; строки сводки
-  `narration_scene_break_count=…`, `narration_minimax_status=…` (без удвоения префикса); `output_artifacts.tts_minimax_path`,
-  `latest_tts_minimax_path`, `reading_glossary_path`; строка цены стадии `audiobook_reading_glossary`; нет события —
-  `not_reported`, не 0.
-- [ ] **T-I3** Раннер пишет `<basename>.tts.minimax.txt` из `state["latest_narration_exports"]["minimax_text"]` и копию
+  `narration_scene_break_count=…`, `narration_book_status=…` (без удвоения префикса); `output_artifacts.narration_book_path`,
+  `latest_narration_book_path`, `narration_book_valid_json`, `narration_book_schema_version`,
+  `narration_book_segments_equal_tts`, `narration_book_chapter_count`, `reading_glossary_path`; строка цены стадии
+  `audiobook_reading_glossary`; нет события — `not_reported`, не 0.
+- [ ] **T-I3** Раннер пишет `<basename>.narration.json` из `state["latest_narration_exports"]["book_json"]` и копию
   артефакта словаря (путь из `audiobook_reading_glossary_built`, а в прогоне, упавшем на словаре, — из
-  `audiobook_reading_glossary_failed`) в каталог прогона и `latest`; без ключа / без события — пути `null`, исключения нет.
+  `audiobook_reading_glossary_failed`) в каталог прогона и `latest`; проверка файла: валидный JSON, `schema_version`,
+  `"\n\n".join(text) == .tts.txt` (`true`; анти-вакуум: подложенный файл с изменённым сегментом — `false`); без ключа /
+  без события — пути `null`, исключения нет.
+- [ ] **T-I4** `environment.git_head` отчёта берётся из `runtime/build_info.resolve_git_head` (своих копий
+  `_safe_git_head` / `_read_git_head_from_files` / `_resolve_git_pointer_path` в раннере нет — проверка исходника);
+  существующие тесты раннера на боковой worktree (`gitdir:` с Windows-путём) — зелёные.
 
 **C. Реализация**
-- [ ] **T-I4** Раннер (`:5096-5121`, `:1596-…`, `:5051-5093`, `:5209`, `:6648-6669`, `:6933-6935`, образец копии `:4913-4933`).
-- [ ] **T-I5** [P] `scripts/_list_log_events.py` — `TARGETS` += `pipeline/reading_glossary.py`.
-- [ ] **T-I6** [P] Документы: `docs/LOGGING_AND_ARTIFACT_RETENTION.md` — §3.13 (четыре события), §5.5 (поля), retention
-  `.run/ui_results/` (`.result.tts.minimax.txt` в группе), артефакт словаря в семье `.run/run_glossaries/`, Changelog;
-  AGENTS.md «UI result artifacts» (`:464-466`) — `.result.tts.minimax.txt`, `tts_minimax_path`; README (`:512`) и
-  `docs/WORKFLOW_AND_IMAGE_MODES.md` (`:145`) — четвёртый формат озвучки.
+- [ ] **T-I5** Раннер (`:479-566` → импорт, `:5096-5121`, `:1596-…`, `:5051-5093`, `:5209`, `:6648-6669`, `:6933-6935`,
+  образец копии `:4913-4933`).
+- [ ] **T-I6** [P] `scripts/_list_log_events.py` — `TARGETS` += `pipeline/reading_glossary.py`.
+- [ ] **T-I7** [P] Документы: `docs/LOGGING_AND_ARTIFACT_RETENTION.md` — §3.13 (+`audiobook_narration_book_failed`), §5.5
+  (поля), retention `.run/ui_results/` (`.result.narration.json` в группе), артефакт словаря в семье
+  `.run/run_glossaries/`, Changelog; AGENTS.md «UI result artifacts» (`:464-466`) — `.result.narration.json`,
+  `narration_book_path`; README (`:512`) и `docs/WORKFLOW_AND_IMAGE_MODES.md` (`:145`) — файл книги для инструмента
+  озвучки (схема — `specs/073-narration-for-the-ear/contracts/narration-book.md`).
 
 **D. Проверка**
-- [ ] **T-I7** Отдельными командами: `tests/test_real_document_pipeline_validation.py`, `tests/test_agent_contract_consistency.py`,
+- [ ] **T-I8** Отдельными командами: `tests/test_real_document_pipeline_validation.py`, `tests/test_agent_contract_consistency.py`,
   `tests/test_documentation_links.py`, `tests/test_script_contract_static.py` (кроме гарда инвентаря). Done: зелёные.
 
 ---
@@ -534,8 +572,8 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
 - [ ] **T-Z3** Гарды в главном дереве, каждый отдельной командой: `tests/test_spec_status_consistency.py`,
   `tests/test_where_we_are_freshness.py`, `tests/test_documentation_links.py`, `tests/test_script_contract_static.py`,
   `tests/test_layer_boundaries.py`, `tests/test_typecheck.py` (≥ 180 с; новых ошибок нет).
-- [ ] **T-Z4** [?] Экран в браузере (`quickstart.md` §5): кнопка «TXT для MiniMax», порядок, растяжение, имя скачанного
-  файла, метки в нём. Нужен платный запуск главы (≈ 0,03 $) — с согласия владельца; без него сказать прямо, что экран
+- [ ] **T-Z4** Экран в браузере (`quickstart.md` §5): кнопка «Файл книги для озвучки (.json)», порядок, растяжение, имя скачанного
+  файла, `schema_version` и виды пауз в нём. Платный запуск главы (≈ 0,03 $) одобрен владельцем заранее (2026-11-10); если запуск невозможен — сказать прямо, что экран
   проверен только рендер-тестом WP-K.
 - [ ] **T-Z5** Расширенное ревью Codex `gpt-6-astra`, `--sandbox read-only` (SC-009), по рецепту AGENTS.md («Обязательная
   приёмка оркестратора») ДО слияния в `main`: самый свежий `codex.exe` (`Sort-Object LastWriteTime -Descending`), промпт
@@ -553,12 +591,12 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
   `main`, push.
 - [ ] **T-Z7** Спека не объявляется закрытой до WP-Y (или до явного решения владельца закрыть без замера).
 
-## WP-Y. Замер FR-012 (оркестратор, ПЛАТНО — нужно согласие владельца)
+## WP-Y. Замер FR-012 (оркестратор, ПЛАТНО — одобрено владельцем заранее 2026-11-10; только подготовка текста моделью, аудио полной книги не генерируется никогда)
 
 - [ ] **T-Y1** Бесплатно: проверка базы по SHA каждого базового прогона (`6379154`, `8adf780`, `cf86245` — `git_head` их
   отчётов): полный diff `src/` и входных документов до HEAD, оценка каждого коммита (`quickstart.md` §6, research R14).
   Если база устарела — [?] [$] согласие на новую базу (≈ 0,39 $).
-- [ ] **T-Y2** [?] [$] Согласие владельца на сумму (≈ 0,42 $: RM гл. 3, Money гл. 3, полная Money с 073; research R13).
+- [x] **T-Y2** [$] Согласие владельца на сумму (≈ 0,42 $: RM гл. 3, Money гл. 3, полная Money с 073; research R13) — дано заранее 2026-11-10 (Changelog спеки).
 - [ ] **T-Y3** [$] Канонические прогоны (`quickstart.md` §6), по одному. При падении профиля — свежий run report,
   `failed_checks` дословно с `actual` / `threshold` и отношением, только потом гипотезы.
 - [ ] **T-Y4** Читать по таблице `quickstart.md` §6. SC-002 — скрипт оркестратора вне git (сопоставление абзацев —
@@ -568,5 +606,5 @@ R3; контракт — `contracts/prompt-and-glossary.md` §1 (литерал 
   проверенных — «не проверено». SC-003 — заголовки с «N.», номер виден и сквозь `**…**` (на полной Money 46, из них 10
   выделенных; синтетический `## **1. …**` — проверка самого скрипта). SC-010 — `reading_glossary_unresolved_count == 0`
   на трёх входах. 30 пар на главу — чтение; набор омографов для SC-004 составляет читающий.
-- [ ] **T-Y5** [?] Владелец слушает главу в ElevenLabs (`.tts.docx`) и в Voice Studio (`.tts.minimax.txt`). Итоги — в
+- [ ] **T-Y5** [?] Владелец слушает главу в ElevenLabs (`.tts.docx`); `.narration.json` — импорт одной главы в инструмент озвучки, когда он будет готов (аудио полной книги — никогда). Итоги — в
   Changelog спеки как есть.

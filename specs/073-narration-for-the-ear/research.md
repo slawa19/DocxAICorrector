@@ -309,7 +309,7 @@ Stop: фаза больше не вызывает модель; цикл бло�
 **Замер** (`measure_073.json`, `debug_seps.py`): исключённых с причиной `fragment` абзацев, чей исходник непуст и без
 буквы и цифры: полная Money — 3 (`# %` титула — в начале книги, и два `### ***` со стилем заголовка между абзацами тела,
 p0047 и p0756); главы RM и Money — 0. Отметок — 2; разделитель рядом с заголовком — 0; склеек body+body через
-разделитель на исходнике — 0 → `.tts.txt` полной Money от FR-006 не меняется, `.minimax.txt` получит две метки `<#2.0#>`.
+разделитель на исходнике — 0 → `.tts.txt` полной Money от FR-006 не меняется, файл книги получит две паузы `scene_break` (R9).
 
 **Дефект спеки (уточнён).** FR-006 ссылается на `document/narration_exclusion.py:161-167` — это ветвь исключённых из
 правила обрывка ролей (заголовок и др.); абзац тела `***` исключает общее правило обрывка (`:168-169`) с той же
@@ -345,61 +345,74 @@ p0047 и p0756); главы RM и Money — 0. Отметок — 2; разде�
 - **Признак в `NarrationParagraphRecord`** — запись создаётся при финализации ответа (`:243-273`), а разделитель
   виден при регистрации; хранить его в двух местах — второе правило.
 
-## R9. Текст для MiniMax: метки пауз (FR-007, SC-006)
+## R9. Файл книги для озвучки: схема и правило пауз (FR-007, решение D-4, SC-006)
 
-**Решение.** Новый чистый модуль `pipeline/narration_minimax.py`:
-`build_minimax_text(groups: Sequence[NarrationMinimaxGroupLike], plan: NarrationDocumentPlan) -> MinimaxText`
-(`text`, `pause_counts`, `pauses_by_group` — для теста). Метки — константы с ссылкой на замер
+**Решение владельца 2026-11-10 (D-4)** заменило `.tts.minimax.txt` (текст с метками `<#x#>`) файлом книги
+`<stem>.narration.json` для отдельного инструмента поэтапной озвучки (`D:\Temp\docxai-research\audiobook-studio\ARCHITECTURE.md`
+§0, §6.4, §8): инструмент генерирует сегмент за сегментом и вставляет тишину сам при сборке (`anullsrc`, §8.2), поэтому
+меток в тексте не нужно, а паузы данными меняются без перегенерации; книгу в 459 000 знаков в инструмент клипов на
+10 000 знаков не вставить. Первая редакция этого раздела (`build_minimax_text`) не строилась — WP-G ещё не начинался.
+
+**Решение.** Новый чистый модуль `pipeline/narration_book.py`: `build_narration_book(*, groups, plan, glossary_entries,
+producer, source, excluded_count, excluded_by_reason, pause_seconds=NARRATION_PAUSE_DEFAULT_SECONDS) -> NarrationBook`
+(`data-model.md` §7, контракт — `contracts/narration-book.md`). Правило паузы — то же, что было для меток, но результат —
+вид паузы сегмента, а не текст: план 072 (`pipeline/narration_document.py:165-226`) и группы идут шаг в шаг (абзац плана
+с `source_heading_level` поглощает `len(paragraph_ids)` групп — группа-заголовок всегда из одной записи, склейка только
+body+body, `pipeline/narration_postprocess.py:127-140`; иной абзац плана — одну группу); последней группе серии —
+`chapter` (`Heading 1`) или `heading` (`Normal`); группе перед группой с `after_scene_break` (R8) — `scene_break`;
+совпадение — бо́льшие секунды; у последней группы книги — `null`. Секунды по умолчанию — константы с ссылкой на замер
 (`D:\Temp\docxai-research\minimax-tts\RESEARCH.md`, «Проба разметки через API»: метки 1,5 / 0,8 / 2,0 с дали тишину
-1,88 / 1,24 / 2,48 с, перевод строки — 0,31–0,48 с): `MINIMAX_PAUSE_CHAPTER = "<#1.5#>"`, `MINIMAX_PAUSE_HEADING =
-"<#0.8#>"`, `MINIMAX_PAUSE_SCENE_BREAK = "<#2.0#>"`.
+1,88 / 1,24 / 2,48 с) — записываются в файл как `pause_after.seconds`; инструмент меняет их своими настройками.
 
-Алгоритм: план 072 (`pipeline/narration_document.py:165-226`) и группы идут шаг в шаг — абзац плана с
-`source_heading_level is not None` (серия заголовков, `:69-76`) поглощает `len(paragraph_ids)` групп (группа-заголовок
-всегда из одной записи: склейка только body+body, `pipeline/narration_postprocess.py:127-140`), любой другой абзац плана —
-одну группу. Последней группе серии назначается пауза: `Heading 1` → глава (1,5), `Normal` → заголовок (0,8). Группа с
-`after_scene_break` (R8) назначает предыдущей группе 2,0. Несколько оснований у одной группы — бо́льшая пауза. Последней
-группе книги метки нет. Метка дописывается к концу текста группы вплотную (`Конец.<#2.0#>`, как в пробе); группы
-соединяются тем же `"\n\n"`, что `.tts.txt` (`:186`). Две метки подряд невозможны по построению (не больше одной на
-группу, между группами — непустой текст); проверяется тестом. Удаление вставленных меток даёт `.tts.txt` побайтно — тест
-на синтетике и на собранном тексте позднего этапа.
+**Главы** — правило 072 без нового правила: абзац плана `Heading 1` открывает главу, абзацы до первого `Heading 1` —
+глава с `title: null` (как `StudioLimits.chapter_count_for_limits`, `pipeline/narration_document.py:86-97`, `:130-160`);
+название главы — текст абзаца плана (слитая серия «A. B»). Почему не имя «Титул», как в примере §6.4: DocxAICorrector не
+знает, что это титул, и слов не выдумывает (Конституция VII); имя даёт инструмент.
 
-Расхождение счёта шагов (сумма поглощённых групп ≠ числу групп — нарушение инварианта 072) → исключение наружу; его ловит
-поздний этап: WARNING `audiobook_narration_minimax_failed`, книга без `.minimax.txt` (Anti-regression 2).
+**Равенство с `.tts.txt`** — по построению: тексты сегментов — `NarrationGroup.text` побайтно, `.tts.txt` —
+`"\n\n".join(group.text)` (`pipeline/narration_postprocess.py:186`, 072 R2). Тест контракта — на синтетике (WP-G) и на
+собранном тексте позднего этапа (WP-H).
 
-**Прогноз** (`measure_073.json` → `fr007_pause_forecast`, правило на исходнике): полная Money — 23 метки главы, 132
-заголовка, 2 разделителя, совпадений 0, разделителей внутри серии заголовков 0; Money гл. 3 — 1 / 6 / 0; RM гл. 3 —
-1 / 7 / 0. Числа глав и подзаголовков совпадают с замером FR-011 спеки 072 (`heading1_count` 23, `demoted_heading_count`
-132 в отчёте прогона `20261110T145422Z`).
+**Прогноз** (`measure_073.json` → `fr007_pause_forecast`, правило на исходнике): полная Money — пауз `chapter` 23,
+`heading` 132, `scene_break` 2, совпадений 0; Money гл. 3 — 1 / 6 / 0; RM гл. 3 — 1 / 7 / 0; глав на полной Money — 23 (до
+первого `Heading 1` абзацев нет, 072 R11). Сегментов — 1 221 (группы базового прогона), размер файла ≈ 0,6–0,7 МБ
+(текст 848 КБ в UTF-8 плюс поля; прогноз).
 
-**Отвергнуто.** Текст из абзацев плана (слияния 072 меняют текст: `A. B` вместо `A\n\nB`) — ломает равенство с TXT
-(Codex 2). Пауза после каждой группы-заголовка — пауза внутри составного названия главы (`2 → 1`). Стиль DOCX как
-признак подзаголовка — подзаголовки в 072 `Normal` (Codex 2), поэтому — `source_heading_level`.
+**Отвергнуто.**
+- **Оставить `.tts.minimax.txt` рядом** — владелец заменил его; два канала одних пауз расходились бы.
+- **Секунды отдельной картой на верхнем уровне** вместо `pause_after: {kind, seconds}` — расходится с формой §6.4; вид
+  и умолчание в одном объекте инструмент читает без второго поиска.
+- **Текст сегментов из абзацев плана DOCX** — слияния 072 меняют текст («A. B»), равенство с `.tts.txt` ломается.
+- **Название, автор, язык книги** — не известны (Non-goals): `title` ядра 072 — основа имени файла, не название книги.
 
 ## R10. Экспорт, группа результата, bundle, экран (FR-008)
 
-**Решение — продолжение путей 072, без новых каналов.**
-- `pipeline/narration_exports.py:build_narration_exports` (`:133-199`): после плана (`:149`) — `build_minimax_text`,
-  НЕЗАВИСИМО от успеха DOCX (сбой рендерера не отнимает MiniMax); исключение → WARNING
-  `audiobook_narration_minimax_failed`, `minimax_text=None`. `NarrationExports` (`:61-130`) +`minimax_text`,
-  +`minimax_pause_counts`; `state_value()` (`:75-83`) +ключ `minimax_text`; `event_fields()` (`:85-113`) +поля
-  (`contracts/events.md`). Пустые группы (`:147-148`) — как сейчас.
+**Решение — продолжение путей 072, без новых каналов.** Имена в коде избегают «manifest»: в группе уже есть
+`.result.manifest.json` (другой файл) — здесь `narration_book`.
+- `pipeline/narration_exports.py:build_narration_exports` (`:133-199`) получает необязательный `book_inputs:
+  NarrationBookInputs | None` (принятые записи словаря, `producer`, `source`, исключения прогона); после плана (`:149`) —
+  `build_narration_book`, НЕЗАВИСИМО от успеха DOCX; исключение → WARNING `audiobook_narration_book_failed`,
+  `book=None`. `NarrationExports` (`:61-130`) +`book`, +`book_error`; `state_value()` (`:75-83`) +ключ `book_json`;
+  `event_fields()` (`:85-113`) +поля (`contracts/events.md`). Вызов без `book_inputs` — побайтно как в 072.
 - Состояние: тот же ключ `latest_narration_exports` (`processing/processing_runtime.py:182`) — новый ключ состояния не
-  нужен; `_normalize_narration_exports` (`:1657-1675`) пропускает пятый ключ `minimax_text: str | None`. Правило пары
+  нужен; `_normalize_narration_exports` (`:1657-1675`) пропускает пятый ключ `book_json: str | None`. Правило пары
   bundle (`:1759-1765`), сброс (`runtime/state.py:611`, `:739`; `processing/processing_service.py:380`) — без изменений.
-- Группа: `write_ui_result_artifacts` (`runtime/artifacts.py:366-461`) +`narration_minimax_text: str | None = None` →
-  `<stem>.tts.minimax.txt`, ключ `tts_minimax_path`, член того же `_atomic_write_group` (`:440`) только при непустом тексте;
-  `ResultArtifactWriter` (`pipeline/contracts.py:151-166`) +тот же аргумент; суффикс хранения `.result.tts.minimax.txt` в
+- Группа: `write_ui_result_artifacts` (`runtime/artifacts.py:366-461`) +`narration_book_json: str | None = None` →
+  `<stem>.narration.json` (основа кончается на `.result`), ключ `narration_book_path`, член того же `_atomic_write_group`
+  (`:440`) только при непустом тексте; `ResultArtifactWriter` (`pipeline/contracts.py:151-166`) +тот же аргумент (WP-D
+  аргумента для MiniMax не добавлял — его добавляет WP-J); суффикс хранения `.result.narration.json` в
   `_UI_RESULT_GROUP_SUFFIXES` (`runtime/artifact_retention.py:90-99`) — без него файл ушёл бы в «вечные» (072 R12).
-  Аргумент писателю — `pipeline/late_phases.py:1439-1466`.
+  Аргумент писателю — `pipeline/late_phases.py:1439-1466` (WP-H).
 - Экран: `_render_audiobook_downloads` (`ui/_ui.py:1111-1196`) — четвёртая кнопка строки «Текст для озвучки» после TXT,
-  `type="secondary"`, имя `<основа>.tts.minimax.txt` (новый `_build_narration_minimax_filename` рядом с `:92-101`), MIME
-  `text/plain`; ключи локали `result.narration_minimax`, `result.blocked_download_narration_minimax`. Нет текста —
-  нет кнопки (строки причины нет: MiniMax падает только с ошибкой кода, причина — в событии).
+  `type="secondary"`, метка «Файл книги для озвучки (.json)», имя `<основа исходника>.narration.json` (новый
+  `_build_narration_book_filename` рядом с `:92-101`), MIME `application/json`; ключи локали `result.narration_book`,
+  `result.blocked_download_narration_book`. Нет файла — нет кнопки (строки причины нет: сборка падает только с ошибкой
+  кода, причина — в событии).
 
-**Почему одно имя `.tts.minimax.txt` для файла и скачивания.** Спека называет файл `.minimax.txt`, а суффикс хранения —
-`.result.tts.minimax.txt`; одна основа `…tts.minimax.txt` в хранении, в раннере и при скачивании — одно правило имени.
-Пересечения суффиксов нет: `x.result.tts.minimax.txt` не кончается на `.result.tts.txt`.
+**Почему кнопка в строке «Текст для озвучки», а не «Для проверки».** Строка «Для проверки» (072) — то, что читает
+человек, чтобы проверить подготовку (DOCX для проверки, Markdown). Файл книги — вход инструмента производства аудио,
+того же назначения, что `.tts.docx` для Studio и `.tts.txt`: его скачивают, чтобы озвучивать. Порядок DOCX, PDF, TXT,
+файл книги — основная кнопка остаётся DOCX (072).
 
 ## R11. Учёт FR-010: где какие числа
 
@@ -414,7 +427,7 @@ p0047 и p0756); главы RM и Money — 0. Отметок — 2; разде�
 | отметок разделителя | сводка: групп с `after_scene_break` в `state.narration_groups` | `**audiobook_summary` |
 | словарь: статус, найдено / отправлено / принято / запрошено повторно / без чтения / отброшено пределом, отказы по причинам, пакетов / вызовов / повторов, цена, путь артефакта | `ReadingGlossary` в `state.audiobook_reading_glossary` (R5) | сводка читает его поля |
 | блоков с записями | `len(state.audiobook_reading_glossary_block_indexes)` (R6) | сводка |
-| меток пауз по видам | `MinimaxText.pause_counts` (R9) | `narration_exports.event_fields(...)` (`:1601-1605`) |
+| пауз по видам в файле книги | `NarrationBook.pause_counts` (R9) | `narration_exports.event_fields(...)` (`:1601-1605`) |
 
 Все ключи присутствуют всегда; ноль и `null` — утверждения (как в 070/072). Тексты — нет: написания сокращений и
 чтения — только в артефакте словаря.
@@ -422,13 +435,17 @@ p0047 и p0756); главы RM и Money — 0. Отметок — 2; разде�
 ## R12. Раннер реальных документов (FR-008)
 
 **Решение.** `tests/artifacts/real_document_pipeline/run_lietaer_validation.py`: `_write_narration_export_artifacts`
-(`:5096-5121`) пишет ещё `<basename>.tts.minimax.txt` из `minimax_text`; `_write_latest_alias_artifacts` (`:1596-…`) —
-псевдоним `latest_tts_minimax`; `output_artifacts` (`:6648-6669`) — `tts_minimax_path`, `latest_tts_minimax_path`;
-строка сводки `tts_minimax_path=` рядом с `tts_pdf_path=` (`:6933-6935`). Артефакт словаря копируется в каталог прогона
+(`:5096-5121`) пишет ещё `<basename>.narration.json` из `book_json`; `_write_latest_alias_artifacts` (`:1596-…`) —
+псевдоним `latest_narration_book`; `output_artifacts` (`:6648-6669`) — `narration_book_path`, `latest_narration_book_path`;
+строка сводки `narration_book_path=` рядом с `tts_pdf_path=` (`:6933-6935`). Артефакт словаря копируется в каталог прогона
 как `<basename>.reading_glossary.json` по пути из события `audiobook_reading_glossary_built` (образец —
 `_extract_run_glossary_record`, `:5236-5265`, и копия откатов полировки, `:4913-4933`); `output_artifacts.reading_glossary_path`.
 `_NARRATION_SUMMARY_FIELDS` (`:5051-5078`) / `_NARRATION_SUMMARY_JSON_FIELDS` (`:5079-5093`) — новые поля событий;
-`_STAGE_COST_SUMMARY_STAGES` (`:5209`) += `audiobook_reading_glossary`. Второго канала счёта нет.
+`_STAGE_COST_SUMMARY_STAGES` (`:5209`) += `audiobook_reading_glossary`. Второго канала счёта нет. Раннер дополнительно
+открывает `.narration.json` и пишет в отчёт `narration_book_valid_json`, `narration_book_schema_version`,
+`narration_book_segments_equal_tts` (`"\n\n".join(text) == .tts.txt` на файлах прогона), `narration_book_chapter_count` —
+проверка файла, не второй счёт. Свои `_safe_git_head` / `_read_git_head_from_files` / `_resolve_git_pointer_path`
+(`:479-566`) раннер заменяет импортом `runtime/build_info.resolve_git_head` (R18) — одна копия.
 
 ## R13. Стоимость FR-012 (прогноз, ПЛАТНО — только с согласия владельца)
 
@@ -484,9 +501,31 @@ p0047 и p0756); главы RM и Money — 0. Отметок — 2; разде�
 `tests/test_*.py`, поэтому строки новых тестов добавляет ОРКЕСТРАТОР при слиянии пакета; в боковом worktree пакета этот
 гард красный — ожидаемо, пакет его не запускает.
 
-## R17. Заметка: возможный манифест `.audiobook.json` (НЕ требование; решения владельца нет)
+## R17. Заметка: возможный манифест `.audiobook.json` — ВОПЛОЩЕНА решением D-4 (R9, R18)
 
-Ревью плана Codex: такой манифест ложится на модель дополнительным экспортом без переделки — главы и серии дают
-`NarrationDocumentPlan` (072), связь групп с исходными абзацами — `NarrationGroup.paragraph_ids`, паузы —
-`MinimaxText.pauses_by_group` (R9). Открытый вопрос — устойчивость ID между повторными прогонами: `pNNNN` следуют порядку
-подготовленных абзацев (`document/extraction.py:1163`), а состав групп зависит от склеек. В объём 073 не входит; FR нет.
+Ревью плана Codex отметило, что такой файл ложится на модель дополнительным экспортом без переделки. Владелец решил
+(D-4): файл книги `.narration.json` заменяет `.tts.minimax.txt`. Открытый вопрос Codex — устойчивость ID между
+повторными прогонами (`pNNNN` следуют порядку подготовленных абзацев, `document/extraction.py:1163`; состав групп
+зависит от склеек) — решается на стороне инструмента (`ARCHITECTURE.md` §6.3: контент-адресный ID и выравнивание при
+повторном импорте); здесь — Non-goal.
+
+## R18. Файл книги: поля, которых DocxAICorrector не знает, версия кода, имена
+
+**`book`.** Только `source_name` (`context.uploaded_filename`) и `source_token` (`context.source_token`,
+`pipeline/late_phases.py:428-429` берёт оба из контекста). Название и автора режим не знает: 072 пишет в `title`
+свойств DOCX основу имени файла (072 О-5) — это не название книги; языка у режима аудиокниги нет
+(`source_language`/`target_language` = `null` в отчёте прогона, `runtime_config.effective`). Не выдумываются (Non-goals);
+инструмент спрашивает их у владельца (пример §6.4 шире — инструмент обязан не требовать этих полей; Assumptions спеки).
+
+**`producer.version` = git SHA кода.** В продукте помощника нет; раннер его имеет (`_safe_git_head`,
+`tests/artifacts/real_document_pipeline/run_lietaer_validation.py:479-566`: `git rev-parse` с запасным чтением `.git` и
+указателей боковых worktree). Решение: перенос в `runtime/build_info.py:resolve_git_head()` (WP-H), раннер импортирует его
+(WP-I) — одна копия (правило владельца). Вне git-checkout'а — `null`, не «unknown». Вызывается один раз на сборку файла
+(подпроцесс `git` ≈ мс; в фоне позднего этапа).
+
+**Имена.** В коде — `narration_book` (`pipeline/narration_book.py`, `narration_book_json`, `narration_book_path`,
+`book_json`), потому что `manifest` уже занято `.result.manifest.json` группы результата
+(`runtime/artifacts.py:392`); имя файла — `.narration.json`, как в контракте импорта инструмента.
+
+**Отвергнуто.** `producer.version` из версии пакета (`pyproject`) — версия не меняется между коммитами и ничего не
+говорит инструменту; `book.title` из основы имени файла — выдумка под видом названия.

@@ -26,7 +26,7 @@ wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.s
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_073_prompt_rules.py -q       # WP-B
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_audiobook_prompt.py -q             # WP-B, гарды промпта
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_070_request_golden.py -q      # WP-B, перевод/редактура побайтно
-wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_073_narration_minimax.py -q   # WP-G, SC-006
+wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_073_narration_book.py -q      # WP-G, SC-006 (файл книги)
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_073_result_group.py -q        # WP-J
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_073_result_screen.py -q       # WP-K
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_072_result_screen.py -q       # WP-K, экран 072 без изменений
@@ -52,7 +52,7 @@ wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.s
 ```bash
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_073_reading_glossary_delivery.py -vv   # WP-F, SC-007 (секции блоков)
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_document_pipeline.py -q                       # WP-F, WP-H
-wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_073_late_phase.py -vv                   # WP-H, SC-006 (TXT = MiniMax без меток), FR-009
+wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_073_late_phase.py -vv                   # WP-H, SC-006 (сегменты файла книги = .tts.txt), FR-009
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_spec_072_late_phase_exports.py -q            # WP-H, 072 без изменений
 wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash scripts/test.sh tests/test_late_phases_finalize_gate_persistence.py -q  # WP-H
 ```
@@ -88,12 +88,12 @@ git diff --check
 
 **Проверка экрана в браузере (Streamlit Layout Contract).** Задача VS Code `Start Project`, во встроенном браузере —
 короткий переведённый DOCX (`tests/sources/translated/rm_ch3_translated_ru.docx`) в режиме «Подготовка аудиокниги»
-(платный вызов модели, ≈ 0,03 $ — **только с согласия владельца**; без согласия оркестратор пишет прямо, что экран
-проверен только рендер-тестом WP-K). Проверить: строка «Текст для озвучки» — DOCX, PDF, TXT, «TXT для MiniMax», кнопки
-растянуты; скачанный `<stem>.tts.minimax.txt` — метки `<#1.5#>` после названия главы и `<#0.8#>` после подзаголовков;
+(платный вызов модели, ≈ 0,03 $ — **одобрено владельцем заранее 2026-11-10**; если запуск невозможен, оркестратор пишет прямо, что экран
+проверен только рендер-тестом WP-K). Проверить: строка «Текст для озвучки» — DOCX, PDF, TXT, «Файл книги для озвучки (.json)», кнопки
+растянуты; скачанный `<stem>.narration.json` открывается как JSON, `schema_version` = 1, у сегмента названия главы `pause_after.kind = "chapter"`, у подзаголовков — `"heading"`;
 перевод и редактура — экран как до спеки.
 
-## 6. FR-012 — замер (оркестратор, ПЛАТНО ≈ 0,42 $, только с согласия владельца)
+## 6. FR-012 — замер (оркестратор, ПЛАТНО ≈ 0,42 $, одобрено владельцем заранее 2026-11-10; только подготовка текста моделью — аудио полной книги не генерируется никогда)
 
 **Сначала — проверка базы (бесплатно, research R14).** Базовые прогоны (gitignored, главное дерево
 `tests/artifacts/real_document_pipeline/runs/`) и SHA, записанные в их отчётах (`git_head`):
@@ -131,12 +131,12 @@ wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash -lc "DOCXAI_RE
 | одно чтение (SC-002) | скрипт оркестратора (сопоставление абзацев — приём `D:\Temp\docxai-research\073\baseline_forms.py`): по каждой принятой записи — исходные вхождения с ID абзацев, сопоставленный абзац выхода, подтверждённые / отсутствующие / неоднозначные; «одно чтение» — по форме SC-002 (слово чтения или его основа без двух последних букв, без знаков ударения и регистра) | у каждой записи ≥ 1 проверенное вхождение и 0 отсутствующих; пустой словарь или 0 проверенных — «не проверено», не «пройдено»; TRC (база: транслитерация в трёх написаниях и две разные расшифровки) и CoR-EU — одно чтение |
 | номера разделов (SC-003) | тот же скрипт, заголовки с «N.»; номер виден и сквозь выделение `**…**` (синтетический `## **1. …**` — проверка самого скрипта) | 46 на полной Money (из них 10 внутри выделения), 5 в главе Money — одна форма; база — пять форм 23 / 12 / 5 / 5 / 1, в 10 из 46 добавлено «глава» (R3) |
 | ударения (SC-004) | `stress_mark_count`, `stress_marks_per_1000_words`; 30 пар на главу — чтение | база 1 знак на книгу; набор омографов составляет читающий |
-| разделители | `scene_break_count`, `minimax_pause_counts` | полная Money: 2; метки 23 / 132 / 2 (R9) |
-| файлы | `output_artifacts.tts_minimax_path`, `reading_glossary_path` | есть; MiniMax без меток = `.tts.txt` (скрипт: удалить три вида меток) |
+| разделители и паузы | `scene_break_count`, `narration_book_pause_counts`, `narration_book_chapter_count` | полная Money: 2 разделителя; паузы `chapter` / `heading` / `scene_break` — 23 / 132 / 2, глав 23 (R9) |
+| файлы | `output_artifacts.narration_book_path`, `narration_book_valid_json`, `narration_book_schema_version`, `narration_book_segments_equal_tts`, `reading_glossary_path` | есть; JSON валиден, версия 1, сегменты = `.tts.txt` (`true`) |
 | цена | `model_accounting_stage_*_cost_usd` | всего ≈ 0,42 $; стадия словаря ≈ 0,004–0,006 $ на полной Money (R13) |
 | покрытие | `coverage_low_count` до/после | может вырасти из-за транслитерации — review data |
 
 При падении профиля — сначала свежий run report: `failed_checks` дословно с `actual` / `threshold` и отношением, только
 потом гипотезы (AGENTS.md, Real-document failure analysis contract). Затем владелец слушает главу в ElevenLabs
-(`.tts.docx`) и в Voice Studio (`.tts.minimax.txt`). Итоги — в Changelog спеки как есть (неудача критерия фиксируется, не
+(`.tts.docx`) и, когда инструмент озвучки будет готов, импортирует в него `.narration.json` (одну главу, не всю книгу). Итоги — в Changelog спеки как есть (неудача критерия фиксируется, не
 ретушируется).

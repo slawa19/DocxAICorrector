@@ -183,8 +183,11 @@ ProcessingState                                                     # :260-312
 
 NARRATION_PARAGRAPH_KINDS = ("narrated", "scene_break", "excluded")   # закрытый словарь (pipeline/audiobook_pass.py)
 
-ResultArtifactWriter.__call__(..., narration_minimax_text: str | None = None)        # :151-166, последним
+ResultArtifactWriter.__call__(..., narration_book_json: str | None = None)          # :151-166, последним
 ```
+
+Объявления состояния построены WP-D (`pipeline/contracts.py:297-302`). Аргумента писателя для MiniMax WP-D не добавил
+(решение D-4 пришло позже); аргумент `narration_book_json` в протокол добавляет WP-J вместе с писателем.
 
 ## 6. Отметка разделителя и группа (FR-006; research R8)
 
@@ -222,39 +225,66 @@ assemble_narration_records(records, expected_paragraph_ids=None, scene_break_bef
 | `B1 *` / конец блока, `B2` — первый абзац следующего блока | `B2` | нет |
 | `B1 * B2`, у `B2` пустой текст, затем `B3` | `B3` | — |
 
-## 7. Текст для MiniMax (FR-007; research R9)
+## 7. Файл книги для озвучки (FR-007, решение D-4; research R9, R18; контракт — `contracts/narration-book.md`)
 
-`pipeline/narration_minimax.py` (новый, чистый):
+`pipeline/narration_book.py` (новый, чистый: без I/O, без Streamlit, без python-docx):
 
 ```text
-MINIMAX_PAUSE_CHAPTER = "<#1.5#>"; MINIMAX_PAUSE_HEADING = "<#0.8#>"; MINIMAX_PAUSE_SCENE_BREAK = "<#2.0#>"
-MINIMAX_PAUSE_KINDS = ("chapter", "heading", "scene_break")      # приоритет при совпадении — по длительности
+NARRATION_BOOK_SCHEMA_VERSION = 1
+NARRATION_BOOK_TOP_LEVEL_KEYS = ("schema_version", "producer", "book", "chapter_heading_level", "chapters",
+                                 "segments", "reading_glossary", "stats")             # закрытый набор
+NARRATION_PAUSE_KINDS = ("chapter", "heading", "scene_break")
+NARRATION_PAUSE_DEFAULT_SECONDS = {"chapter": 1.5, "heading": 0.8, "scene_break": 2.0}   # замер MiniMax (RESEARCH.md)
 
-NarrationMinimaxGroupLike(Protocol): paragraph_ids, text, after_scene_break
+NarrationBookGroupLike(Protocol): paragraph_ids, role, heading_level, text, after_scene_break
 
-MinimaxText(frozen)
-    text: str
-    pause_counts: Mapping[str, int]          # ключи MINIMAX_PAUSE_KINDS, всегда все
-    pauses_by_group: tuple[str | None, ...]  # вид паузы в конце каждой группы
+NarrationBookProducer(frozen): version: str | None, run_id: str, produced_at: str       # name — константа
+NarrationBookSource(frozen):   source_name: str, source_token: str
+NarrationBookGlossaryEntryLike(Protocol): abbreviation, reading
 
-build_minimax_text(groups, plan: NarrationDocumentPlan) -> MinimaxText
+NarrationBook(frozen)
+    payload: Mapping[str, object]            # объект JSON в порядке ключей контракта
+    pause_kinds: tuple[str | None, ...]      # вид паузы сегмента, по порядку групп (для теста и учёта)
+    pause_counts: Mapping[str, int]          # ключи NARRATION_PAUSE_KINDS, всегда все
+    chapter_count: int
+    def to_json(self) -> str                 # json.dumps(payload, ensure_ascii=False, indent=1) + "\n"
+
+build_narration_book(*, groups, plan: NarrationDocumentPlan, glossary_entries, producer, source,
+                     excluded_count: int, excluded_by_reason: Mapping[str, int],
+                     pause_seconds: Mapping[str, float] = NARRATION_PAUSE_DEFAULT_SECONDS) -> NarrationBook
 ```
 
-Таблица примеров (SC-006; уровни заголовков подряд, `chapter_level = 1`, `B` — тело):
+Алгоритм: план 072 и группы идут шаг в шаг — абзац плана с `source_heading_level is not None` (серия заголовков)
+поглощает `len(paragraph_ids)` групп (группа-заголовок всегда из одной записи), любой другой — одну группу; абзац плана
+`Heading 1` открывает главу (до первого — глава с `title: null`, если есть сегменты); последнему сегменту серии —
+`chapter` (`Heading 1`) или `heading` (`Normal`); сегмент перед сегментом с `after_scene_break` — `scene_break`;
+совпадение — бо́льшие секунды; последнему сегменту книги — `null`. Расхождение шагов (сумма поглощённых групп ≠ числу
+групп) → `ValueError` наружу (его ловит поздний этап — WARNING, книга без файла).
 
-| Группы | Метки в конце групп |
-|---|---|
-| `H1, B, B` | `H1<#1.5#>`, `B`, `B` (последняя — без метки) |
-| `H2, H1, B` (серия `2 → 1`) | `H2`, `H1<#1.5#>`, `B` |
-| `H1, H2, B` | `H1<#1.5#>`, `H2<#0.8#>`, `B` |
-| `H3, H3, B` (серия, `Normal`) | `H3`, `H3<#0.8#>`, `B` |
-| `B1, B2(after_scene_break)` | `B1<#2.0#>`, `B2` |
-| `H1, B1(after_scene_break)` | `H1<#2.0#>` (совпадение: большая), `B1` |
-| последняя группа книги — заголовок | метки нет |
-| первая группа с `after_scene_break` | не бывает (R8: начало книги отметки не даёт) |
+Таблица примеров (SC-006; каждая строка — целая книга, `B` — тело, `Hn` — заголовок уровня n; в книгах с `H1`
+`chapter_level = 1`; последняя группа книги в каждой строке — тело, кроме оговорённой):
 
-Инварианты: `text.replace(<каждая вставленная метка в конце группы>, "")` == `.tts.txt`; в тексте нет двух меток
-подряд; меток ровно `sum(pause_counts.values())`.
+| Группы книги | `pause_after.kind` по сегментам | Главы |
+|---|---|---|
+| `H1, B, B` | `chapter`, `null`, `null` (последний — без паузы) | 1: «H1» [1–3] |
+| `B0, H1, B` | `null`, `chapter`, `null` | 1: `null` [1]; 2: «H1» [2–3] |
+| `H2, H1, B` (серия `2 → 1`) | `null`, `chapter`, `null` | 1: «H2. H1» [1–3] |
+| `H1, H2, B` | `chapter`, `heading`, `null` | 1: «H1» [1–3] |
+| `H1, B, H3, H3, B` (серия `3 → 3`, `Normal`) | `chapter`, `null`, `null`, `heading`, `null` | 1: «H1» [1–5] |
+| `B1, B2(after_scene_break)` | `scene_break`, `null` | 1: `null` [1–2] (книга без заголовков) |
+| `H1, B1(after_scene_break), B2` | `scene_break` (2,0 > 1,5), `null`, `null` | 1: «H1» [1–3] |
+| `H1, B, H1` (заголовок — последний сегмент) | `chapter`, `null`, `null` | 1: «H1» [1–2]; 2: «H1» [3] |
+| только `H3, B, H3, B` (уровней 1–2 нет) | `chapter`, `null`, `chapter`, `null` | `chapter_level = 3`: 1 [1–2]; 2 [3–4] |
+| ни одного заголовка | все `null`, кроме разделителей | одна глава `null` |
+
+Инварианты: `"\n\n".join(s["text"] for s in payload["segments"]) == "\n\n".join(g.text for g in groups)` побайтно;
+`len(chapters) == plan.studio_limits.chapter_count_for_limits`; каждый сегмент ровно в одной главе; ключи верхнего
+уровня == `NARRATION_BOOK_TOP_LEVEL_KEYS`; у сегмента не больше одного вида паузы.
+
+`runtime/build_info.py` (новый): `resolve_git_head(project_root: Path | None = None) -> str | None` — перенос
+`_safe_git_head` / `_resolve_git_pointer_path` / `_read_git_head_from_files` раннера
+(`tests/artifacts/real_document_pipeline/run_lietaer_validation.py:479-566`) в продукт; раннер затем импортирует её
+(одна копия). `None` вне git-checkout'а.
 
 ## 8. Экспорт озвучки, состояние, bundle (FR-008; research R10)
 
@@ -263,8 +293,13 @@ build_minimax_text(groups, plan: NarrationDocumentPlan) -> MinimaxText
 ```text
 NarrationExports(frozen)                     # :61-130
     plan, docx_bytes, docx_error, pdf        # без изменений
-    minimax: MinimaxText | None              # новое
-    minimax_error: str | None                # класс исключения, если MiniMax не собран
+    book: NarrationBook | None               # новое
+    book_error: str | None                   # класс исключения, если файл книги не собран
+
+build_narration_exports(*, groups, source_name, log_event, export_pdf=None,
+                        book_inputs: NarrationBookInputs | None = None)
+NarrationBookInputs(frozen): glossary_entries, producer, source, excluded_count, excluded_by_reason
+    # None — файл книги не строится (вызовы 072 без этого аргумента — побайтно прежние)
 ```
 
 Значение ключа `latest_narration_exports` и поля bundle `narration_exports` (одна форма, +1 ключ к 072):
@@ -272,16 +307,17 @@ NarrationExports(frozen)                     # :61-130
 | Ключ | Тип | Смысл |
 |---|---|---|
 | `docx_bytes`, `pdf_bytes`, `docx_unavailable_reason`, `pdf_unavailable_reason` | как в 072 | без изменений |
-| `minimax_text` | `str \| None` | `.tts.minimax.txt` |
+| `book_json` | `str \| None` | текст `.narration.json` |
 
-`_normalize_narration_exports` (`processing/processing_runtime.py:1657-1675`): пять ключей; `minimax_text` — `str`, иначе
-`None`. Старый bundle без ключа → кнопки MiniMax нет.
+`_normalize_narration_exports` (`processing/processing_runtime.py:1657-1675`): пять ключей; `book_json` — непустой `str`,
+иначе `None`. Старый bundle без ключа → кнопки файла книги нет.
 
 ## 9. Группа результата (FR-008)
 
 | Файл | Ключ `artifact_paths` | Когда |
 |---|---|---|
-| `<stem>.result.tts.minimax.txt` | `tts_minimax_path` | MiniMax собран (непустой текст) |
+| `<stem>.result.narration.json` | `narration_book_path` | файл книги собран (непустой текст) |
 | остальные члены 072 | как в 072 | как в 072 |
 
-Суффиксы хранения: `_UI_RESULT_GROUP_SUFFIXES` + `.result.tts.minimax.txt`.
+Суффиксы хранения: `_UI_RESULT_GROUP_SUFFIXES` + `.result.narration.json` (пересечения нет: не кончается на
+`.result.manifest.json`, `.result.meta.json`).
