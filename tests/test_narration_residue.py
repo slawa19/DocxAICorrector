@@ -11,7 +11,7 @@ from docxaicorrector.text.narration_residue import (
 
 CLEAN = (
     "Утром мы вышли к реке, и туман ещё лежал над водой. Никто не говорил — «тише», шептал проводник… "
-    "Мы шли долго, пока не увидели т.е. тот самый мост и т.д. Эй, café, naïve."
+    "Мы шли долго, пока не увидели т.е. тот самый мост и т.д. Эй, кафе, наив."
 )
 
 
@@ -36,7 +36,7 @@ def test_digits_count_numbers_not_characters() -> None:
 
 def test_superscript_and_subscript_digits_and_non_ascii_decimal_digits_are_digits() -> None:
     assert classes("площадь в м²") == {"digits"}
-    assert classes("формула H₂O") == {"digits"}
+    assert classes("формула Н₂О") == {"digits"}
     assert classes("число ٣٤") == {"digits"}  # arabic-indic digits (Nd)
 
 
@@ -59,9 +59,9 @@ def test_a_single_letter_i_and_lookalikes_inside_words_are_not_roman_numerals() 
 def test_symbols_by_category_and_the_four_signs() -> None:
     found = by_class("цена $5 и 10% и № 3 и § 4 и Tom & Jerry")
     assert found["symbols"][0] == 5  # $ % № § &
-    assert classes("a + b") == {"symbols"}
-    assert classes("a → b") == {"symbols"}
-    assert classes("a € b") == {"symbols"}  # a currency sign
+    assert classes("а + б") == {"symbols"}
+    assert classes("а → б") == {"symbols"}
+    assert classes("а € б") == {"symbols"}  # a currency sign
 
 
 def test_ordinary_punctuation_is_not_a_symbol() -> None:
@@ -107,11 +107,11 @@ def test_html_and_emoji_left_are_reported() -> None:
 
 
 def test_a_lone_less_than_is_a_symbol_but_not_html() -> None:
-    assert classes("a < b") == {"symbols"}
+    assert classes("а < б") == {"symbols"}
 
 
 def test_only_html_and_emoji_left_are_not_repairable() -> None:
-    assert REPAIRABLE_RESIDUE_CLASSES == {"digits", "roman_numerals", "symbols", "all_caps", "url_or_domain", "tag_form"}
+    assert REPAIRABLE_RESIDUE_CLASSES == {"digits", "roman_numerals", "symbols", "all_caps", "url_or_domain", "tag_form", "latin"}
     assert {"html_left", "emoji_left"}.isdisjoint(REPAIRABLE_RESIDUE_CLASSES)
     assert set(RESIDUE_CLASSES) == REPAIRABLE_RESIDUE_CLASSES | {"html_left", "emoji_left"}
 
