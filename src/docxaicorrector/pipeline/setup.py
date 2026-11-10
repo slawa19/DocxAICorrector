@@ -370,6 +370,7 @@ def execute_processing_run(
     finalize_processing_success_fn: Callable[..., PipelineResult],
     initialization_type: type,
     run_glossary_phase_fn: Callable[..., Any] | None = None,
+    run_reading_glossary_phase_fn: Callable[..., PipelineResult | None] | None = None,
 ) -> PipelineResult:
     initialization = initialize_processing_run_fn(
         context=context,
@@ -397,6 +398,19 @@ def execute_processing_run(
             state=state,
             initialization=initialization,
         )
+    if run_reading_glossary_phase_fn is not None:
+        # Spec 073 FR-004: the reading glossary of an audiobook run, one step before the first
+        # block. It keeps its result in ``state``; a non-``None`` outcome (the model unavailable
+        # after all its attempts) ends the run here, as an unrecoverable block call would.
+        reading_glossary_outcome = run_reading_glossary_phase_fn(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            initialization=initialization,
+        )
+        if reading_glossary_outcome is not None:
+            return reading_glossary_outcome
     block_phase_outcome = run_block_processing_phase_fn(
         context=context,
         dependencies=dependencies,

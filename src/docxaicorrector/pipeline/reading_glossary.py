@@ -46,6 +46,7 @@ from docxaicorrector.generation._generation import (
     retry_backoff_seconds,
 )
 from docxaicorrector.generation.model_response import CollapsedOutput, EmptyResponse
+from docxaicorrector.generation.output_budget import DEFAULT_OUTPUT_BUDGET_MULTIPLIER, output_budget_multiplier_for_model
 from docxaicorrector.image.shared import is_retryable_error
 from docxaicorrector.pipeline.audiobook_pass import _block_source_texts, is_audiobook_operation
 from docxaicorrector.pipeline.contracts import BlockExecutionPayload, LatePhaseStopped, PipelineResult
@@ -357,6 +358,7 @@ def _ask_batch(
     should_stop: Callable[[], bool],
     request_text_completion_fn: Callable[..., str],
     sleep_fn: Callable[[float], object],
+    output_budget_multiplier: float,
 ) -> None:
     batch_index = len(ledger.batches) + 1
     record: dict[str, object] = {"index": batch_index, "pass": pass_name, "size": len(batch), "attempts": 0}
@@ -370,7 +372,7 @@ def _ask_batch(
                 for item in batch
             ]
         },
-        max_output_tokens=glossary_max_output_tokens(len(batch)),
+        max_output_tokens=glossary_max_output_tokens(len(batch), multiplier=output_budget_multiplier),
     )
     attempts_allowed = max(1, int(max_retries))
     for attempt in range(1, attempts_allowed + 1):
@@ -490,9 +492,13 @@ def run_reading_glossary(
     request_text_completion_fn: Callable[..., str] = request_text_completion,
     sleep_fn: Callable[[float], object] = time.sleep,
     write_artifact_fn: Callable[..., str] = _write_run_glossary_artifact,
+    output_budget_multiplier: float = DEFAULT_OUTPUT_BUDGET_MULTIPLIER,
 ) -> ReadingGlossary:
     """Build the reading glossary of one run. Raises ``ReadingGlossaryUnavailable`` when the model is
-    unavailable after all the attempts of a batch (the artifact with what was accepted is written first)."""
+    unavailable after all the attempts of a batch (the artifact with what was accepted is written first).
+
+    ``output_budget_multiplier`` is the answering model's (spec 069 FR-006), as the run glossary of
+    063 sizes its answers: a model that spends more tokens per entry is not cut off mid-list."""
 
     candidates = extract_reading_candidates(paragraphs)
     sent = [item for item in candidates if item.sent]
@@ -539,6 +545,7 @@ def run_reading_glossary(
                 should_stop=should_stop,
                 request_text_completion_fn=request_text_completion_fn,
                 sleep_fn=sleep_fn,
+                output_budget_multiplier=output_budget_multiplier,
             )
 
         for batch in _batches(sent):
@@ -791,6 +798,12 @@ def run_reading_glossary_phase(
             log_event=dependencies.log_event,
             filename=filename,
             artifact_context=context,
+            # The multiplier of the run's model selector, looked up as the 063 run glossary looks
+            # it up (``GenerationRequestProfile.for_model``). 063 takes it from the first-pass
+            # profile, which exists only for ``standard`` / ``quality`` translate runs; an audiobook
+            # run has none, so the table is asked directly. No reasoning parameter is sent: the
+            # audiobook block call sends none either.
+            output_budget_multiplier=output_budget_multiplier_for_model(str(getattr(context, "model", "") or model_id)),
             **optional,
         )
     except ReadingGlossaryUnavailable as exc:
