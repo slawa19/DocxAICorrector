@@ -95,6 +95,7 @@ NEEDS_REVIEW_REASONS: tuple[str, ...] = (
     NEEDS_REVIEW_LOW_COVERAGE,
 )
 _BODY_ROLE = "body"
+_HEADING_ROLE = "heading"
 # Samples in log events and exclusion records: never a full text (LOGGING §1.5, contracts/events.md).
 SAMPLE_MAX_CHARS = 120
 FRAGMENT_SAMPLE_LIMIT = 3
@@ -411,11 +412,16 @@ def rebuild_block_with_narration_texts(
     if dispositions is None:
         return processed_chunk
     sources = _block_source_texts(payload, paragraph_ids)
+    roles = _payload_list(payload, "structural_roles", len(paragraph_ids)) or [_BODY_ROLE] * len(paragraph_ids)
     rebuilt = [
         ParagraphDisposition(
             paragraph_id=item.paragraph_id,
             text=(
-                _with_source_heading_prefix(texts_by_id[str(item.paragraph_id)], sources[position])
+                _with_source_heading_prefix(
+                    texts_by_id[str(item.paragraph_id)],
+                    sources[position],
+                    is_heading=str(roles[position] or "").strip().casefold() == _HEADING_ROLE,
+                )
                 if str(item.paragraph_id) in texts_by_id
                 else item.text
             ),
@@ -429,17 +435,20 @@ def rebuild_block_with_narration_texts(
 _MARKDOWN_HEADING_PREFIX = re.compile(r"^(#{1,6})[ \t]+\S")
 
 
-def _with_source_heading_prefix(narration_text: str, source_text: str) -> str:
+def _with_source_heading_prefix(narration_text: str, source_text: str, *, is_heading: bool) -> str:
     """The DOCX/Markdown text of a narrated paragraph: its narration, under the SOURCE's heading.
 
     The narration itself carries no Markdown (the prompt forbids it, the cleanup strips what is
     left), so without this every heading of the source would reach the DOCX as a body
     paragraph -- the FR-009 run of 2026-11-10 failed ``key_headings_preserved`` on all three
-    inputs for exactly that. The heading level is read off the paragraph's own source by form
-    (a Markdown heading prefix), never off the answer; the ``.tts.txt`` is assembled from the
-    narration records and never sees this prefix.
+    inputs for exactly that. Only a paragraph whose preparation ROLE is a heading gets it (a
+    body paragraph whose text happens to start with ``#`` stays body -- Codex acceptance review
+    of 2026-11-10, finding 1); the level is read off that paragraph's own source prefix, never
+    off the answer. The ``.tts.txt`` is assembled from the narration records and never sees it.
     """
 
+    if not is_heading:
+        return str(narration_text or "")
     match = _MARKDOWN_HEADING_PREFIX.match(str(source_text or "").lstrip())
     text = str(narration_text or "")
     if match is None or not text.strip() or text.lstrip().startswith("#"):

@@ -697,6 +697,28 @@ def test_the_docx_keeps_the_source_heading_while_the_narration_carries_no_markdo
     assert text == "Глава четвёртая\n\nРыбаки вышли в море на рассвете."
 
 
+def test_a_body_paragraph_whose_source_starts_with_a_hash_is_not_promoted_to_a_heading() -> None:
+    """Codex acceptance review 2026-11-10, finding 1: the heading prefix is restored only for a
+    paragraph whose preparation role is a heading, never because its source text starts with
+    ``#`` -- in both the ordinary delivery and the controlled fallback."""
+
+    payload = _payload(
+        ("p1", "# в примере этот знак открывает обычный комментарий.", "body", None),
+        ("p2", "## Глава IV", "heading", None),
+    )
+
+    def answer(pid: str, _source: str) -> tuple[str, str]:
+        return ("В примере этот знак открывает обычный комментарий.", "accepted") if pid == "p1" else (
+            "Глава четвёртая",
+            "accepted",
+        )
+
+    delivered = _delivered(_run(payload, generator=_Generator(answer)).state)
+
+    assert delivered["p1"].text == "В примере этот знак открывает обычный комментарий."
+    assert delivered["p2"].text == "## Глава четвёртая"
+
+
 def test_a_record_carrying_a_blank_line_is_reported_as_a_boundary_mismatch() -> None:
     """Counter-proof that the boundary check reads the FINAL text back, not the record count."""
 
