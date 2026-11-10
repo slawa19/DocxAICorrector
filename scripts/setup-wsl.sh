@@ -79,6 +79,11 @@ PY
         echo "LibreOffice executable not found after setup: expected soffice or libreoffice." >&2
         exit 1
     fi
+    # Narration PDF export (spec 072) relies on a Cyrillic-capable Liberation Serif.
+    if [[ -z "$(fc-list ":lang=ru:family=Liberation Serif" 2>/dev/null)" ]]; then
+        echo "Liberation Serif with Cyrillic coverage not found after setup: expected package fonts-liberation." >&2
+        exit 1
+    fi
 }
 
 require_file "$APT_REQUIREMENTS_FILE"
