@@ -25,11 +25,16 @@ The imprecision is now a spare line in a review log instead of a destroyed run.
 
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from docxaicorrector.pipeline.audiobook_pass import NarrationParagraphRecord, is_audiobook_operation
+from docxaicorrector.pipeline.audiobook_pass import (
+    NARRATION_PARAGRAPH_NARRATED,
+    NARRATION_PARAGRAPH_SCENE_BREAK,
+    NarrationParagraphRecord,
+    is_audiobook_operation,
+)
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
 
@@ -106,12 +111,16 @@ class NarrationGroup:
     projection (the narration DOCX) are two views of ONE list of groups. ``role`` and
     ``heading_level`` are the first record's; a joined group is always ``body`` + ``body``
     (``narration_paragraph_continues``), so a heading group is a single record.
+
+    ``after_scene_break`` (spec 073 FR-006): the group's first record follows an excluded scene
+    separator (``scene_break_before_ids``); no join ever crosses that mark.
     """
 
     paragraph_ids: tuple[str, ...]
     role: str
     heading_level: int | None
     text: str
+    after_scene_break: bool = False
 
 
 @dataclass(frozen=True)
@@ -140,6 +149,33 @@ def narration_paragraph_continues(*, previous_role: str, previous_text: str, fol
     return first.isalpha() and first.islower()
 
 
+def scene_break_before_ids(kinds: Sequence[tuple[str, str]], *, present_ids: Collection[str]) -> frozenset[str]:
+    """The ids that follow an excluded scene separator (spec 073 FR-006, research R8, data-model §6).
+
+    ``kinds`` is ``state.narration_paragraph_kinds`` in book order; ``present_ids`` are the ids of the
+    records the text is assembled from. One pass: a ``scene_break`` arms the mark once a present
+    narrated paragraph came before it; the next ``narrated`` id that is present takes the mark and
+    disarms it. ``excluded`` and absent narrated ids are transparent -- they neither set nor clear
+    it. Several separators in a row give one mark; a separator at the start of the book (nothing
+    narrated before) or at its end (nothing after) gives none.
+    """
+
+    marks: set[str] = set()
+    seen_narrated = False
+    armed = False
+    for paragraph_id, kind in kinds:
+        if kind == NARRATION_PARAGRAPH_SCENE_BREAK:
+            armed = armed or seen_narrated
+            continue
+        if kind != NARRATION_PARAGRAPH_NARRATED or not paragraph_id or paragraph_id not in present_ids:
+            continue
+        if armed:
+            marks.add(paragraph_id)
+            armed = False
+        seen_narrated = True
+    return frozenset(marks)
+
+
 def _first_expected_id_difference(record_ids: Sequence[str], expected_ids: Sequence[str]) -> str | None:
     """The first id where the assembled sequence departs from the expected denominator, or ``None``."""
 
@@ -156,6 +192,7 @@ def _first_expected_id_difference(record_ids: Sequence[str], expected_ids: Seque
 def assemble_narration_records(
     records: Sequence[NarrationParagraphRecord],
     expected_paragraph_ids: Sequence[str] | None = None,
+    scene_break_before_ids: Collection[str] = frozenset(),
 ) -> NarrationAssembly:
     """The ``.tts.txt`` text from the records, and the check that it parses back into them.
 
@@ -167,12 +204,16 @@ def assemble_narration_records(
     ``expected_paragraph_ids`` is the run's fixed denominator (``narration_expected_paragraph_ids``):
     when it is given, the SEQUENCE of the records' ids, with multiplicity, must equal it (a record
     without an id is not compared, as before). A reorder, a duplicate or a loss is a mismatch.
+
+    ``scene_break_before_ids`` (spec 073 FR-006, from ``scene_break_before_ids``): a record whose id
+    is in it opens a new group marked ``after_scene_break``, never joined to the one before.
     """
 
     groups: list[list[NarrationParagraphRecord]] = []
     join_pairs: list[tuple[str, str]] = []
     for record in records:
-        if groups and narration_paragraph_continues(
+        after_scene_break = bool(record.paragraph_id) and record.paragraph_id in scene_break_before_ids
+        if groups and not after_scene_break and narration_paragraph_continues(
             previous_role=groups[-1][-1].role,
             previous_text=groups[-1][-1].text,
             following_role=record.role,
@@ -227,6 +268,7 @@ def assemble_narration_records(
                     group[0].heading_level if str(group[0].role or "").strip().casefold() == _NARRATION_HEADING_ROLE else None
                 ),
                 text=group_text,
+                after_scene_break=bool(group[0].paragraph_id) and group[0].paragraph_id in scene_break_before_ids,
             )
             for group, group_text in zip(groups, group_texts)
         ),
@@ -246,7 +288,17 @@ def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, sta
     ]
     if not records:
         return None
-    assembly = assemble_narration_records(records, getattr(state, "narration_expected_paragraph_ids", None))
+    # Spec 073 FR-006: the marks are computed over the ids that are still here, so a mark passes a
+    # narrated paragraph left without text to the next one that has it.
+    marks = scene_break_before_ids(
+        getattr(state, "narration_paragraph_kinds", None) or (),
+        present_ids={record.paragraph_id for record in records if record.paragraph_id},
+    )
+    assembly = assemble_narration_records(
+        records,
+        getattr(state, "narration_expected_paragraph_ids", None),
+        scene_break_before_ids=marks,
+    )
     state.narration_joined_sentence_continuation_count = len(assembly.join_pairs)
     state.narration_joined_paragraph_id_pairs = list(assembly.join_pairs)
     state.narration_paragraph_boundary_check = assembly.boundary_check

@@ -33,7 +33,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from docxaicorrector.core.models import PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+from docxaicorrector.core.models import NARRATION_EXCLUSION_FRAGMENT, PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
+from docxaicorrector.document.narration_exclusion import is_scene_break_text
 from docxaicorrector.generation._generation import (
     PARAGRAPH_STATUS_ACCEPTED,
     PARAGRAPH_STATUS_OMITTED,
@@ -60,6 +61,7 @@ from docxaicorrector.text.narration_residue import (
 
 __all__ = [
     "AUDIOBOOK_OPERATION",
+    "NARRATION_PARAGRAPH_KINDS",
     "NEEDS_REVIEW_REASONS",
     "AudiobookParagraphInput",
     "FinalizedAudiobookBlock",
@@ -94,6 +96,17 @@ NEEDS_REVIEW_REASONS: tuple[str, ...] = (
     NEEDS_REVIEW_RESIDUE,
     NEEDS_REVIEW_REPAIR_FAILED,
     NEEDS_REVIEW_LOW_COVERAGE,
+)
+# Spec 073 FR-006 (research R8): the kind of every paragraph of a registered block, kept in
+# ``state.narration_paragraph_kinds``. Closed: ``narrated`` (no exclusion reason), ``scene_break`` (excluded
+# as ``fragment`` and its source has the separator form ``is_scene_break_text``), ``excluded`` (any other).
+NARRATION_PARAGRAPH_NARRATED = "narrated"
+NARRATION_PARAGRAPH_SCENE_BREAK = "scene_break"
+NARRATION_PARAGRAPH_EXCLUDED = "excluded"
+NARRATION_PARAGRAPH_KINDS: tuple[str, ...] = (
+    NARRATION_PARAGRAPH_NARRATED,
+    NARRATION_PARAGRAPH_SCENE_BREAK,
+    NARRATION_PARAGRAPH_EXCLUDED,
 )
 _BODY_ROLE = "body"
 _HEADING_ROLE = "heading"
@@ -535,6 +548,10 @@ def register_audiobook_block(*, state: Any, payload: Any, block_index: int) -> t
 
     The narrated ids are the denominator of FR-007 (an empty answer cannot shrink it); every
     exclusion is kept with its reason and address (FR-003). Returns the narrated ids.
+
+    Spec 073 FR-006: the kind of every paragraph (``NARRATION_PARAGRAPH_KINDS``) is appended to
+    ``state.narration_paragraph_kinds`` in block order -- the only place the position of an excluded
+    scene separator is still visible; the assembly turns it into a mark (``narration_postprocess``).
     """
 
     paragraph_ids = [str(paragraph_id) for paragraph_id in (getattr(payload, "paragraph_ids", None) or [])]
@@ -547,17 +564,22 @@ def register_audiobook_block(*, state: Any, payload: Any, block_index: int) -> t
         return ()
     sources = _block_source_texts(payload, paragraph_ids) if any(reason is not None for reason in reasons) else []
     exclusions = _state_list(state, "narration_exclusions")
+    kinds = _state_list(state, "narration_paragraph_kinds")
     narrated: list[str] = []
     for position, (paragraph_id, reason) in enumerate(zip(paragraph_ids, reasons)):
         if reason is None:
             narrated.append(paragraph_id)
+            kinds.append((paragraph_id, NARRATION_PARAGRAPH_NARRATED))
             continue
+        source = sources[position] if position < len(sources) else ""
+        scene_break = str(reason) == NARRATION_EXCLUSION_FRAGMENT and is_scene_break_text(source)
+        kinds.append((paragraph_id, NARRATION_PARAGRAPH_SCENE_BREAK if scene_break else NARRATION_PARAGRAPH_EXCLUDED))
         exclusions.append(
             {
                 "paragraph_id": paragraph_id,
                 "block_index": block_index,
                 "reason": str(reason),
-                "sample": _sample(sources[position]) if position < len(sources) else "",
+                "sample": _sample(source),
             }
         )
     _state_list(state, "narration_expected_paragraph_ids").extend(narrated)

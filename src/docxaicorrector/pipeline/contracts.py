@@ -291,6 +291,15 @@ class ProcessingState:
     # (``narration_postprocess.NarrationGroup``), in order; ``[]`` before the text is built and for
     # every operation but ``audiobook``. The narration DOCX is a second projection of this list.
     narration_groups: list[Any] = field(default_factory=list)
+    # Spec 073 FR-006 (data-model §5): ``(paragraph_id, kind)`` for EVERY paragraph of every registered
+    # audiobook block, in book order, ``kind`` from ``audiobook_pass.NARRATION_PARAGRAPH_KINDS``. Written at
+    # registration, where the excluded paragraphs are still visible; the scene-break marks are computed from it.
+    narration_paragraph_kinds: list[tuple[str, str]] = field(default_factory=list)
+    # Spec 073 FR-004 (data-model §4-5): the run's reading glossary (``pipeline.reading_glossary.ReadingGlossary``),
+    # ``None`` before the step and for every operation but ``audiobook``; and the indexes of the blocks whose
+    # prompts carried its section.
+    audiobook_reading_glossary: Any = None
+    audiobook_reading_glossary_block_indexes: set[int] = field(default_factory=set)
     # The ``repair`` variant of the audiobook system prompt, built once per run.
     audiobook_repair_system_prompt: str | None = None
     # Spec 059 FR-A8, revised 2026-08-09: one entry per DELIVERED block that shipped prose in
