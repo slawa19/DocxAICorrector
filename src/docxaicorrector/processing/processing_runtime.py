@@ -1655,7 +1655,7 @@ def build_result_bundle(
 
 
 def _normalize_narration_exports(narration_exports: Mapping[str, object] | None) -> dict[str, object] | None:
-    """Exactly the four contract keys; non-``bytes``/empty payloads and non-``str`` reasons become ``None``."""
+    """Exactly the five contract keys (spec 073 adds ``book_json``); non-``bytes``/empty payloads and non-``str`` reasons become ``None``."""
     if not isinstance(narration_exports, Mapping):
         return None
 
@@ -1672,6 +1672,8 @@ def _normalize_narration_exports(narration_exports: Mapping[str, object] | None)
         "pdf_bytes": _payload("pdf_bytes"),
         "docx_unavailable_reason": _reason("docx_unavailable_reason"),
         "pdf_unavailable_reason": _reason("pdf_unavailable_reason"),
+        # spec 073 FR-008: the narration book file text; same rule as a reason (non-empty ``str``).
+        "book_json": _reason("book_json"),
     }
 
 
