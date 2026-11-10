@@ -129,6 +129,42 @@ def test_failed_write_of_pdf_member_leaves_no_group_file_and_no_temp_file(tmp_pa
     assert _names(tmp_path) == []
 
 
+@pytest.mark.parametrize("failing_member", [".tts.pdf", ".tts.docx", ".result.md"])
+def test_failure_after_partial_write_leaves_no_temp_file_and_no_member(tmp_path, monkeypatch, failing_member):
+    """Codex acceptance finding 2: the write creates the temp file, THEN raises."""
+    original_write_bytes = Path.write_bytes
+    original_write_text = Path.write_text
+    partial_writes: list[str] = []
+
+    def partial_then_fail_bytes(self, data):
+        if failing_member in self.name:
+            original_write_bytes(self, data[:3])
+            partial_writes.append(self.name)
+            raise OSError("disk full after partial write")
+        return original_write_bytes(self, data)
+
+    def partial_then_fail_text(self, data, *args, **kwargs):
+        if failing_member in self.name:
+            original_write_text(self, data[:3], *args, **kwargs)
+            partial_writes.append(self.name)
+            raise OSError("disk full after partial write")
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_bytes", partial_then_fail_bytes)
+    monkeypatch.setattr(Path, "write_text", partial_then_fail_text)
+
+    with pytest.raises(OSError, match="after partial write"):
+        _write(
+            tmp_path,
+            narration_text="Narration text.",
+            narration_docx_bytes=b"PK-narration-docx",
+            narration_pdf_bytes=b"%PDF-narration",
+        )
+
+    assert len(partial_writes) == 1, "the failing member must really have created a partial file"
+    assert _names(tmp_path) == []
+
+
 # --- T-E4: retention ---------------------------------------------------------------------------
 
 

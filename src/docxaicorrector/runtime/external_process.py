@@ -12,8 +12,11 @@ import os
 import shutil
 import signal
 import subprocess
+import time
 
 _DEFAULT_TIMEOUT_SECONDS = 120
+_TERMINATE_GRACE_SECONDS = 5
+_COLLECT_TIMEOUT_SECONDS = 5
 
 
 def find_soffice_binary() -> str | None:
@@ -49,7 +52,7 @@ def run_completed_process(
         except subprocess.TimeoutExpired as exc:
             if process is not None:
                 terminate_process_tree(process)
-                process.communicate()
+                _collect_output_bounded(process)
             raise RuntimeError(
                 f"{error_message} Превышено время ожидания {timeout_seconds} сек."
             ) from exc
@@ -90,24 +93,82 @@ def run_completed_process(
     return result
 
 
-def terminate_process_tree(process: subprocess.Popen) -> None:
+def _collect_output_bounded(process: subprocess.Popen) -> None:
+    """Drain what is left on the pipes after a timeout, never blocking for good.
+
+    A process outside the killed group (or one that escaped it) may still hold the pipe
+    write ends; then ``communicate()`` would wait forever. Give up after a bound, close
+    the pipes and return so the caller can raise its timeout error."""
     try:
-        if os.name == "nt":
+        process.communicate(timeout=_COLLECT_TIMEOUT_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except (OSError, ValueError):
+        pass
+    for stream in (process.stdout, process.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except (OSError, ValueError):
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=_COLLECT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def terminate_process_tree(process: subprocess.Popen) -> None:
+    """End the whole process group of ``process``: SIGTERM, a short grace, then SIGKILL.
+
+    The group always gets SIGKILL when it is still populated after the grace, whether or
+    not the leader itself already exited (a child that outlives the leader would
+    otherwise keep the pipes open and survive)."""
+    if os.name == "nt":
+        try:
             process.kill()
-            return
-        os.killpg(process.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        return
+    pgid = process.pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return
     except OSError:
         process.kill()
         return
 
+    deadline = time.monotonic() + _TERMINATE_GRACE_SECONDS
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=_TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        except OSError:
-            process.kill()
+        pass
+    while _group_exists(pgid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError:
+        process.kill()
+        return
+    try:
+        process.wait(timeout=_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
