@@ -96,6 +96,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_069_notes_gate.py`
 - `tests/test_spec_070_postpass_removed.py`
 - `tests/test_spec_070_request_golden.py`
+- `tests/test_spec_071_shared_reference_guard.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`
