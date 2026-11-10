@@ -8329,3 +8329,144 @@ def test_write_latest_alias_artifacts_without_narration_exports_has_null_manifes
     manifest = json.loads((tmp_path / "latest.json").read_text(encoding="utf-8"))
     assert manifest["latest_tts_docx"] is None
     assert manifest["latest_tts_pdf"] is None
+
+
+def _run_alias_then_finalize_sequence(
+    validation,
+    *,
+    artifact_root,
+    run_id: str,
+    with_tts_docx: bool,
+    with_tts_pdf: bool,
+) -> dict:
+    """Drive the runner's closing sequence: alias copy, tracker state, tracker.finalize.
+
+    Returns the FINAL latest manifest (read after finalize rewrote it).
+    """
+    run_dir = artifact_root / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    latest_manifest_path = artifact_root / "lietaer_validation_latest.json"
+    report_path = run_dir / "report.json"
+    summary_path = run_dir / "summary.txt"
+    report_path.write_text("{}", encoding="utf-8")
+    summary_path.write_text("summary", encoding="utf-8")
+    tts_text = run_dir / "book.tts.txt"
+    tts_text.write_text("text", encoding="utf-8")
+    tts_docx = run_dir / "book.tts.docx"
+    tts_pdf = run_dir / "book.tts.pdf"
+    if with_tts_docx:
+        tts_docx.write_bytes(f"PK-docx-{run_id}".encode())
+    if with_tts_pdf:
+        tts_pdf.write_bytes(f"%PDF-{run_id}".encode())
+    latest_report_path = artifact_root / "latest_report.json"
+    latest_summary_path = artifact_root / "latest_summary.txt"
+
+    tracker = validation.ValidationProgressTracker(
+        run_id=run_id,
+        source_path=artifact_root / "source.docx",
+        run_dir=run_dir,
+        artifact_root=artifact_root,
+        progress_path=run_dir / "progress.json",
+        latest_progress_path=artifact_root / "lietaer_validation_progress.json",
+        latest_manifest_path=latest_manifest_path,
+        report_path=report_path,
+        summary_path=summary_path,
+        markdown_path=run_dir / "validated.md",
+        docx_path=run_dir / "validated.docx",
+        latest_report_path=latest_report_path,
+        latest_summary_path=latest_summary_path,
+        latest_markdown_path=artifact_root / "validated.md",
+        latest_docx_path=artifact_root / "validated.docx",
+        started_at_utc=validation.datetime.now(validation.UTC),
+    )
+    # The runner always hands over the alias TARGETS; absent formats are expressed by artifact=None.
+    narration_alias_fields = validation._write_latest_alias_artifacts(
+        report_path=report_path,
+        summary_path=summary_path,
+        markdown_artifact=None,
+        docx_artifact=None,
+        tts_artifact=tts_text,
+        latest_report_path=latest_report_path,
+        latest_summary_path=latest_summary_path,
+        latest_markdown_path=None,
+        latest_docx_path=None,
+        latest_tts_path=artifact_root / "book.tts.txt",
+        latest_manifest_path=latest_manifest_path,
+        run_id=run_id,
+        run_dir=run_dir,
+        manifest_payload=tracker._build_manifest_payload_locked(),
+        tts_docx_artifact=tts_docx if with_tts_docx else None,
+        tts_pdf_artifact=tts_pdf if with_tts_pdf else None,
+        latest_tts_docx_path=artifact_root / "book.tts.docx",
+        latest_tts_pdf_path=artifact_root / "book.tts.pdf",
+    )
+    tracker.set_manifest_context(**narration_alias_fields)
+    tracker.finalize(
+        status="completed",
+        result="succeeded",
+        acceptance_passed=True,
+        failure_classification=None,
+        last_error="",
+        detail="Acceptance=passed",
+    )
+    return json.loads(latest_manifest_path.read_text(encoding="utf-8"))
+
+
+def test_final_latest_manifest_after_finalize_keeps_the_narration_docx_and_pdf_fields(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    manifest = _run_alias_then_finalize_sequence(
+        validation, artifact_root=tmp_path, run_id="run-1", with_tts_docx=True, with_tts_pdf=True
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["latest_tts_docx"] == validation._path_for_report(tmp_path / "book.tts.docx")
+    assert manifest["latest_tts_pdf"] == validation._path_for_report(tmp_path / "book.tts.pdf")
+    assert manifest["latest_tts_text"] == validation._path_for_report(tmp_path / "book.tts.txt")
+
+
+def test_final_latest_manifest_after_finalize_has_null_narration_docx_and_pdf_when_not_built(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    manifest = _run_alias_then_finalize_sequence(
+        validation, artifact_root=tmp_path, run_id="run-1", with_tts_docx=False, with_tts_pdf=False
+    )
+
+    assert manifest["status"] == "completed"
+    assert "latest_tts_docx" in manifest and manifest["latest_tts_docx"] is None
+    assert "latest_tts_pdf" in manifest and manifest["latest_tts_pdf"] is None
+
+
+def test_second_run_without_narration_pdf_removes_the_stale_latest_pdf_alias(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    first = _run_alias_then_finalize_sequence(
+        validation, artifact_root=tmp_path, run_id="run-1", with_tts_docx=True, with_tts_pdf=True
+    )
+    assert (tmp_path / "book.tts.pdf").read_bytes() == b"%PDF-run-1"
+    assert first["latest_tts_pdf"] is not None
+
+    second = _run_alias_then_finalize_sequence(
+        validation, artifact_root=tmp_path, run_id="run-2", with_tts_docx=True, with_tts_pdf=False
+    )
+
+    assert not (tmp_path / "book.tts.pdf").exists()
+    assert second["latest_tts_pdf"] is None
+    assert (tmp_path / "book.tts.docx").read_bytes() == b"PK-docx-run-2"
+    assert second["latest_tts_docx"] == validation._path_for_report(tmp_path / "book.tts.docx")
+
+
+def test_second_run_without_narration_docx_removes_the_stale_latest_docx_alias(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    _run_alias_then_finalize_sequence(
+        validation, artifact_root=tmp_path, run_id="run-1", with_tts_docx=True, with_tts_pdf=True
+    )
+    second = _run_alias_then_finalize_sequence(
+        validation, artifact_root=tmp_path, run_id="run-2", with_tts_docx=False, with_tts_pdf=True
+    )
+
+    assert not (tmp_path / "book.tts.docx").exists()
+    assert second["latest_tts_docx"] is None
+    assert (tmp_path / "book.tts.pdf").read_bytes() == b"%PDF-run-2"
+    assert second["latest_tts_pdf"] == validation._path_for_report(tmp_path / "book.tts.pdf")
