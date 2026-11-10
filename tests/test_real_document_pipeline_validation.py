@@ -8029,3 +8029,303 @@ def test_log_event_inventory_script_scans_the_spec_069_emitters() -> None:
         "src/docxaicorrector/core/translation_modes.py",
     ):
         assert f'"{target}"' in script
+
+
+# Spec 072 T-I1: the events of ``specs/072-narration-docx-pdf/contracts/events.md``.
+
+_SPEC_072_LOG_EVENTS = (
+    "audiobook_narration_docx_failed",
+    "audiobook_narration_pdf_unavailable",
+    "audiobook_studio_limits_exceeded",
+    "ui_audiobook_artifact_saved",
+)
+_SPEC_072_NEW_UI_ARTIFACT_FIELDS = (
+    "tts_docx_path",
+    "tts_pdf_path",
+    "narration_docx_status",
+    "narration_pdf_status",
+    "narration_pdf_unavailable_reason",
+    "narration_pdf_seconds",
+    "chapter_heading_level",
+    "heading_levels_present",
+    "heading1_count",
+    "demoted_heading_count",
+    "heading_merge_count",
+    "heading_merges",
+    "studio_max_chapter_paragraph_count",
+    "studio_max_paragraph_chars",
+    "studio_limits_exceeded",
+    "narration_docx_paragraph_count",
+)
+
+
+@pytest.mark.parametrize("event_id", _SPEC_072_LOG_EVENTS)
+def test_logging_document_registers_every_spec_072_event(event_id: str) -> None:
+    assert _source_emits_event(event_id), f"{event_id} is not emitted anywhere under src/ -- the guard list is stale"
+    assert f"`{event_id}`" in _logging_document_text(), f"{event_id} is not registered in docs/LOGGING_AND_ARTIFACT_RETENTION.md"
+
+
+def test_logging_document_lists_the_new_spec_072_ui_audiobook_artifact_fields() -> None:
+    document = _logging_document_text()
+    for field in _SPEC_072_NEW_UI_ARTIFACT_FIELDS:
+        assert f"`{field}`" in document, f"{field} is not documented for ui_audiobook_artifact_saved"
+
+
+def test_logging_document_records_the_narration_docx_pdf_result_files() -> None:
+    document = _logging_document_text()
+    assert ".result.tts.docx" in document
+    assert ".result.tts.pdf" in document
+
+
+def test_log_event_inventory_script_scans_the_spec_072_emitters() -> None:
+    root = Path(__file__).resolve().parent.parent
+    script = (root / "scripts" / "_list_log_events.py").read_text(encoding="utf-8")
+    for target in (
+        "src/docxaicorrector/pipeline/narration_exports.py",
+        "src/docxaicorrector/generation/narration_pdf.py",
+    ):
+        assert f'"{target}"' in script
+        assert (root / target).exists()
+
+
+def test_log_event_inventory_script_reports_the_spec_072_events() -> None:
+    import contextlib
+    import runpy
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "_list_log_events.py"
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        runpy.run_path(str(script), run_name="__main__")
+    reported = {line.split("\t", 1)[0] for line in buffer.getvalue().splitlines() if line}
+    for event_id in (
+        "audiobook_narration_docx_failed",
+        "audiobook_narration_pdf_unavailable",
+        "audiobook_studio_limits_exceeded",
+    ):
+        assert event_id in reported
+
+
+# Spec 072 T-I2/T-I3: the runner report and the narration DOCX/PDF files.
+
+_SPEC_072_EVENT_CONTEXT = {
+    "char_count": 1000,
+    "tts_docx_path": "/run/x.result.tts.docx",
+    "tts_pdf_path": None,
+    "narration_docx_status": "built",
+    "narration_pdf_status": "unavailable",
+    "narration_pdf_unavailable_reason": "soffice_not_found",
+    "narration_pdf_seconds": 0.0,
+    "chapter_heading_level": 2,
+    "heading_levels_present": [2, 3],
+    "heading1_count": 12,
+    "demoted_heading_count": 5,
+    "heading_merge_count": 1,
+    "heading_merges": [{"paragraph_ids": ["p0001", "p0002"], "levels": [2, 2], "style": "Heading 1"}],
+    "studio_max_chapter_paragraph_count": 87,
+    "studio_max_paragraph_chars": 1200,
+    "studio_limits_exceeded": [],
+    "narration_docx_paragraph_count": 400,
+}
+
+
+def test_narration_report_carries_the_spec_072_fields_and_summary_lines() -> None:
+    validation = _load_validation_module()
+
+    record = validation._extract_narration_artifact_record(
+        [{"event_id": "ui_audiobook_artifact_saved", "context": dict(_SPEC_072_EVENT_CONTEXT)}]
+    )
+    assert record is not None
+    for field in _SPEC_072_NEW_UI_ARTIFACT_FIELDS:
+        assert field in record
+    assert record["heading_merges"][0]["paragraph_ids"] == ["p0001", "p0002"]
+
+    lines = validation._build_narration_summary_lines(record)
+
+    assert "narration_heading1_count=12" in lines
+    assert "narration_heading_merge_count=1" in lines
+    assert "narration_demoted_heading_count=5" in lines
+    assert "narration_studio_max_chapter_paragraph_count=87" in lines
+    assert "narration_studio_max_paragraph_chars=1200" in lines
+    assert "narration_narration_docx_status=built" in lines
+    assert "narration_narration_pdf_status=unavailable" in lines
+    assert "narration_narration_pdf_seconds=0.0" in lines
+    assert "narration_narration_docx_paragraph_count=400" in lines
+    assert 'narration_heading_merges=[{"levels": [2, 2], "paragraph_ids": ["p0001", "p0002"], "style": "Heading 1"}]' in lines
+    assert "narration_heading_levels_present=[2, 3]" in lines
+    assert "narration_studio_limits_exceeded=[]" in lines
+    assert 'narration_narration_pdf_unavailable_reason="soffice_not_found"' in lines
+
+
+def test_narration_report_says_not_reported_for_spec_072_fields_the_event_lacks() -> None:
+    """An event from before spec 072 does not claim zero chapters: the new lines are ``not_reported``."""
+    validation = _load_validation_module()
+
+    lines = validation._build_narration_summary_lines({"char_count": 10})
+
+    assert "narration_heading1_count=not_reported" in lines
+    assert "narration_narration_docx_status=not_reported" in lines
+    assert "narration_narration_pdf_status=not_reported" in lines
+    assert "narration_heading_merges=not_reported" in lines
+    assert "narration_studio_limits_exceeded=not_reported" in lines
+    assert validation._build_narration_summary_lines(None) == ["narration_artifact=not_reported"]
+
+
+def _narration_docx_bytes(styles: list[tuple[str, str]]) -> bytes:
+    document = Document()
+    for style, text in styles:
+        document.add_paragraph(text, style=style)
+    return _docx_bytes(document)
+
+
+def test_write_narration_export_artifacts_saves_both_files_from_the_state_key(tmp_path) -> None:
+    validation = _load_validation_module()
+    run_dir = tmp_path / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    docx_bytes = _narration_docx_bytes([("Heading 1", "Alpha"), ("Normal", "beta")])
+    exports = {
+        "docx_bytes": docx_bytes,
+        "pdf_bytes": b"%PDF-1.4 stub",
+        "docx_unavailable_reason": None,
+        "pdf_unavailable_reason": None,
+    }
+
+    docx_path, pdf_path = validation._write_narration_export_artifacts(
+        exports, artifact_dir=run_dir, output_basename="book"
+    )
+
+    assert docx_path == run_dir / "book.tts.docx" and docx_path.read_bytes() == docx_bytes
+    assert pdf_path == run_dir / "book.tts.pdf" and pdf_path.read_bytes() == b"%PDF-1.4 stub"
+
+
+@pytest.mark.parametrize(
+    "exports",
+    [
+        None,
+        {},
+        {"docx_bytes": None, "pdf_bytes": None, "docx_unavailable_reason": "render_failed", "pdf_unavailable_reason": "docx_not_built"},
+        {"docx_bytes": b"", "pdf_bytes": b"", "docx_unavailable_reason": None, "pdf_unavailable_reason": None},
+        "not-a-mapping",
+    ],
+)
+def test_write_narration_export_artifacts_without_bytes_writes_nothing_and_does_not_raise(tmp_path, exports) -> None:
+    validation = _load_validation_module()
+
+    docx_path, pdf_path = validation._write_narration_export_artifacts(
+        exports, artifact_dir=tmp_path, output_basename="book"
+    )
+
+    assert docx_path is None and pdf_path is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_write_narration_export_artifacts_saves_the_pdf_when_only_the_pdf_exists(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    docx_path, pdf_path = validation._write_narration_export_artifacts(
+        {"docx_bytes": None, "pdf_bytes": b"%PDF-1.4 stub"}, artifact_dir=tmp_path, output_basename="book"
+    )
+
+    assert docx_path is None
+    assert pdf_path == tmp_path / "book.tts.pdf"
+
+
+def test_inspect_narration_docx_reports_openability_and_heading_styles(tmp_path) -> None:
+    validation = _load_validation_module()
+    path = tmp_path / "book.tts.docx"
+    path.write_bytes(
+        _narration_docx_bytes(
+            [("Heading 1", "Alpha"), ("Normal", "beta"), ("Heading 1", "Gamma"), ("Heading 2", "stray"), ("Normal", "delta")]
+        )
+    )
+
+    inspection = validation._inspect_narration_docx(path)
+
+    assert inspection == {
+        "tts_docx_openable": True,
+        "tts_docx_paragraphs": 5,
+        "tts_docx_heading1_count": 2,
+        "tts_docx_other_heading_style_count": 1,
+    }
+
+
+def test_inspect_narration_docx_marks_a_corrupt_or_missing_file_unopenable(tmp_path) -> None:
+    validation = _load_validation_module()
+    broken = tmp_path / "broken.tts.docx"
+    broken.write_bytes(b"not a zip")
+
+    for path in (broken, None):
+        inspection = validation._inspect_narration_docx(path)
+        assert inspection["tts_docx_openable"] is False
+        assert inspection["tts_docx_paragraphs"] == 0
+        assert inspection["tts_docx_heading1_count"] == 0
+        assert inspection["tts_docx_other_heading_style_count"] == 0
+
+
+def test_write_latest_alias_artifacts_copies_the_narration_docx_and_pdf(tmp_path) -> None:
+    validation = _load_validation_module()
+    report_path = tmp_path / "run_report.json"
+    summary_path = tmp_path / "run_summary.txt"
+    report_path.write_text("{}", encoding="utf-8")
+    summary_path.write_text("summary", encoding="utf-8")
+    tts_docx = tmp_path / "book.tts.docx"
+    tts_pdf = tmp_path / "book.tts.pdf"
+    tts_docx.write_bytes(b"PK-docx")
+    tts_pdf.write_bytes(b"%PDF-pdf")
+    latest = tmp_path / "latest"
+    latest.mkdir()
+
+    validation._write_latest_alias_artifacts(
+        report_path=report_path,
+        summary_path=summary_path,
+        markdown_artifact=None,
+        docx_artifact=None,
+        tts_artifact=None,
+        latest_report_path=latest / "report.json",
+        latest_summary_path=latest / "summary.txt",
+        latest_markdown_path=None,
+        latest_docx_path=None,
+        latest_tts_path=None,
+        latest_manifest_path=latest / "latest.json",
+        run_id="r1",
+        run_dir=tmp_path,
+        manifest_payload={},
+        tts_docx_artifact=tts_docx,
+        tts_pdf_artifact=tts_pdf,
+        latest_tts_docx_path=latest / "book.tts.docx",
+        latest_tts_pdf_path=latest / "book.tts.pdf",
+    )
+
+    assert (latest / "book.tts.docx").read_bytes() == b"PK-docx"
+    assert (latest / "book.tts.pdf").read_bytes() == b"%PDF-pdf"
+    manifest = json.loads((latest / "latest.json").read_text(encoding="utf-8"))
+    assert manifest["latest_tts_docx"] == validation._path_for_report(latest / "book.tts.docx")
+    assert manifest["latest_tts_pdf"] == validation._path_for_report(latest / "book.tts.pdf")
+
+
+def test_write_latest_alias_artifacts_without_narration_exports_has_null_manifest_entries(tmp_path) -> None:
+    validation = _load_validation_module()
+    report_path = tmp_path / "run_report.json"
+    summary_path = tmp_path / "run_summary.txt"
+    report_path.write_text("{}", encoding="utf-8")
+    summary_path.write_text("summary", encoding="utf-8")
+
+    validation._write_latest_alias_artifacts(
+        report_path=report_path,
+        summary_path=summary_path,
+        markdown_artifact=None,
+        docx_artifact=None,
+        tts_artifact=None,
+        latest_report_path=tmp_path / "lr.json",
+        latest_summary_path=tmp_path / "ls.txt",
+        latest_markdown_path=None,
+        latest_docx_path=None,
+        latest_tts_path=None,
+        latest_manifest_path=tmp_path / "latest.json",
+        run_id="r1",
+        run_dir=tmp_path,
+        manifest_payload={},
+    )
+
+    manifest = json.loads((tmp_path / "latest.json").read_text(encoding="utf-8"))
+    assert manifest["latest_tts_docx"] is None
+    assert manifest["latest_tts_pdf"] is None
