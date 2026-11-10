@@ -14,6 +14,7 @@ TARGETS = [
     "src/docxaicorrector/pipeline/audiobook_repair.py",
     "src/docxaicorrector/pipeline/literary_polish.py",
     "src/docxaicorrector/pipeline/price_list.py",
+    "src/docxaicorrector/pipeline/reading_glossary.py",
     "src/docxaicorrector/core/config.py",
     "src/docxaicorrector/core/logger.py",
     "src/docxaicorrector/document/layout_cleanup.py",
