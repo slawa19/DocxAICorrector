@@ -108,6 +108,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_072_result_group.py`
 - `tests/test_spec_072_result_screen.py`
 - `tests/test_spec_072_state_bundle.py`
+- `tests/test_spec_073_late_phase.py`
 - `tests/test_spec_073_latin_residue.py`
 - `tests/test_spec_073_narration_book.py`
 - `tests/test_spec_073_narration_forms.py`

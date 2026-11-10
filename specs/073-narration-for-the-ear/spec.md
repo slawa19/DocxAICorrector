@@ -9,7 +9,7 @@
 `D:\Temp\docxai-research\elevenlabs-studio\` (`RESEARCH.md`, раздел «Проба владельца»; `el_probe_C.transcript.json`),
 `D:\Temp\docxai-research\070-fr009\` (вывод замера спеки 070))
 
-**Status**: **IN PROGRESS (2026-11-10) — реализация по пакетам идёт в `073/integration` (влиты WP-A…WP-G, WP-J, WP-K); спека переписана по ревью Codex (`docs/reviews/CODEX_REVIEW_073_SPEC_2026-11-10.md`,
+**Status**: **IN PROGRESS (2026-11-10) — реализация по пакетам идёт в `073/integration` (влиты WP-A…WP-H, WP-J, WP-K); спека переписана по ревью Codex (`docs/reviews/CODEX_REVIEW_073_SPEC_2026-11-10.md`,
 «СТРОИТЬ ПОСЛЕ ПРАВОК», 3 P1 + 7 P2 + 1 P3, все приняты) и уточнена планированием по замерам без модели; план и задачи
 написаны (`plan.md`, `tasks.md`, ветка `073/integration` от `main` @ `7347bd3`, спека 072 влита); решение владельца D-4
 заменило `.tts.minimax.txt` файлом книги `.narration.json` — пакеты WP-G/J/K/H/I переписаны под него.**

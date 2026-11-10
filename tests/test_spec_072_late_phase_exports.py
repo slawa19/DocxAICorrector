@@ -530,7 +530,8 @@ def test_t_h4_renderer_failure_is_an_error_and_the_book_is_still_delivered(monke
     assert result == "succeeded"
     assert spy.calls == []
     exports = _exports_state_value(emitters)
-    assert exports == {
+    # spec 073 data-model §8 adds the fifth key ``book_json`` (the book file is built without the DOCX: 073 T-H5)
+    assert {key: value for key, value in exports.items() if key != "book_json"} == {
         "docx_bytes": None,
         "pdf_bytes": None,
         "docx_unavailable_reason": "render_failed",
@@ -639,7 +640,9 @@ def test_t_h6_saved_event_carries_every_new_key_and_keeps_the_spec_070_ones(monk
     assert saved["char_count"] == len(str(_delivery_call(emitters)["latest_narration_text"]))
     assert saved["deterministic_join_pairs"] == [["p3", "p4"]]
     assert _NEW_SAVED_EVENT_KEYS <= set(saved)
-    assert set(saved) == spec_070_keys | _NEW_SAVED_EVENT_KEYS
+    # spec 073 contracts/events.md: the four keys of the book file (checked by tests/test_spec_073_late_phase.py)
+    spec_073_export_keys = {"narration_book_path", "narration_book_status", "narration_book_chapter_count", "narration_book_pause_counts"}
+    assert set(saved) == spec_070_keys | _NEW_SAVED_EVENT_KEYS | spec_073_export_keys
 
     assert {key: saved[key] for key in sorted(_NEW_SAVED_EVENT_KEYS - {"tts_docx_path", "tts_pdf_path", "heading_merges"})} == {
         "chapter_heading_level": 1,

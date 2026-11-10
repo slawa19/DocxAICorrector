@@ -334,6 +334,9 @@ Notice экрана результата: `result.audiobook_studio_limits_exceed
   error_class, candidate_count, sent_count, artifact_path}`.
 - Сбой записи артефакта словаря логируется существующим `run_glossary_artifact_write_failed` (§3.3) с
   `schema=audiobook_reading_glossary/v1`.
+- `audiobook_narration_book_failed` — `src/docxaicorrector/pipeline/narration_exports.py`, WARNING: файл книги
+  `.narration.json` не собран (`build_narration_book` бросил исключение, например расхождение шагов плана и групп);
+  TXT, DOCX и PDF озвучки доставляются. Context: `{filename, error_class, error_message (≤ 300), group_count}`.
 
 ## 4. Rules for adding new log events (AI agent checklist)
 
