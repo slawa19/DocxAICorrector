@@ -1560,6 +1560,11 @@ class ValidationProgressTracker:
             "latest_summary": self.state.get("latest_summary_txt"),
             "latest_markdown": self.state.get("latest_markdown_path"),
             "latest_docx": self.state.get("latest_docx_path"),
+            # Spec 072 FR-007: narration alias fields live in the tracker state so every
+            # rewrite (including finalize) carries them; there is no second write path.
+            "latest_tts_text": self.state.get("latest_tts_text"),
+            "latest_tts_docx": self.state.get("latest_tts_docx"),
+            "latest_tts_pdf": self.state.get("latest_tts_pdf"),
         }
 
     def _write_locked(self) -> None:
@@ -1608,7 +1613,17 @@ def _write_latest_alias_artifacts(
     tts_pdf_artifact: Path | None = None,
     latest_tts_docx_path: Path | None = None,
     latest_tts_pdf_path: Path | None = None,
-) -> None:
+) -> dict[str, str | None]:
+    """Copy the run artifacts to their stable "latest" names and write the latest manifest.
+
+    Returns the narration alias manifest fields (``latest_tts_text`` / ``latest_tts_docx`` /
+    ``latest_tts_pdf``) so the caller can store them in the tracker state, which keeps them
+    across later manifest rewrites (``tracker.finalize``).
+
+    Spec 072: a narration DOCX/PDF that this run did not build must not leave the previous
+    run's file under the stable alias name, so ``latest_tts_docx_path`` / ``latest_tts_pdf_path``
+    are the alias TARGETS and the stale alias is removed when its artifact is absent.
+    """
     latest_report_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(report_path, latest_report_path)
     shutil.copy2(summary_path, latest_summary_path)
@@ -1619,10 +1634,25 @@ def _write_latest_alias_artifacts(
     if tts_artifact is not None and latest_tts_path is not None:
         shutil.copy2(tts_artifact, latest_tts_path)
     # Spec 072 FR-007: the narration DOCX/PDF travel with the other narration artifacts.
-    if tts_docx_artifact is not None and latest_tts_docx_path is not None:
-        shutil.copy2(tts_docx_artifact, latest_tts_docx_path)
-    if tts_pdf_artifact is not None and latest_tts_pdf_path is not None:
-        shutil.copy2(tts_pdf_artifact, latest_tts_pdf_path)
+    tts_docx_alias: Path | None = None
+    if latest_tts_docx_path is not None:
+        if tts_docx_artifact is not None:
+            shutil.copy2(tts_docx_artifact, latest_tts_docx_path)
+            tts_docx_alias = latest_tts_docx_path
+        else:
+            latest_tts_docx_path.unlink(missing_ok=True)
+    tts_pdf_alias: Path | None = None
+    if latest_tts_pdf_path is not None:
+        if tts_pdf_artifact is not None:
+            shutil.copy2(tts_pdf_artifact, latest_tts_pdf_path)
+            tts_pdf_alias = latest_tts_pdf_path
+        else:
+            latest_tts_pdf_path.unlink(missing_ok=True)
+    narration_fields: dict[str, str | None] = {
+        "latest_tts_text": _path_for_report(latest_tts_path) if latest_tts_path is not None else None,
+        "latest_tts_docx": _path_for_report(tts_docx_alias) if tts_docx_alias is not None else None,
+        "latest_tts_pdf": _path_for_report(tts_pdf_alias) if tts_pdf_alias is not None else None,
+    }
 
     latest_manifest = dict(manifest_payload)
     latest_manifest.update(
@@ -1633,12 +1663,11 @@ def _write_latest_alias_artifacts(
             "latest_summary": _path_for_report(latest_summary_path),
             "latest_markdown": _path_for_report(latest_markdown_path) if latest_markdown_path is not None else None,
             "latest_docx": _path_for_report(latest_docx_path) if latest_docx_path is not None else None,
-            "latest_tts_text": _path_for_report(latest_tts_path) if latest_tts_path is not None else None,
-            "latest_tts_docx": _path_for_report(latest_tts_docx_path) if latest_tts_docx_path is not None else None,
-            "latest_tts_pdf": _path_for_report(latest_tts_pdf_path) if latest_tts_pdf_path is not None else None,
+            **narration_fields,
         }
     )
     _write_json_atomic(latest_manifest_path, latest_manifest)
+    return narration_fields
 
 
 def _preview_text(text: str | None, *, limit: int = 240) -> str:
@@ -6932,7 +6961,7 @@ def _run_single_validation(
     report_path.write_text(
         json.dumps(sanitized_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    _write_latest_alias_artifacts(
+    narration_alias_fields = _write_latest_alias_artifacts(
         report_path=report_path,
         summary_path=summary_path,
         markdown_artifact=markdown_artifact_path,
@@ -6949,9 +6978,10 @@ def _run_single_validation(
         manifest_payload=cast(Mapping[str, object], tracker._build_manifest_payload_locked()),
         tts_docx_artifact=tts_docx_artifact_path,
         tts_pdf_artifact=tts_pdf_artifact_path,
-        latest_tts_docx_path=latest_tts_docx_path if tts_docx_artifact_path is not None else None,
-        latest_tts_pdf_path=latest_tts_pdf_path if tts_pdf_artifact_path is not None else None,
+        latest_tts_docx_path=latest_tts_docx_path,
+        latest_tts_pdf_path=latest_tts_pdf_path,
     )
+    tracker.set_manifest_context(**narration_alias_fields)
     tracker.finalize(
         status=final_status,
         result=str(report["result"]),
