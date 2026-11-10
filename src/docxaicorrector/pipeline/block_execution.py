@@ -1615,6 +1615,7 @@ def finalize_audiobook_block_for_delivery(
         payload=payload,
         processed_chunk=processed_chunk,
         texts_by_id=finalized.texts_by_id,
+        heading_levels_by_id=finalized.heading_levels_by_id,
         source_fallback=source_fallback,
     )
 

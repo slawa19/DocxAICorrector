@@ -91,10 +91,27 @@ _NARRATION_REVIEW_SAMPLE_CHARS = 120
 # Every join is recorded as the pair of ids it closed, counted apart from anything the model
 # did: the model cannot merge paragraphs (an answer with another number of markers is refused).
 _NARRATION_BODY_ROLE = "body"
+_NARRATION_HEADING_ROLE = "heading"
 _NARRATION_SENTENCE_TERMINALS = ".!?…:;"
 _NARRATION_CLOSING_MARKS = "»”’\"')]}"
 NARRATION_BOUNDARY_CHECK_OK = "ok"
 NARRATION_BOUNDARY_CHECK_MISMATCH = "mismatch"
+
+
+@dataclass(frozen=True)
+class NarrationGroup:
+    """One paragraph of the ``.tts.txt``: the records the deterministic joins put into it (spec 072 FR-001).
+
+    ``text`` is exactly the string the ``.tts.txt`` is joined from, so the TXT and every other
+    projection (the narration DOCX) are two views of ONE list of groups. ``role`` and
+    ``heading_level`` are the first record's; a joined group is always ``body`` + ``body``
+    (``narration_paragraph_continues``), so a heading group is a single record.
+    """
+
+    paragraph_ids: tuple[str, ...]
+    role: str
+    heading_level: int | None
+    text: str
 
 
 @dataclass(frozen=True)
@@ -104,6 +121,7 @@ class NarrationAssembly:
     boundary_check: str
     parsed_paragraph_count: int
     first_mismatch_paragraph_id: str | None
+    groups: tuple[NarrationGroup, ...] = ()
 
 
 def narration_paragraph_continues(*, previous_role: str, previous_text: str, following_role: str, following_text: str) -> bool:
@@ -201,6 +219,17 @@ def assemble_narration_records(
         boundary_check=NARRATION_BOUNDARY_CHECK_MISMATCH if mismatch else NARRATION_BOUNDARY_CHECK_OK,
         parsed_paragraph_count=len(parsed),
         first_mismatch_paragraph_id=first_mismatch,
+        groups=tuple(
+            NarrationGroup(
+                paragraph_ids=tuple(member.paragraph_id for member in group),
+                role=group[0].role,
+                heading_level=(
+                    group[0].heading_level if str(group[0].role or "").strip().casefold() == _NARRATION_HEADING_ROLE else None
+                ),
+                text=group_text,
+            )
+            for group, group_text in zip(groups, group_texts)
+        ),
     )
 
 
@@ -221,6 +250,8 @@ def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, sta
     state.narration_joined_sentence_continuation_count = len(assembly.join_pairs)
     state.narration_joined_paragraph_id_pairs = list(assembly.join_pairs)
     state.narration_paragraph_boundary_check = assembly.boundary_check
+    # Spec 072 FR-001: the groups the text was joined from, for the narration DOCX (a second projection of them).
+    state.narration_groups = list(assembly.groups)
     if assembly.boundary_check != NARRATION_BOUNDARY_CHECK_OK:
         log_event = getattr(dependencies, "log_event", None)
         if callable(log_event):

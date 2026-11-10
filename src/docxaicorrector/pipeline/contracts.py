@@ -161,6 +161,8 @@ class ResultArtifactWriter(Protocol):
         selected_segment_count: int | None = None,
         result_manifest: Mapping[str, object] | None = None,
         model_accounting: Mapping[str, object] | None = None,
+        narration_docx_bytes: bytes | None = None,
+        narration_pdf_bytes: bytes | None = None,
     ) -> Mapping[str, str]: ...
 
 
@@ -285,6 +287,10 @@ class ProcessingState:
     # ``"ok"`` / ``"mismatch"`` once the ``.tts.txt`` was assembled and parsed back into its
     # records (``narration_postprocess.assemble_narration_records``); ``None`` before.
     narration_paragraph_boundary_check: str | None = None
+    # Spec 072 FR-001: the groups the ``.tts.txt`` was joined from
+    # (``narration_postprocess.NarrationGroup``), in order; ``[]`` before the text is built and for
+    # every operation but ``audiobook``. The narration DOCX is a second projection of this list.
+    narration_groups: list[Any] = field(default_factory=list)
     # The ``repair`` variant of the audiobook system prompt, built once per run.
     audiobook_repair_system_prompt: str | None = None
     # Spec 059 FR-A8, revised 2026-08-09: one entry per DELIVERED block that shipped prose in
