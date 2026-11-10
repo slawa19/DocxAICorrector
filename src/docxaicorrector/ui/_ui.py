@@ -101,6 +101,10 @@ def _build_narration_pdf_filename(filename: str) -> str:
     return f"{Path(filename).stem}.tts.pdf"
 
 
+def _build_narration_book_filename(filename: str) -> str:
+    return f"{Path(filename).stem}.narration.json"
+
+
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 # Spec 072 FR-005: the closed set of reasons a narration PDF can be missing (data-model.md §4).
@@ -1158,6 +1162,18 @@ def _render_audiobook_downloads(
             "type": "secondary",
         }
     )
+    # Spec 073 FR-008: the book file closes the narration row; no reason line when it was not built.
+    book_json = narration_exports.get("book_json") if isinstance(narration_exports, Mapping) else None
+    if isinstance(book_json, str) and book_json:
+        narration_buttons.append(
+            {
+                "label": t("result.blocked_download_narration_book") if blocked else t("result.narration_book"),
+                "data": book_json.encode("utf-8"),
+                "file_name": _build_narration_book_filename(original_filename),
+                "mime": "application/json",
+                "type": "secondary",
+            }
+        )
 
     st.caption(t("result.narration_section_title"))
     for column, button in zip(st.columns(len(narration_buttons)), narration_buttons):

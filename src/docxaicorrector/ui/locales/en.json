@@ -118,6 +118,8 @@
   "result.narration_pdf_unavailable.not_pdf": "The PDF was not built: the produced file is not a PDF. The DOCX and TXT are available.",
   "result.blocked_download_narration_docx": "Download blocked narration DOCX (diagnostic)",
   "result.blocked_download_narration_pdf": "Download blocked narration PDF (diagnostic)",
+  "result.narration_book": "Book file for narration (.json)",
+  "result.blocked_download_narration_book": "Download blocked narration book file (diagnostic)",
   "result.audiobook_studio_limits_exceeded": "The narration text exceeds ElevenLabs Studio limits: {limits}. The file is unchanged — check it before importing.",
   "result.success_document_processed": "Document processed.",
   "result.blocked_delivery_notice": "Result blocked by the final quality gate. Downloads below are diagnostic only.",
