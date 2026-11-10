@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from docxaicorrector.core.models import PARAGRAPH_STATUS_POLICY_KEPT_SOURCE
@@ -70,6 +70,7 @@ __all__ = [
     "finalize_audiobook_block",
     "fragment_samples",
     "is_audiobook_operation",
+    "narration_heading_level",
     "needs_review_event_records",
     "rebuild_block_with_narration_texts",
     "record_repair_outcome",
@@ -124,6 +125,9 @@ class NarrationParagraphRecord:
     residue_before: tuple[ResidueFinding, ...]
     residue_after: tuple[ResidueFinding, ...]
     coverage: CoverageResult
+    # Spec 072 FR-002 / R1: 1..6 only for a HEADING-role paragraph whose source carries a Markdown
+    # prefix (``narration_heading_level``); ``None`` otherwise. Computed once, when the record is made.
+    heading_level: int | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +156,9 @@ class FinalizedAudiobookBlock:
     texts_by_id: Mapping[str, str]
     repair_items: tuple[RepairItem, ...]
     repair_outcome: RepairOutcome | None
+    # Spec 072 FR-002: the heading level per narrated paragraph id, only for ids that have one; next to
+    # ``texts_by_id``, from the same record, so the DOCX for review and the narration DOCX read one source.
+    heading_levels_by_id: Mapping[str, int] = field(default_factory=dict)
 
 
 def _repairable_classes(findings: Sequence[ResidueFinding]) -> tuple[str, ...]:
@@ -235,6 +242,7 @@ def finalize_audiobook_block(
 
     records: list[NarrationParagraphRecord] = []
     texts_by_id: dict[str, str] = {}
+    heading_levels_by_id: dict[str, int] = {}
     for position, item in enumerate(narrated):
         text = texts[position]
         if not text:
@@ -249,6 +257,7 @@ def finalize_audiobook_block(
         if coverage.ratio is not None and coverage.ratio < COVERAGE_REVIEW_THRESHOLD:
             paragraph_reasons.append(NEEDS_REVIEW_LOW_COVERAGE)
         ordered_reasons = tuple(reason for reason in NEEDS_REVIEW_REASONS if reason in paragraph_reasons)
+        heading_level = narration_heading_level(role=item.role, source_text=item.source_text)
         records.append(
             NarrationParagraphRecord(
                 paragraph_id=item.paragraph_id,
@@ -259,15 +268,19 @@ def finalize_audiobook_block(
                 residue_before=residue_before[position],
                 residue_after=residue_after,
                 coverage=coverage,
+                heading_level=heading_level,
             )
         )
         if item.paragraph_id:
             texts_by_id[item.paragraph_id] = text
+            if heading_level is not None:
+                heading_levels_by_id[item.paragraph_id] = heading_level
     return FinalizedAudiobookBlock(
         records=tuple(records),
         texts_by_id=texts_by_id,
         repair_items=repair_items,
         repair_outcome=repair_outcome,
+        heading_levels_by_id=heading_levels_by_id,
     )
 
 
@@ -373,7 +386,12 @@ def audiobook_block_paragraph_inputs(
 
 
 def rebuild_block_with_narration_texts(
-    *, payload: Any, processed_chunk: str, texts_by_id: Mapping[str, str], source_fallback: bool = False
+    *,
+    payload: Any,
+    processed_chunk: str,
+    texts_by_id: Mapping[str, str],
+    heading_levels_by_id: Mapping[str, int] | None = None,
+    source_fallback: bool = False,
 ) -> str:
     """The block whose narrated paragraphs carry their final narration text (R4).
 
@@ -382,6 +400,9 @@ def rebuild_block_with_narration_texts(
     they had (their source, ``policy_kept_source``). The per-paragraph record is kept: the block
     is rebuilt as a :class:`MarkerPreservedBlockText` from its dispositions, never by string
     operations on it. A block that cannot be addressed by id is returned unchanged.
+
+    ``heading_levels_by_id`` is the finalizer's by-id map (spec 072 FR-002): the heading prefix is
+    put by the level the record already carries, not by re-reading the source here.
     """
 
     paragraph_ids = [str(paragraph_id) for paragraph_id in (getattr(payload, "paragraph_ids", None) or [])]
@@ -411,23 +432,18 @@ def rebuild_block_with_narration_texts(
         dispositions = _delivered_dispositions(processed_chunk, paragraph_ids)
     if dispositions is None:
         return processed_chunk
-    sources = _block_source_texts(payload, paragraph_ids)
-    roles = _payload_list(payload, "structural_roles", len(paragraph_ids)) or [_BODY_ROLE] * len(paragraph_ids)
+    levels = heading_levels_by_id or {}
     rebuilt = [
         ParagraphDisposition(
             paragraph_id=item.paragraph_id,
             text=(
-                _with_source_heading_prefix(
-                    texts_by_id[str(item.paragraph_id)],
-                    sources[position],
-                    is_heading=str(roles[position] or "").strip().casefold() == _HEADING_ROLE,
-                )
+                _with_source_heading_prefix(texts_by_id[str(item.paragraph_id)], levels.get(str(item.paragraph_id)))
                 if str(item.paragraph_id) in texts_by_id
                 else item.text
             ),
             status=item.status,
         )
-        for position, item in enumerate(dispositions)
+        for item in dispositions
     ]
     return MarkerPreservedBlockText("\n\n".join(item.text for item in rebuilt), rebuilt)
 
@@ -435,25 +451,37 @@ def rebuild_block_with_narration_texts(
 _MARKDOWN_HEADING_PREFIX = re.compile(r"^(#{1,6})[ \t]+\S")
 
 
-def _with_source_heading_prefix(narration_text: str, source_text: str, *, is_heading: bool) -> str:
+def narration_heading_level(*, role: str, source_text: str) -> int | None:
+    """The heading level (1..6) of a narrated paragraph, or ``None`` (spec 072 FR-002, R1).
+
+    The ONE place that reads it: the preparation ROLE must be a heading (a body paragraph whose
+    text happens to start with ``#`` stays body -- Codex acceptance review of 2026-11-10, finding
+    1) and the paragraph's OWN source must carry the Markdown prefix; the level is the number of
+    ``#``, never read off the model's answer. Both projections -- the DOCX for review and the
+    narration DOCX -- take the level from here.
+    """
+
+    if str(role or "").strip().casefold() != _HEADING_ROLE:
+        return None
+    match = _MARKDOWN_HEADING_PREFIX.match(str(source_text or "").lstrip())
+    return len(match.group(1)) if match is not None else None
+
+
+def _with_source_heading_prefix(narration_text: str, heading_level: int | None) -> str:
     """The DOCX/Markdown text of a narrated paragraph: its narration, under the SOURCE's heading.
 
     The narration itself carries no Markdown (the prompt forbids it, the cleanup strips what is
     left), so without this every heading of the source would reach the DOCX as a body
     paragraph -- the FR-009 run of 2026-11-10 failed ``key_headings_preserved`` on all three
-    inputs for exactly that. Only a paragraph whose preparation ROLE is a heading gets it (a
-    body paragraph whose text happens to start with ``#`` stays body -- Codex acceptance review
-    of 2026-11-10, finding 1); the level is read off that paragraph's own source prefix, never
-    off the answer. The ``.tts.txt`` is assembled from the narration records and never sees it.
+    inputs for exactly that. Only a paragraph that has a heading level (``narration_heading_level``:
+    a heading ROLE and a source prefix) gets it. The ``.tts.txt`` is assembled from the narration
+    records and never sees it.
     """
 
-    if not is_heading:
-        return str(narration_text or "")
-    match = _MARKDOWN_HEADING_PREFIX.match(str(source_text or "").lstrip())
     text = str(narration_text or "")
-    if match is None or not text.strip() or text.lstrip().startswith("#"):
+    if heading_level is None or not text.strip() or text.lstrip().startswith("#"):
         return text
-    return f"{match.group(1)} {text.strip()}"
+    return f"{'#' * heading_level} {text.strip()}"
 
 
 # ---------------------------------------------------------------------------------------------
