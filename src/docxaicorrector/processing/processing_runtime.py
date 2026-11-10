@@ -4,9 +4,8 @@ import multiprocessing
 import os
 import pickle
 import queue
-import signal
 import shutil
-import subprocess
+import subprocess  # noqa: F401  (tests patch processing_runtime.subprocess; the same module object external_process uses)
 import tempfile
 import threading
 import time
@@ -57,6 +56,11 @@ from docxaicorrector.runtime.events import (
     SetProcessingStatusEvent,
     SetStateEvent,
     WorkerCompleteEvent,
+)
+from docxaicorrector.runtime.external_process import (
+    find_soffice_binary,
+    run_completed_process as _run_completed_process,
+    terminate_process_tree as _terminate_process_tree,
 )
 from docxaicorrector.runtime.workflow_state import ProcessingOutcome
 from docxaicorrector.processing.upload_ports import (  # noqa: F401
@@ -174,6 +178,8 @@ _ALLOWED_SET_STATE_EVENT_KEYS = {
     "latest_delivery_disposition",
     "latest_markdown",
     "latest_narration_text",
+    # Spec 072 FR-008: the DOCX/PDF narration exports, written once next to the narration text.
+    "latest_narration_exports",
     "latest_marker_diagnostics_artifact",
     "latest_quality_warning",
     "latest_result_notice",
@@ -318,98 +324,6 @@ def _build_normalized_docx_filename(filename: str) -> str:
     return "document.docx"
 
 
-def _run_completed_process(
-    command: list[str],
-    *,
-    error_message: str,
-    text: bool = True,
-    timeout_seconds: int = _DOC_CONVERSION_TIMEOUT_SECONDS,
-    cleanup_process_group: bool = False,
-):
-    if cleanup_process_group:
-        process = None
-        try:
-            popen_kwargs = {
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.PIPE,
-                "text": text,
-            }
-            if text:
-                popen_kwargs["encoding"] = "utf-8"
-                popen_kwargs["errors"] = "replace"
-            if os.name == "nt":
-                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            else:
-                popen_kwargs["start_new_session"] = True
-            process = subprocess.Popen(command, **popen_kwargs)
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            if process is not None:
-                _terminate_process_tree(process)
-                process.communicate()
-            raise RuntimeError(
-                f"{error_message} Превышено время ожидания {timeout_seconds} сек."
-            ) from exc
-        except OSError as exc:
-            raise RuntimeError(error_message) from exc
-
-        if process is None:
-            raise RuntimeError(error_message)
-        if process.returncode != 0:
-            stderr_text = (stderr or "").strip() if text else ""
-            stdout_text = (stdout or "").strip() if text else ""
-            detail = stderr_text or stdout_text or f"exit_code={process.returncode}"
-            raise RuntimeError(f"{error_message} {detail}")
-        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            check=False,
-            text=text,
-            timeout=timeout_seconds,
-            encoding="utf-8" if text else None,
-            errors="replace" if text else None,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"{error_message} Превышено время ожидания {timeout_seconds} сек."
-        ) from exc
-    except OSError as exc:
-        raise RuntimeError(error_message) from exc
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        stdout = (result.stdout or "").strip() if text else ""
-        detail = stderr or stdout or f"exit_code={result.returncode}"
-        raise RuntimeError(f"{error_message} {detail}")
-    return result
-
-
-def _terminate_process_tree(process: subprocess.Popen) -> None:
-    try:
-        if os.name == "nt":
-            process.kill()
-            return
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    except OSError:
-        process.kill()
-        return
-
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        except OSError:
-            process.kill()
-
-
 def _convert_legacy_doc_with_soffice(*, soffice_path: str, filename: str, source_bytes: bytes) -> bytes:
     normalized_filename = _build_normalized_docx_filename(filename)
     with tempfile.TemporaryDirectory(prefix="docxaicorrector_doc_") as temp_dir_name:
@@ -451,7 +365,7 @@ def _resolve_converted_docx_output(*, temp_dir: Path, expected_output_path: Path
 
 
 def _convert_pdf_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
-    soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice_path = find_soffice_binary()
     if not soffice_path:
         raise RuntimeError(
             "Загружен PDF-файл, но автоконвертация недоступна. "
@@ -1241,7 +1155,7 @@ def _convert_legacy_doc_with_antiword(*, antiword_path: str, filename: str, sour
 
 
 def _convert_legacy_doc_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
-    soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice_path = find_soffice_binary()
     if soffice_path:
         try:
             return _convert_legacy_doc_with_soffice(
@@ -1280,7 +1194,7 @@ def _convert_legacy_doc_to_docx(*, filename: str, source_bytes: bytes) -> tuple[
 
 
 def legacy_doc_conversion_available() -> bool:
-    if shutil.which("soffice") or shutil.which("libreoffice"):
+    if find_soffice_binary():
         return True
 
     if not shutil.which("antiword"):
@@ -1700,8 +1614,9 @@ def build_result_bundle(
     controlled_block_fallback_artifact: str | None = None,
     cost_estimate_snapshot: Mapping[str, object] | None = None,
     cost_actual: Mapping[str, object] | None = None,
+    narration_exports: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    resolved_notices = [dict(notice) for notice in result_notices or ()]
+    resolved_notices =[dict(notice) for notice in result_notices or ()]
     if delivery_disposition is None:
         quality_status = str((quality_warning or {}).get("quality_status", "") or "")
         resolved_disposition: dict[str, object] = {
@@ -1733,6 +1648,30 @@ def build_result_bundle(
         # carries None and the result screen shows no estimate -- never the current one.
         "cost_estimate_snapshot": dict(cost_estimate_snapshot) if cost_estimate_snapshot is not None else None,
         "cost_actual": dict(cost_actual) if cost_actual is not None else None,
+        # spec 072 FR-008: the DOCX/PDF narration exports of the same run; None for an older
+        # bundle or any run that did not build them -- the screen then shows the TXT button only.
+        "narration_exports": _normalize_narration_exports(narration_exports),
+    }
+
+
+def _normalize_narration_exports(narration_exports: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Exactly the four contract keys; non-``bytes``/empty payloads and non-``str`` reasons become ``None``."""
+    if not isinstance(narration_exports, Mapping):
+        return None
+
+    def _payload(key: str) -> bytes | None:
+        value = narration_exports.get(key)
+        return value if isinstance(value, bytes) and value else None
+
+    def _reason(key: str) -> str | None:
+        value = narration_exports.get(key)
+        return value if isinstance(value, str) and value else None
+
+    return {
+        "docx_bytes": _payload("docx_bytes"),
+        "pdf_bytes": _payload("pdf_bytes"),
+        "docx_unavailable_reason": _reason("docx_unavailable_reason"),
+        "pdf_unavailable_reason": _reason("pdf_unavailable_reason"),
     }
 
 
@@ -1817,6 +1756,13 @@ def get_current_result_bundle() -> dict[str, object] | None:
             docx_bytes=latest_docx_bytes,
             markdown_text=st.session_state.get("latest_markdown", ""),
             narration_text=latest_narration_text,
+            # Pairing rule (spec 072 R10): the exports belong to the narration text of the same
+            # run; wherever the text is nulled the exports must not outlive it.
+            narration_exports=(
+                cast(Mapping[str, object] | None, st.session_state.get("latest_narration_exports"))
+                if latest_narration_text is not None
+                else None
+            ),
             processing_operation=processing_operation,
             quality_warning=cast(Mapping[str, object] | None, st.session_state.get("latest_quality_warning")),
             delivery_disposition=disposition,

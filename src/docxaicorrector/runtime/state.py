@@ -608,6 +608,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("latest_controlled_block_fallback_artifact", None)
     st.session_state.setdefault("latest_delivery_disposition", None)
     st.session_state.setdefault("latest_narration_text", None)
+    st.session_state.setdefault("latest_narration_exports", None)
     st.session_state.setdefault("latest_quality_warning", None)
     st.session_state.setdefault("latest_result_notice", None)
     st.session_state.setdefault("latest_result_notices", [])
@@ -735,6 +736,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.latest_controlled_block_fallback_artifact = None
     st.session_state.latest_delivery_disposition = None
     st.session_state.latest_narration_text = None
+    st.session_state.latest_narration_exports = None
     st.session_state.latest_quality_warning = None
     st.session_state.latest_result_notice = None
     st.session_state.latest_result_notices = []
