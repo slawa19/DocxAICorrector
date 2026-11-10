@@ -112,6 +112,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_073_narration_forms.py`
 - `tests/test_spec_073_prompt_rules.py`
 - `tests/test_spec_073_reading_glossary.py`
+- `tests/test_spec_073_reading_glossary_delivery.py`
 - `tests/test_spec_073_scene_breaks.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
