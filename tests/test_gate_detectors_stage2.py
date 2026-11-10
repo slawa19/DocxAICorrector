@@ -174,7 +174,9 @@ def test_heading_demotion_skips_an_image_anchored_in_a_heading_styled_paragraph(
     ]
     result = classify_heading_demotions(_payload_with_boundaries(src, tgt))
     assert result["demotion_count"] == 1
-    assert [sample["source_index"] for sample in result["samples"]] == [6]
+    samples = result["samples"]
+    assert isinstance(samples, list)
+    assert [sample["source_index"] for sample in samples] == [6]
 
 
 # --------------------------------------------------------------------------- #
