@@ -606,6 +606,28 @@ def test_an_empty_paragraph_is_excluded_under_any_role_so_a_request_never_carrie
     assert reasons["p0001"] is None
 
 
+def test_a_separator_styled_as_a_heading_has_nothing_to_narrate_but_a_number_or_numeral_does() -> None:
+    # FR-009 run 2026-11-10: a scene separator the import styled as a heading reached the
+    # ``.tts.txt`` -- the model answered it empty, the empty-answer rule narrated it from
+    # source. No letter and no digit under any role is nothing to say; a heading of a single
+    # digit or a Roman numeral still is something (the exemption above stays).
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                _unit("* * *", "p0000", role="heading", level=2),
+                _unit("1", "p0001", role="heading", level=2),
+                _unit("IV", "p0002", role="heading", level=2),
+                _unit("~ ~", "p0003", structural_role="epigraph"),
+                _unit(_PROSE, "p0004"),
+            ]
+        )
+    ]
+
+    reasons = _reasons_by_id(blocks)
+
+    assert [reasons[f"p000{n}"] for n in range(5)] == ["fragment", None, None, "fragment", None]
+
+
 def test_priority_is_image_table_caption_toc_index_apparatus_notes_fragment() -> None:
     kwargs = {"back_matter_section": None, "in_notes_in_body": False, "text": "(i)"}
 

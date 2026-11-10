@@ -669,6 +669,34 @@ def test_a_markdown_heading_from_the_model_does_not_make_a_body_paragraph_a_head
     assert run.state.narration_paragraph_boundary_check == "ok"
 
 
+def test_the_docx_keeps_the_source_heading_while_the_narration_carries_no_markdown() -> None:
+    """FR-009 run 2026-11-10: every heading reached the audiobook DOCX as a body paragraph
+    (``key_headings_preserved`` failed on all three inputs), because the narration -- rightly
+    without Markdown -- replaced the paragraph whole. The DOCX text takes the SOURCE's heading
+    level; the ``.tts.txt`` stays plain; a body paragraph is never promoted."""
+
+    payload = _payload(
+        ("p1", "## Глава IV", "heading", None),
+        ("p2", "Рыбаки вышли в море на рассвете.", "body", None),
+    )
+
+    def answer(pid: str, source: str) -> tuple[str, str]:
+        return ("Глава четвёртая", "accepted") if pid == "p1" else (source, "accepted")
+
+    run = _run(payload, generator=_Generator(answer))
+    delivered = _delivered(run.state)
+    text = _build_narration_text(
+        context=SimpleNamespace(processing_operation="audiobook", runtime=None, uploaded_filename="book.docx"),
+        dependencies=SimpleNamespace(log_event=lambda *_a, **_k: None),
+        emitters=None,
+        state=run.state,
+    )
+
+    assert delivered["p1"].text == "## Глава четвёртая"
+    assert delivered["p2"].text == "Рыбаки вышли в море на рассвете."
+    assert text == "Глава четвёртая\n\nРыбаки вышли в море на рассвете."
+
+
 def test_a_record_carrying_a_blank_line_is_reported_as_a_boundary_mismatch() -> None:
     """Counter-proof that the boundary check reads the FINAL text back, not the record count."""
 

@@ -27,6 +27,7 @@ Every rule is by role, status or FORM -- no word list, no per-book literal (Cons
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -409,15 +410,41 @@ def rebuild_block_with_narration_texts(
         dispositions = _delivered_dispositions(processed_chunk, paragraph_ids)
     if dispositions is None:
         return processed_chunk
+    sources = _block_source_texts(payload, paragraph_ids)
     rebuilt = [
         ParagraphDisposition(
             paragraph_id=item.paragraph_id,
-            text=texts_by_id.get(str(item.paragraph_id), item.text),
+            text=(
+                _with_source_heading_prefix(texts_by_id[str(item.paragraph_id)], sources[position])
+                if str(item.paragraph_id) in texts_by_id
+                else item.text
+            ),
             status=item.status,
         )
-        for item in dispositions
+        for position, item in enumerate(dispositions)
     ]
     return MarkerPreservedBlockText("\n\n".join(item.text for item in rebuilt), rebuilt)
+
+
+_MARKDOWN_HEADING_PREFIX = re.compile(r"^(#{1,6})[ \t]+\S")
+
+
+def _with_source_heading_prefix(narration_text: str, source_text: str) -> str:
+    """The DOCX/Markdown text of a narrated paragraph: its narration, under the SOURCE's heading.
+
+    The narration itself carries no Markdown (the prompt forbids it, the cleanup strips what is
+    left), so without this every heading of the source would reach the DOCX as a body
+    paragraph -- the FR-009 run of 2026-11-10 failed ``key_headings_preserved`` on all three
+    inputs for exactly that. The heading level is read off the paragraph's own source by form
+    (a Markdown heading prefix), never off the answer; the ``.tts.txt`` is assembled from the
+    narration records and never sees this prefix.
+    """
+
+    match = _MARKDOWN_HEADING_PREFIX.match(str(source_text or "").lstrip())
+    text = str(narration_text or "")
+    if match is None or not text.strip() or text.lstrip().startswith("#"):
+        return text
+    return f"{match.group(1)} {text.strip()}"
 
 
 # ---------------------------------------------------------------------------------------------

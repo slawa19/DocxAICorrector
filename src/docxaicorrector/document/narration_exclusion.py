@@ -159,9 +159,12 @@ def resolve_narration_exclusion_reason(
     if in_notes_in_body:
         return NARRATION_EXCLUSION_NOTES_IN_BODY
     if roles & FRAGMENT_RULE_EXEMPT_ROLES:
-        # Outside the fragment rule -- but a paragraph with nothing in it at all has nothing to
-        # narrate under any role, and a request must never carry an empty paragraph.
-        return NARRATION_EXCLUSION_FRAGMENT if not str(text or "").strip() else None
+        # Outside the fragment rule -- but a paragraph without a single letter or digit has
+        # nothing to narrate under any role: empty, or a separator such as ``***`` that the
+        # import styled as a heading (FR-009 run 2026-11-10: the model rightly answered it
+        # empty, and the empty-answer rule then narrated the asterisks from source). A request
+        # must never carry an empty paragraph either.
+        return NARRATION_EXCLUSION_FRAGMENT if not any(character.isalnum() for character in str(text or "")) else None
     if is_fragment_without_connected_text(text):
         return NARRATION_EXCLUSION_FRAGMENT
     return None
