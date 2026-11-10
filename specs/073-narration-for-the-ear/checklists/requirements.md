@@ -33,3 +33,6 @@
 ## Notes
 
 - Full-cycle tier: a new per-book model call, a new result file, prompt and residue-detector rules; built after spec 072.
+- 2026-11-10, planning: the "unambiguous / clear acceptance criteria / measurable" items were re-checked after the
+  Codex spec review (finding 11) against LLM-free measurements; four defects were fixed in `spec.md` (FR-004 candidate
+  form, SC-001 denominator, FR-006 rule reference, FR-012 baseline — see its Changelog).

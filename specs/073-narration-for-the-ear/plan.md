@@ -1,0 +1,305 @@
+# Implementation Plan: текст для озвучки, который голос читает без ошибок
+
+**Branch**: `073/integration` (интеграционная, от `main` @ `7347bd3`; рабочие ветки пакетов — `073/wp-<буква>-<slug>`;
+план писался в `073/plan`) | **Date**: 2026-11-10 | **Spec**: [spec.md](spec.md)
+
+**Input**: `specs/073-narration-for-the-ear/spec.md` (после ревью Codex `docs/reviews/CODEX_REVIEW_073_SPEC_2026-11-10.md`);
+решения — [research.md](research.md); сущности — [data-model.md](data-model.md); контракты — [contracts/](contracts/);
+проверка — [quickstart.md](quickstart.md); задачи — [tasks.md](tasks.md).
+
+**База**: `main` @ `7347bd3` (спека 072 закрыта и влита). Все ссылки `file:line` ниже сверены на нём. Если интеграционная
+ветка уйдёт вперёд — сверять заново (Конституция VIII).
+
+## Summary
+
+Режим аудиокниги готовит текст «для уха» в четырёх местах и выдаёт пятый файл. (1) Промпт режима требует знак
+ударения U+0301 в омографах, транслитерацию латиницы с явным приоритетом правил и одну форму номера раздела (R3).
+(2) Знак ударения не ломает лексические сравнения: один помощник «текст без знаков» с картой смещений
+(`text/narration_forms.py`) обслуживает покрытие, остаток, обрывок и проверку протечки контекста; точная сборка остаётся
+побайтной (R1). (3) Остаток получает исправимый класс `latin` — единица по форме Unicode, без списков (R2). (4) Перед
+первым блоком — ровно один вызов «словаря чтения» сокращений (кандидаты по форме, предел 200, на полной Money их 68),
+собранный из частей механизма 063 без вызова его фазы (R4, R5); записи идут в основной и исправляющий промпт каждого
+блока — только свои, по исходнику блока (R6, R7). (5) Исключённый разделитель сцены оставляет в сборке отметку, которая
+запрещает склейку через него (R8). (6) `.tts.minimax.txt` — те же группы и `"\n\n"`, что `.tts.txt`, плюс метки `<#x#>`
+по серии и рангу главы плана 072 и по отметке разделителя (R9); он едет теми же путями 072 — экспорт, ключ
+`latest_narration_exports`, группа результата, экран, раннер (R10, R12). Одиннадцать пакетов в четырёх волнах, пять — с
+первого дня.
+
+## Technical Context
+
+**Language/Version**: Python 3.13.5 (WSL Debian, `.venv/bin/python`); Streamlit 1.64.0.
+
+**Primary Dependencies**: без новых. Используются `unicodedata` (свойства символов), существующие клиенты модели через
+`request_text_completion` (`generation/_generation.py:2276-2315`), python-docx/LibreOffice спеки 072 — без изменений.
+
+**Storage**: `.run/ui_results/<stem>.result.tts.minimax.txt` рядом с членами группы 072; артефакт словаря —
+`.run/run_glossaries/<run>_<ms>.json` (семья 063, та же чистка); отчёт раннера —
+`tests/artifacts/real_document_pipeline/runs/<run_id>/<basename>.tts.minimax.txt`, `<basename>.reading_glossary.json`.
+
+**Testing**: pytest через `bash scripts/test.sh` под WSL; подменённые клиенты, считающие попытки HTTP (SC-007);
+Streamlit — рендер-тесты; платный замер — `scripts/run-real-document-validation.sh` (FR-012, только с согласия владельца).
+
+**Target Platform**: WSL Debian (`/mnt/d/Work/Projects/DocxAICorrector`), UI Streamlit локально.
+
+**Project Type**: одно Python-приложение (`src/docxaicorrector/`), тесты в `tests/`.
+
+**Performance Goals**: +1 вызов модели на книгу (≈ 5 тыс. токенов входа на полной Money); детерминированная часть —
+линейна по числу абзацев; прогноз цены полной Money 0,335 → ≈ 0,36 $ (R13).
+
+**Constraints**: перевод и редактура — ни байта нового (SC-008); озвучка не блокирует выдачу (Anti-regression 2); ни
+словаря омографов, транслитерации, сокращений или чисел — ни в коде, ни в тестах (VII); строго один вызов исправления
+на блок и один вызов словаря на книгу (Anti-regression 4); только штатные примитивы Streamlit.
+
+**Scale/Scope**: книги до ~1 400 абзацев / 300 блоков; ≈ 18 файлов продукта (4 новых модуля, 1 новый промпт),
+≈ 11 новых тестовых файлов, 5 документов.
+
+Неизвестных `NEEDS CLARIFICATION` нет: развилки решены в research (R1–R16); что определяет только платный прогон и слух
+владельца — раздел «Что не определено».
+
+## Constitution Check
+
+### До дизайна
+
+- **I/II — PASS.** Проверки — `scripts/test.sh` через `wsl.exe -d Debian`; замеры плана — `.venv/bin/python -I` под WSL
+  (скрипты вне git, `D:\Temp\docxai-research\073\`); FR-012 — канонический раннер.
+- **III — PASS, полный цикл** (спека так решила): новый вызов модели, новые модули (словарь, формы текста, MiniMax), новый
+  член контракта артефактов и состояния; порядок слияния важен.
+- **IV — PASS.** Реальные документы — только вход прогнозов без модели и база FR-012 (R14); утверждения о живом дефекте
+  проверены на текущем коде (R1, `stress_mark_liveness.py`). FR-012 — веха, не цикл отладки.
+- **V — PASS.** Пути, события, поля, хранение — `contracts/`; документ логирования обновляет WP-I.
+- **VI — PASS.** Пакеты владеют непересекающимися файлами в пределах волны (таблица ниже); файл, переходящий к пакету
+  следующей волны, назван явно (`text/narration_residue.py` A → C, `pipeline/audiobook_pass.py` D → H). Модуль перевода
+  меняется в одном месте — необязательный параметр стадии у `_stage_usage` (R5), поведение то же (SC-008).
+- **VII — PASS с обязательствами.** Ударение — решение модели по правилу; латиница и кандидаты — по свойствам Unicode
+  (`LATIN` в имени символа, заглавные/строчные, категории L/M/Nd); разделитель — по форме «нет буквы и цифры»; номера
+  разделов — правило промпта, без словаря чисел. Тесты — синтетические тексты той же формы; список омографов R15 живёт
+  только в исследовательском скрипте. Правило, вычитающее из счёта (маска адресов и римских чисел у `latin`, отказ
+  разбора словаря), несёт анти-вакуумную проверку: настоящая латиница рядом с адресом и римским числом — считается.
+- **VIII — PASS.** Ссылки сверены 2026-11-10 на `7347bd3`; дефекты FR-002 воспроизведены на текущем коде; база FR-012
+  проверена по истории кода (R14); два критерия спеки, неисполнимые на данных, исправлены (ниже).
+
+### После дизайна
+
+PASS. Отклонения от спеки — уточнения формы реализации, без ослабления проверок. Нарушений, требующих Complexity
+Tracking, нет.
+
+## Project Structure
+
+### Документация (эта спека)
+
+```text
+specs/073-narration-for-the-ear/
+├── spec.md
+├── plan.md                      # этот файл
+├── research.md                  # решения R1–R16 и замеры
+├── data-model.md
+├── quickstart.md
+├── contracts/
+│   ├── events.md                # новые события, поля ui_audiobook_artifact_saved, отчёт раннера
+│   ├── result-and-screen.md     # член группы, ключ bundle, кнопка экрана
+│   └── prompt-and-glossary.md   # свойства промптов, секция блока, запрос/ответ словаря, метки MiniMax
+├── checklists/requirements.md
+└── tasks.md
+```
+
+### Исходный код (затронуто / создано)
+
+```text
+src/docxaicorrector/
+├── text/
+│   ├── narration_forms.py          # НОВЫЙ WP-A: без знаков (+смещения), серии букв, «латинская буква»
+│   ├── narration_coverage.py       # WP-A: сравнение без знаков
+│   └── narration_residue.py        # WP-A: all_caps/roman без знаков + публичные формы; затем WP-C: класс latin
+├── document/narration_exclusion.py # WP-A: помощник из общего модуля, has_no_letter_or_digit, is_scene_break_text
+├── generation/_generation.py       # WP-A: только _normalize_leakage_comparison_text, _detect_context_leakage
+├── resources/prompts/
+│   ├── operation_audiobook.txt, operation_audiobook_repair.txt, example_audiobook.txt   # WP-B
+│   └── audiobook_reading_glossary.txt                                                 # НОВЫЙ WP-E
+├── core/model_accounting.py        # WP-E: STAGE_AUDIOBOOK_READING_GLOSSARY
+├── pipeline/
+│   ├── reading_glossary.py         # НОВЫЙ WP-E: кандидаты, вызов, разбор, секция, фаза
+│   ├── glossary_phase.py           # WP-E: только параметр стадии у _stage_usage
+│   ├── narration_minimax.py        # НОВЫЙ WP-G: метки пауз
+│   ├── audiobook_pass.py           # WP-D: register (виды абзацев); затем WP-H: поле записи, сводка FR-010
+│   ├── narration_postprocess.py    # WP-D: отметка разделителя, запрет склейки, NarrationGroup.after_scene_break
+│   ├── contracts.py                # WP-D: все объявления 073 (состояние, аргумент писателя)
+│   ├── setup.py, _pipeline.py      # WP-F: фаза словаря в запуске
+│   ├── block_execution.py          # WP-F: секция в основном запросе и исправлении
+│   ├── narration_exports.py        # WP-H: MiniMax в экспорте, поля события
+│   └── late_phases.py              # WP-H: аргумент писателя
+├── runtime/artifacts.py, runtime/artifact_retention.py   # WP-J: член группы, суффикс
+├── processing/processing_runtime.py                      # WP-J: только _normalize_narration_exports
+└── ui/_ui.py, ui/locales/ru.json, ui/locales/en.json     # WP-K: кнопка MiniMax
+tests/artifacts/real_document_pipeline/run_lietaer_validation.py   # WP-I
+scripts/_list_log_events.py                                        # WP-I
+docs/LOGGING_AND_ARTIFACT_RETENTION.md, AGENTS.md («UI result artifacts»),
+README.md (:512), docs/WORKFLOW_AND_IMAGE_MODES.md (:145)          # WP-I
+docs/testing/TEST_TIER_INVENTORY.md                                # оркестратор при слиянии (R16)
+```
+
+**Structure Decision**: формы текста — лист в `text/` (ниже `document/` и `generation/` по употреблению, без обратных
+импортов); словарь — модуль `pipeline/` рядом с исправлением, у которого берёт политику одного вызова; MiniMax — чистый
+модуль `pipeline/` рядом с планом документа 072, чьи серии читает. Протокол `NarrationMinimaxGroupLike` делает WP-G
+независимым от поля `after_scene_break` WP-D; плоские `ReadingParagraph` делают ядро словаря WP-E независимым от
+проводки WP-F.
+
+---
+
+## Дизайн по требованиям
+
+### FR-001, FR-003 (промпт), FR-005 — правила промпта (WP-B)
+
+R3; `contracts/prompt-and-glossary.md` §1. Приоритет правил латиницы и сокращений записан в промпте; номер раздела —
+одно правило по форме; пример со знаком ударения. Тесты — свойства, не фразы.
+
+### FR-002 — знак ударения и сравнения (WP-A)
+
+R1; `data-model.md` §1. Покрытие, `all_caps`, `roman_numerals`, обрывок, протечка; позиции — исходной строки;
+точная сборка не трогается. SC-005 — пара текстов со знаками и без.
+
+### FR-003 (детектор) — класс `latin` (WP-C)
+
+R2; `data-model.md` §2. Исправимый; маска адресов и римских чисел с анти-вакуумом; SC-007: несколько классов — одна
+попытка HTTP.
+
+### FR-004 — словарь чтения (WP-E ядро, WP-F проводка и доставка)
+
+R4–R7; `data-model.md` §4; `contracts/prompt-and-glossary.md` §2–3. Кандидаты по форме «≥ 2 заглавных, заглавных больше
+строчных»; один вызов без повторов SDK; свой разбор, частичный ответ используется; секция блока по исходнику блока —
+побайтно одна у основного и исправляющего запроса.
+
+### FR-006 — разделитель сцены (WP-D)
+
+R8; `data-model.md` §6 с таблицей примеров. Виды абзацев при регистрации блока, чистая функция отметок, запрет склейки,
+`NarrationGroup.after_scene_break`.
+
+### FR-007 — текст для MiniMax (WP-G, интеграция — WP-H)
+
+R9; `data-model.md` §7 с таблицей примеров; `contracts/prompt-and-glossary.md` §4.
+
+### FR-008 — артефакт, экран, раннер (WP-H, WP-J, WP-K, WP-I)
+
+R10, R12; `contracts/result-and-screen.md`, `contracts/events.md`.
+
+### FR-009 — совместимость
+
+`.tts.txt`/`.tts.docx` несут знаки и транслитерацию тем же текстом (072 пишет текст дословно); PDF — Non-goal. Тест WP-H:
+U+0301 побайтно в `.tts.txt`, `.tts.docx`, `.tts.minimax.txt` одного прогона.
+
+### FR-010 — учёт (WP-H; поля словаря и блоков — данные WP-E/WP-F)
+
+R11; `contracts/events.md`.
+
+### FR-011 — перевод и редактура
+
+Золотые тесты 070 и тесты фазы 063 — в проверке каждого пакета, касающегося общих модулей (A, E, F, H).
+
+### FR-012 — замер (оркестратор, платно)
+
+R13, R14; `quickstart.md` §6.
+
+---
+
+## Отклонения от спеки (уточнения формы, проверки не ослаблены)
+
+- **О-1. Имя файла — `.tts.minimax.txt`** и в хранении (`.result.tts.minimax.txt`, как требует FR-008), и при скачивании,
+  и в раннере: одна основа на все места (R10). Спека в US2/FR-007 называет его `.minimax.txt`.
+- **О-2. Отметку разделителя даёт форма исходника исключённого абзаца с причиной `fragment`**, а не ветвь правила
+  `document/narration_exclusion.py:161-167` (там — только роли вне правила обрывка; `***` тела исключает `:168-169`).
+  Другие исключения прозрачны: не ставят и не гасят отметку (R8).
+- **О-3. Stop перед вызовом словаря** — фаза не делает вызов, прогон останавливается на проверке перед первым блоком
+  (`pipeline/block_execution.py:2614-2615`) — та же граница, что после фазы 063 сегодня (R7).
+- **О-4. У экрана нет строки причины для MiniMax**: собрать его мешает только ошибка кода; причина — WARNING в логе (R10).
+- **О-5. Уведомления на экране о сбое словаря нет**: книга выдаётся полностью, статус — в событии и отчёте раннера.
+
+## Дефекты спеки, найденные при планировании (исправлены в этой же ветке — Changelog спеки)
+
+1. **FR-004, форма кандидата.** «Все буквы заглавные» исключает `CoR-EU`, который спека же называет кандидатом. Замер:
+   форма «≥ 2 заглавных и заглавных больше строчных» даёт 68 против 67 на полной Money, разница — ровно `CoR-EU` (R4).
+   Предел `N = 200` записан (замер: 68 / 17 / 4).
+2. **SC-001, знаменатель.** «Единиц до исправления — не ноль на трёх входах» неисполнимо: база RM — 0. Знаменатель —
+   единицы `latin` в исходнике (5 / 44 / 528), новое поле `latin_source_unit_count` в FR-010 (R2).
+3. **FR-006, ссылка на правило.** Уточнено по О-2.
+4. **FR-012, база.** Новый прогон «без спеки» не нужен: три базовых прогона сделаны на коде, который производит
+   сегодняшний `.tts.txt` (R14); экономия ≈ 0,39 $; прогноз прогонов с 073 — ≈ 0,42 $ (R13).
+
+---
+
+## Порядок реализации: пакеты работ
+
+Каждый пакет — отдельная ветка в отдельном боковом worktree вне репозитория (`D:\Temp\claude\wt-073-<slug>`, `.venv` —
+симлинк на главное дерево; AGENTS.md «Боковые worktree»). Тесты истории — только в главном дереве. Каждый пакет:
+характеристика того, что должно остаться прежним → падающие тесты нового поведения (с анти-вакуумом) → код →
+каноническая проверка. Агенты — по правилу владельца: Haiku механика, Sonnet ограниченная инженерия, Opus — правила
+конвейера уровня спеки. Строки `docs/testing/TEST_TIER_INVENTORY.md` добавляет оркестратор при слиянии (R16).
+
+| Пакет | Объём | Агент / усилие | Владеет файлами | Доказывающие тесты (анти-вакуум) | Зависит от |
+|---|---|---|---|---|---|
+| **WP-A** Формы текста и лексические сравнения (FR-002) | средний, точный | Sonnet / high | `text/narration_forms.py` (нов.), `text/narration_coverage.py`, `text/narration_residue.py` (только `all_caps`, `roman_numerals` и публичные формы `is_all_caps_paragraph`, `is_roman_numeral_form`, `mask_url_or_domain`), `document/narration_exclusion.py`, `generation/_generation.py` (только `_normalize_leakage_comparison_text`, `_detect_context_leakage`), `tests/test_spec_073_narration_forms.py` (нов.) | SC-005: пара текстов (≥ 4 длинных слов, ≥ 6 токенов) со знаками и без — равные покрытие, остаток, протечка; контрпример настоящей потери предложения ловится; `А́ЛМАЗ ВЕ́ТЕР` → `all_caps`, `ÍV` → `roman_numerals` (падают сейчас); образец остатка и фрагмент протечки — срезы исходной строки со знаками; точная сборка видит потерю знака (характеристика); `without_combining_marks` тот же, что был в исключении | — (волна 1) |
+| **WP-B** Правила промпта (FR-001, FR-003, FR-005) | малый, тонкий | **Opus** / high | `resources/prompts/operation_audiobook.txt`, `operation_audiobook_repair.txt`, `example_audiobook.txt`, `tests/test_audiobook_prompt.py` (только новые свойства), `tests/test_spec_073_prompt_rules.py` (нов.) | свойства `contracts/prompt-and-glossary.md` §1: U+0301 в правиле, порядок четырёх пунктов приоритета, правило номера по форме; пример со знаком и транслитерацией; существующие гарды промпта зелёные; золотые 070 (перевод/редактура) — без изменений | — (волна 1) |
+| **WP-G** Текст для MiniMax (FR-007) | средний | Sonnet / high | `pipeline/narration_minimax.py` (нов.), `tests/test_spec_073_narration_minimax.py` (нов.) | таблица `data-model.md` §7 целиком; удаление вставленных меток = `"\n\n".join(group.text)` побайтно (на синтетике с U+0301 и `\n` внутри); нет двух меток подряд; пауза внутри серии `2 → 1` не ставится (анти-вакуум: тот же набор без серии даёт метку); расхождение шагов плана и групп → исключение | — (волна 1) |
+| **WP-J** Член группы и bundle (FR-008 файлы) | малый | Sonnet / medium | `runtime/artifacts.py`, `runtime/artifact_retention.py`, `processing/processing_runtime.py` (только `_normalize_narration_exports`), `tests/test_spec_073_result_group.py` (нов.) | `narration_minimax_text` → файл и `tts_minimax_path`; `None`/`""` → нет ни файла, ни ключа, группа побайтно как в 072 (характеристика); сбой записи члена откатывает группу; хранение удаляет `.tts.minimax.txt` вместе с группой (падает: сегодня «passthrough»); нормализация bundle: пять ключей, не-`str` → `None` | — (волна 1) |
+| **WP-K** Кнопка MiniMax (FR-008 экран) | малый | Sonnet / medium | `ui/_ui.py`, `ui/locales/ru.json`, `ui/locales/en.json`, `tests/test_spec_073_result_screen.py` (нов.) | четыре кнопки по порядку DOCX/PDF/TXT/MiniMax, имя `<stem>.tts.minimax.txt`, MIME; без `minimax_text` — три кнопки 072 (характеристика экрана 072 зелёная); заблокированная выдача — вторичная метка; ключи в обоих каталогах; перевод/редактура — те же кнопки | — (волна 1; ключ bundle фиксирован) |
+| **WP-C** Класс `latin` (FR-003 детектор) | малый | Sonnet / medium | `text/narration_residue.py` (класс `latin`), `tests/test_narration_residue.py` (только множества классов `:114-116`), `tests/test_spec_073_latin_residue.py` (нов.) | единица по правилу; маска адреса и римского числа с анти-вакуумом (латинское слово рядом с адресом и `IV` — считается); `Юромaни`-форма (кириллица с латинской буквой) — найдена; `latin` исправим; SC-007: блок с `digits`+`all_caps`+`latin` — ровно одна попытка HTTP (настоящий `repair_block_residue`, подменённый клиент с `with_options`) | A слит |
+| **WP-D** Разделитель сцены и объявления (FR-006) | средний | **Opus** / high | `pipeline/audiobook_pass.py` (только `register_audiobook_block`, `NARRATION_PARAGRAPH_KINDS`), `pipeline/narration_postprocess.py`, `pipeline/contracts.py` (все объявления 073: `narration_paragraph_kinds`, `audiobook_reading_glossary`, `audiobook_reading_glossary_block_indexes`, аргумент `narration_minimax_text`), `tests/test_spec_073_scene_breaks.py` (нов.) | таблица `data-model.md` §6 целиком (через `register_audiobook_block` по блокам и чистую функцию); золотой SHA-256 `.tts.txt` 072 (`tests/test_spec_072_narration_groups.py`) зелёный без изменений; склейка без разделителя — как раньше (анти-вакуум); `text == "\n\n".join(groups)` | A слит |
+| **WP-E** Словарь чтения: ядро (FR-004) | средний | **Opus** / high | `pipeline/reading_glossary.py` (нов.), `resources/prompts/audiobook_reading_glossary.txt` (нов.), `core/model_accounting.py` (константа стадии), `pipeline/glossary_phase.py` (только параметр стадии `_stage_usage`), `tests/test_spec_073_reading_glossary.py` (нов.) | кандидаты по форме (синтетика: `ABC`, `AbC-DE`, `XY-12`, `IV` — нет, `Abc` — нет, абзац заглавными — нет, внутри адреса — нет, `ЖЗИ⁷` → `ЖЗИ`); предел и порядок; ровно 1 попытка HTTP (клиент считает транспорт, `max_retries=0`); 0 попыток при пустом списке и Stop; частичный ответ — принятые используются; все пять отказов; артефакт с `run_id`; секция блока — только записи его исходника; тесты 063 (`tests/test_glossary_pass.py`, `tests/test_document_pipeline.py`) зелёные | A слит |
+| **WP-F** Проводка словаря и доставка секции (FR-004) | средний | **Opus** / high | `pipeline/setup.py`, `pipeline/_pipeline.py` (только проводка фазы), `pipeline/block_execution.py` (части `_generate_block_chunk`, `_audiobook_repair_call`, передача `payload` из `finalize_audiobook_block_for_delivery`), `tests/test_spec_073_reading_glossary_delivery.py` (нов.) | SC-007: реальные аргументы `generate_markdown_block` двух блоков и исправления — секция блока 1 только с его записями, у блока 2 нет записей блока 1, исправление блока 1 — побайтно та же секция; блок без записей — промпт побайтно прежний (характеристика); фаза вызывается до первого блока, ровно один раз; перевод/редактура — фаза не вызывается, промпт тот же (золотые 070) | D, E слиты |
+| **WP-H** Поздний этап: MiniMax, писатель, учёт (FR-007 интеграция, FR-008, FR-009, FR-010) | средний | **Opus** / high | `pipeline/narration_exports.py`, `pipeline/late_phases.py`, `pipeline/audiobook_pass.py` (только поле записи `source_latin_unit_count`, его счёт в `finalize_audiobook_block`, `audiobook_narration_summary`), `tests/test_spec_073_late_phase.py` (нов.), `tests/test_late_phases_finalize_gate_persistence.py` (только если ожидания писателя меняются) | записи → `_build_narration_text` → поздний этап с подменённым писателем: `.tts.minimax.txt` без меток = `.tts.txt` побайтно; U+0301 побайтно в TXT, DOCX и MiniMax (FR-009); сбой MiniMax → WARNING, TXT/DOCX/PDF выданы; сбой DOCX → MiniMax всё равно есть; поля события по `contracts/events.md` (все ключи 070/072 на месте); перевод/редактура — аргумент писателя не передаётся | C, D, G, J слиты |
+| **WP-I** Раннер, гард событий, документы (FR-008 раннер) | средний | Sonnet / medium (документы — можно Haiku) | `tests/artifacts/real_document_pipeline/run_lietaer_validation.py`, `tests/test_real_document_pipeline_validation.py`, `scripts/_list_log_events.py`, `docs/LOGGING_AND_ARTIFACT_RETENTION.md`, `AGENTS.md` (только «UI result artifacts», `:462-467`), `README.md` (`:512`), `docs/WORKFLOW_AND_IMAGE_MODES.md` (`:145`) | `_SPEC_073_LOG_EVENTS`: каждое событие эмитится и зарегистрировано; отчёт на синтетическом логе и состоянии несёт поля `contracts/events.md`, нет события — `not_reported`; раннер пишет `.tts.minimax.txt` и копию артефакта словаря в каталог прогона и `latest`; цена стадии словаря — строка сводки | F, H слиты |
+
+### Порядок слияния
+
+```text
+волна 1:  WP-A ─┐  WP-B ─┐  WP-G ─┐  WP-J ─┐  WP-K ─┐          (общих файлов нет)
+          слияние в 073/integration в любом порядке; после каждого — полный прогон в главном дереве
+волна 2:  WP-C ← A    WP-D ← A    WP-E ← A                       (общих файлов нет)
+волна 3:  WP-F ← D, E     WP-H ← C, D, G, J                      (общих файлов нет)
+волна 4:  WP-I ← F, H
+приёмка:  полный `scripts/test.sh tests/ -q` в ГЛАВНОМ дереве, `git status --porcelain` пуст → проверка экрана в
+          браузере (кнопка MiniMax) → расширенное ревью Codex по всем затронутым поверхностям (SC-009) → слияние в main
+          → FR-012 (платно, по согласию владельца)
+```
+
+Критический путь: **WP-A → WP-E → WP-F → WP-I** (и параллельно **WP-A → WP-C/WP-D → WP-H → WP-I**). Файлы, переходящие
+между волнами: `text/narration_residue.py` (A, затем C), `pipeline/audiobook_pass.py` (D — `register_audiobook_block`,
+затем H — запись и сводка). `pipeline/contracts.py` целиком у WP-D; `pipeline/block_execution.py` — у WP-F;
+`pipeline/late_phases.py` — у WP-H; `TEST_TIER_INVENTORY.md`, `docs/WHERE_WE_ARE.md`, статус спеки — у оркестратора. После
+КАЖДОГО переноса пакета на свежую `073/integration` — повторный полный прогон в главном дереве (AGENTS.md, 2026-08-08).
+Тема коммита пакета начинается с `spec 073:`.
+
+## Риски
+
+| Риск | Чем закрыт |
+|---|---|
+| Модель ставит знаки во многих словах (`года`, `уже` — сотни форм, R15) | D-3: принятый край; SC-004 публикует число знаков в словах без неоднозначности; решение — слух владельца |
+| Модель путает ударение | Non-goals (проверки кодом нет); выборка FR-012 и слух |
+| Транслитерация снижает покрытие (основы слов меняются) → больше `low_coverage` | review data, не отказ; FR-012 публикует `coverage_low_count` до/после; SC-005 изолирует эффект знака |
+| `.tts.txt` изменится из-за отметки разделителя | меняется только склейка через разделитель — на корпусе 0 мест (R8); золотой SHA 072 зелёный |
+| Секция словаря протечёт в соседний блок | функция без состояния; SC-007 сравнивает реальные аргументы двух блоков |
+| Словарь сделает больше одного HTTP | `_single_attempt_client` + тест, считающий попытки транспорта |
+| Переводческий путь изменится от параметра `_stage_usage` | параметр по умолчанию прежний; тесты 063 и золотые 070 в проверке WP-E |
+| `.tts.minimax.txt` разойдётся с `.tts.txt` | метки — единственное отличие по построению; тест на синтетике (WP-G) и на позднем этапе (WP-H) |
+| Новый файл никогда не удалится | суффикс хранения + тест (WP-J) |
+| Проверки реального документа (покрытие форматирования DOCX для проверки) отреагируют на знаки и транслитерацию | это review data (Конституция VII); при падении профиля FR-012 — сначала свежий run report и `failed_checks` |
+
+## Сохраняемые контракты AGENTS.md
+
+- **WSL runtime:** тесты и диагностические импорты — `wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh <selector>
+  -q`, один selector на команду; Windows `python` и `.venv-win` не используются; в боковых worktree — литеральные пути,
+  без `$VAR` и циклов на границе Git Bash → `wsl.exe`.
+- **Каноническая проверка:** «зелёное» — полный `scripts/test.sh tests/ -q` в главном дереве при пустом
+  `git status --porcelain`; debug-путь помечается `debug-only`.
+- **Real-document evidence:** FR-012 — только `scripts/run-real-document-validation.sh`; при падении профиля — сначала
+  свежий run report и `failed_checks` с `actual`/`threshold`; полный прогон — веха, не цикл.
+- **Логирование и артефакты:** события и поля — `contracts/events.md`; полные тексты не в лог; новый член группы — с
+  суффиксом хранения; артефакт словаря — в семье `.run/run_glossaries/`; `.run/` и `.env` вне git.
+- **Line endings:** все новые файлы — LF; после правок `git diff --check`.
+
+## Что не определено (сказано прямо)
+
+- **Точность ударений модели режима** (flash-lite) — только чтение и слух FR-012 (Assumptions спеки).
+- **Читает ли Voice Studio `<#x#>` так же, как API** (проба была через API, `t2a_v2`) — владелец слушает главу (FR-012).
+- **Как Studio и MiniMax читают знак ударения в заглавной букве начала предложения** (`А́тлас`) — не пробовалось.
+- **Сколько знаков ударения поставит модель на книгу** — R15 даёт верхнюю оценку форм-омографов (≈ 5 на 1 000 слов), не
+  прогноз поведения модели.
+- **Единицы и формулы латиницей** (`kg`, `CO2`) — исправление напишет их словами как сочтёт; граница спеки.
