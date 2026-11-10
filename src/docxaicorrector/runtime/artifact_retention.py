@@ -92,6 +92,8 @@ _UI_RESULT_GROUP_SUFFIXES = (
     ".result.meta.json",
     ".result.tts.txt",
     ".result.formatting_review.txt",
+    ".result.tts.docx",
+    ".result.tts.pdf",
     ".result.docx",
     ".result.md",
 )
@@ -183,7 +185,9 @@ def prune_ui_result_artifact_groups(
     """Prune UI result artifacts by timestamped stem, not by individual file.
 
     Each successful run may produce ``.result.md``, ``.result.docx``, optional
-    ``.result.tts.txt`` and optional ``.result.meta.json``. This helper retains or removes the entire group
+    ``.result.tts.txt``, optional ``.result.tts.docx`` / ``.result.tts.pdf`` (spec 072) and
+    optional ``.result.meta.json``. A file with no registered suffix is never pruned, so every
+    new group member must be listed in ``_UI_RESULT_GROUP_SUFFIXES``. This helper retains or removes the entire group
     atomically so the directory never ends up with orphaned siblings from the
     same run.
     """

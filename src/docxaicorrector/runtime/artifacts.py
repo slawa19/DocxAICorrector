@@ -374,12 +374,17 @@ def write_ui_result_artifacts(
     output_dir: Path = UI_RESULT_ARTIFACTS_DIR,
     created_at: float | None = None,
     run_id: str | None = None,
+    narration_docx_bytes: bytes | None = None,
+    narration_pdf_bytes: bytes | None = None,
 ) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     artifact_stem = _build_ui_result_stem(source_name, created_at=created_at, run_id=run_id)
     markdown_path = output_dir / f"{artifact_stem}.md"
     docx_path = output_dir / f"{artifact_stem}.docx"
     tts_path = output_dir / f"{artifact_stem}.tts.txt"
+    # Spec 072 FR-007: narration DOCX/PDF join the group only when their bytes are non-empty.
+    tts_docx_path = output_dir / f"{artifact_stem}.tts.docx"
+    tts_pdf_path = output_dir / f"{artifact_stem}.tts.pdf"
     meta_path = output_dir / f"{artifact_stem}.meta.json"
     manifest_path = output_dir / f"{artifact_stem}.manifest.json"
     formatting_review_path = output_dir / f"{artifact_stem}.formatting_review.txt"
@@ -408,6 +413,10 @@ def write_ui_result_artifacts(
     ]
     if narration_text is not None:
         group_entries.append((tts_path, narration_text))
+    if narration_docx_bytes:
+        group_entries.append((tts_docx_path, narration_docx_bytes))
+    if narration_pdf_bytes:
+        group_entries.append((tts_pdf_path, narration_pdf_bytes))
     if quality_warning:
         group_entries.append(
             (
@@ -439,6 +448,10 @@ def write_ui_result_artifacts(
     }
     if narration_text is not None:
         artifact_paths["tts_text_path"] = str(tts_path)
+    if narration_docx_bytes:
+        artifact_paths["tts_docx_path"] = str(tts_docx_path)
+    if narration_pdf_bytes:
+        artifact_paths["tts_pdf_path"] = str(tts_pdf_path)
     if write_meta:
         artifact_paths["metadata_path"] = str(meta_path)
     if quality_warning:
