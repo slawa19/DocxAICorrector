@@ -6636,6 +6636,7 @@ def test_stage_cost_lines_list_text_generation_and_audiobook_repair_separately()
     assert validation._build_stage_cost_summary_lines(None) == [
         "model_accounting_stage_text_generation_cost_usd=not_reported",
         "model_accounting_stage_audiobook_repair_cost_usd=not_reported",
+        "model_accounting_stage_audiobook_reading_glossary_cost_usd=not_reported",
     ]
 
 
@@ -6744,45 +6745,47 @@ def test_git_head_is_read_from_a_side_worktree_without_git(tmp_path: Path, packe
     path, and the 2026-11-07 summaries recorded ``git_head=None``. The fallback reads the
     commit off the files themselves: ``.git`` → ``HEAD`` → the ref in the common dir (loose
     or packed)."""
-    validation = _load_validation_module()
+    from docxaicorrector.runtime import build_info
+
     worktree = _shape_side_worktree(tmp_path, packed=packed)
 
-    assert validation._read_git_head_from_files(worktree) == "8a5e5f0"
+    assert build_info._read_git_head_from_files(worktree) == "8a5e5f0"
 
 
 def test_git_head_fallback_reads_a_plain_repository_with_a_detached_head(tmp_path: Path) -> None:
-    validation = _load_validation_module()
+    from docxaicorrector.runtime import build_info
+
     git_dir = tmp_path / ".git"
     git_dir.mkdir()
     (git_dir / "HEAD").write_text("0123456" + "a" * 33 + "\n", encoding="utf-8")
 
-    assert validation._read_git_head_from_files(tmp_path) == "0123456"
+    assert build_info._read_git_head_from_files(tmp_path) == "0123456"
 
 
 def test_git_head_fallback_returns_none_when_nothing_is_readable(tmp_path: Path) -> None:
     """Anti-vacuum: no ``.git`` at all, a ref that does not exist, or a pointer to nowhere
     still says ``None`` — the fallback never invents a commit."""
-    validation = _load_validation_module()
+    from docxaicorrector.runtime import build_info
 
-    assert validation._read_git_head_from_files(tmp_path) is None
+    assert build_info._read_git_head_from_files(tmp_path) is None
 
     dangling = tmp_path / "dangling"
     (dangling / ".git").mkdir(parents=True)
     (dangling / ".git" / "HEAD").write_text("ref: refs/heads/missing\n", encoding="utf-8")
-    assert validation._read_git_head_from_files(dangling) is None
+    assert build_info._read_git_head_from_files(dangling) is None
 
     nowhere = tmp_path / "nowhere"
     nowhere.mkdir()
     (nowhere / ".git").write_text(f"gitdir: {(tmp_path / 'absent').as_posix()}\n", encoding="utf-8")
-    assert validation._read_git_head_from_files(nowhere) is None
+    assert build_info._read_git_head_from_files(nowhere) is None
 
 
 def test_a_windows_gitdir_pointer_maps_to_the_wsl_mount(tmp_path: Path) -> None:
     """The pointer git writes from Windows is ``D:/…``; a Linux process must read it as
     ``/mnt/d/…`` rather than as a path relative to the worktree."""
-    validation = _load_validation_module()
+    from docxaicorrector.runtime import build_info
 
-    resolved = validation._resolve_git_pointer_path(
+    resolved = build_info._resolve_git_pointer_path(
         "D:/Work/Projects/DocxAICorrector/.git/worktrees/wt", relative_to=tmp_path
     )
 
@@ -6790,7 +6793,53 @@ def test_a_windows_gitdir_pointer_maps_to_the_wsl_mount(tmp_path: Path) -> None:
         assert resolved == Path("D:/Work/Projects/DocxAICorrector/.git/worktrees/wt")
     else:
         assert resolved == Path("/mnt/d/Work/Projects/DocxAICorrector/.git/worktrees/wt")
-    assert validation._resolve_git_pointer_path("../..", relative_to=tmp_path) == tmp_path / "../.."
+    assert build_info._resolve_git_pointer_path("../..", relative_to=tmp_path) == tmp_path / "../.."
+
+
+# Spec 073 T-I4: the runner reads the code version through ONE copy (``runtime/build_info``), not its own.
+
+
+def test_runner_has_no_git_head_helpers_of_its_own() -> None:
+    """The three helpers moved to ``runtime/build_info`` (spec 073 R18); the runner imports the public one."""
+    from docxaicorrector.runtime import build_info
+
+    validation = _load_validation_module()
+    source = (
+        Path(__file__).resolve().parent / "artifacts" / "real_document_pipeline" / "run_lietaer_validation.py"
+    ).read_text(encoding="utf-8")
+
+    for name in ("_safe_git_head", "_read_git_head_from_files", "_resolve_git_pointer_path"):
+        assert f"def {name}" not in source, f"{name} is still defined in the runner"
+        assert not hasattr(validation, name)
+    assert validation.resolve_git_head is build_info.resolve_git_head
+
+
+def test_runner_environment_git_head_comes_from_the_shared_resolver(monkeypatch) -> None:
+    validation = _load_validation_module()
+    seen: list[object] = []
+
+    def fake_resolver(project_root=None):
+        seen.append(project_root)
+        return "abc1234"
+
+    monkeypatch.setattr(validation, "resolve_git_head", fake_resolver)
+
+    assert validation._build_environment_snapshot()["git_head"] == "abc1234"
+    assert seen == [validation.PROJECT_ROOT]
+
+
+def test_runner_reads_the_head_of_a_side_worktree_through_the_shared_resolver(monkeypatch, tmp_path: Path) -> None:
+    """The 2026-11-07 failure shape: ``git`` itself cannot open the worktree, the files can."""
+    from docxaicorrector.runtime import build_info
+
+    def git_cannot_open_it(*args, **kwargs):
+        raise OSError("git cannot open the worktree")
+
+    monkeypatch.setattr(build_info.subprocess, "run", git_cannot_open_it)
+    worktree = _shape_side_worktree(tmp_path, packed=False)
+    validation = _load_validation_module()
+
+    assert validation.resolve_git_head(worktree) == "8a5e5f0"
 
 
 def test_run_report_says_not_reported_when_no_narration_artifact_was_saved() -> None:
@@ -6981,13 +7030,14 @@ def test_main_writes_each_runs_log_into_its_own_artifact_directory(monkeypatch, 
 
 
 def _run_stubbed_main_emitting(
-    validation, monkeypatch, tmp_path, *, run_id: str, events, effective_extra=None, processing_hook=None
+    validation, monkeypatch, tmp_path, *, run_id: str, events, effective_extra=None, processing_hook=None, state_extra=None
 ) -> Path:
     """Run the real ``main()`` with a processing service stub that emits ``events``.
 
     Each event is ``(level, event_id, context)`` and goes through the ``log_event_fn`` the
     runner injects, exactly where the pipeline's own events go. Returns the run's directory.
 
+    ``state_extra`` adds keys to the state the run publishes (spec 073: the narration text and exports);
     ``effective_extra`` adds fields to the resolved runtime config (spec 069: a translation mode);
     ``processing_hook(log_event_fn, kwargs)`` is then called from the stub's ``run_document_processing``,
     the call the runner wraps to freeze the pre-run estimate into the pipeline's app_config.
@@ -7052,6 +7102,7 @@ def _run_stubbed_main_emitting(
                         "latest_markdown": "validated output",
                         "latest_docx_bytes": _docx_bytes(Document()),
                         "image_assets": [],
+                        **(state_extra or {}),
                     }
                 )
             )
@@ -8338,6 +8389,8 @@ def _run_alias_then_finalize_sequence(
     run_id: str,
     with_tts_docx: bool,
     with_tts_pdf: bool,
+    with_narration_book: bool = False,
+    with_reading_glossary: bool = False,
 ) -> dict:
     """Drive the runner's closing sequence: alias copy, tracker state, tracker.finalize.
 
@@ -8360,6 +8413,22 @@ def _run_alias_then_finalize_sequence(
         tts_pdf.write_bytes(f"%PDF-{run_id}".encode())
     latest_report_path = artifact_root / "latest_report.json"
     latest_summary_path = artifact_root / "latest_summary.txt"
+    # Spec 073: the book file and the reading-glossary copy travel with the narration files. The arguments are
+    # passed only when the case asks for them, so the 072 cases keep their exact call shape.
+    extra_alias_arguments: dict = {}
+    if with_narration_book or with_reading_glossary:
+        book = run_dir / "book.narration.json"
+        glossary = run_dir / "book.reading_glossary.json"
+        if with_narration_book:
+            book.write_text(f'{{"run": "{run_id}"}}\n', encoding="utf-8")
+        if with_reading_glossary:
+            glossary.write_text(f'{{"run": "{run_id}"}}\n', encoding="utf-8")
+        extra_alias_arguments = {
+            "narration_book_artifact": book if with_narration_book else None,
+            "latest_narration_book_path": artifact_root / "book.narration.json",
+            "reading_glossary_artifact": glossary if with_reading_glossary else None,
+            "latest_reading_glossary_path": artifact_root / "book.reading_glossary.json",
+        }
 
     tracker = validation.ValidationProgressTracker(
         run_id=run_id,
@@ -8399,6 +8468,7 @@ def _run_alias_then_finalize_sequence(
         tts_pdf_artifact=tts_pdf if with_tts_pdf else None,
         latest_tts_docx_path=artifact_root / "book.tts.docx",
         latest_tts_pdf_path=artifact_root / "book.tts.pdf",
+        **extra_alias_arguments,
     )
     tracker.set_manifest_context(**narration_alias_fields)
     tracker.finalize(
@@ -8470,3 +8540,564 @@ def test_second_run_without_narration_docx_removes_the_stale_latest_docx_alias(t
     assert second["latest_tts_docx"] is None
     assert (tmp_path / "book.tts.pdf").read_bytes() == b"%PDF-run-2"
     assert second["latest_tts_pdf"] == validation._path_for_report(tmp_path / "book.tts.pdf")
+
+
+# ======================================================================================================
+# Spec 073 WP-I: the events guard, the runner's book file and reading-glossary copy, the documents
+# (``specs/073-narration-for-the-ear/contracts/events.md``, research R12).
+# ======================================================================================================
+
+# The three reading-glossary events were registered at the WP-E merge; the book-failure event is spec 073's own.
+_SPEC_073_LOG_EVENTS = (
+    "audiobook_reading_glossary_built",
+    "audiobook_reading_glossary_unresolved",
+    "audiobook_reading_glossary_failed",
+    "audiobook_narration_book_failed",
+    "ui_audiobook_artifact_saved",
+)
+_SPEC_073_NEW_UI_ARTIFACT_FIELDS = (
+    "narration_book_path",
+    "narration_book_status",
+    "narration_book_chapter_count",
+    "narration_book_pause_counts",
+    "scene_break_count",
+    "stress_mark_count",
+    "stress_marks_per_1000_words",
+    "latin_source_unit_count",
+    "reading_glossary_status",
+    "reading_glossary_candidate_count",
+    "reading_glossary_sent_count",
+    "reading_glossary_accepted_count",
+    "reading_glossary_rerequested_count",
+    "reading_glossary_unresolved_count",
+    "reading_glossary_dropped_by_limit_count",
+    "reading_glossary_rejected_by_reason",
+    "reading_glossary_batch_count",
+    "reading_glossary_call_count",
+    "reading_glossary_retry_count",
+    "reading_glossary_block_count",
+    "reading_glossary_cost_usd",
+    "reading_glossary_artifact_path",
+)
+
+
+@pytest.mark.parametrize("event_id", _SPEC_073_LOG_EVENTS)
+def test_logging_document_registers_every_spec_073_event(event_id: str) -> None:
+    assert _source_emits_event(event_id), f"{event_id} is not emitted anywhere under src/ -- the guard list is stale"
+    assert f"`{event_id}`" in _logging_document_text(), f"{event_id} is not registered in docs/LOGGING_AND_ARTIFACT_RETENTION.md"
+
+
+def test_every_spec_073_event_is_seen_by_the_audiobook_event_scanner() -> None:
+    """``audiobook_*`` names are what ``_emitted_audiobook_event_names`` scans for; a 073 event it cannot see would
+    escape ``test_every_audiobook_event_emitted_in_src_is_registered_in_the_logging_document``."""
+    emitted = _emitted_audiobook_event_names()
+
+    assert set(_SPEC_073_LOG_EVENTS) <= emitted
+
+
+def test_logging_document_lists_the_new_spec_073_ui_audiobook_artifact_fields() -> None:
+    document = _logging_document_text()
+    for field in _SPEC_073_NEW_UI_ARTIFACT_FIELDS:
+        assert f"`{field}`" in document, f"{field} is not documented for ui_audiobook_artifact_saved"
+
+
+def test_logging_document_records_the_narration_book_group_member_and_the_glossary_artifact_family() -> None:
+    document = _logging_document_text()
+    assert ".result.narration.json" in document
+    retention_row = next(line for line in document.splitlines() if line.startswith("| `.run/run_glossaries/"))
+    assert "audiobook_reading_glossary/v1" in retention_row
+    changelog = document.split("## 7. Changelog", 1)[1]
+    assert "спека 073" in changelog.split("\n- 2026-11-10: спека 072", 1)[0]
+
+
+def test_front_door_documents_name_the_narration_book_file() -> None:
+    root = Path(__file__).resolve().parent.parent
+    agents = (root / "AGENTS.md").read_text(encoding="utf-8")
+    ui_results = agents.split("## UI result artifacts", 1)[1].split("\n## ", 1)[0]
+    assert ".result.narration.json" in ui_results
+    assert "narration_book_path" in ui_results
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert ".result.narration.json" in readme
+    workflow = (root / "docs" / "WORKFLOW_AND_IMAGE_MODES.md").read_text(encoding="utf-8")
+    assert ".result.narration.json" in workflow
+    assert "contracts/narration-book.md" in readme
+    assert "contracts/narration-book.md" in workflow
+
+
+def test_log_event_inventory_script_scans_the_spec_073_emitters() -> None:
+    root = Path(__file__).resolve().parent.parent
+    script = (root / "scripts" / "_list_log_events.py").read_text(encoding="utf-8")
+    for target in (
+        "src/docxaicorrector/pipeline/reading_glossary.py",
+        "src/docxaicorrector/pipeline/narration_exports.py",
+    ):
+        assert f'"{target}"' in script
+        assert (root / target).exists()
+
+
+def test_log_event_inventory_script_reports_the_spec_073_events() -> None:
+    import contextlib
+    import runpy
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "_list_log_events.py"
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        runpy.run_path(str(script), run_name="__main__")
+    reported = {line.split("\t", 1)[0] for line in buffer.getvalue().splitlines() if line}
+    for event_id in _SPEC_073_LOG_EVENTS[:-1]:
+        assert event_id in reported, f"{event_id} is invisible to scripts/_list_log_events.py"
+
+
+# Spec 073 T-I2: the runner report, on a synthetic event and a synthetic ledger.
+
+_SPEC_073_EVENT_CONTEXT = {
+    "char_count": 1000,
+    "narration_book_path": "/run/x.result.narration.json",
+    "narration_book_status": "built",
+    "narration_book_chapter_count": 7,
+    "narration_book_pause_counts": {"chapter": 6, "heading": 2, "scene_break": 3},
+    "scene_break_count": 3,
+    "stress_mark_count": 12,
+    "stress_marks_per_1000_words": 4.5,
+    "latin_source_unit_count": 21,
+    "reading_glossary_status": "built",
+    "reading_glossary_candidate_count": 30,
+    "reading_glossary_sent_count": 28,
+    "reading_glossary_accepted_count": 26,
+    "reading_glossary_rerequested_count": 3,
+    "reading_glossary_unresolved_count": 0,
+    "reading_glossary_dropped_by_limit_count": 2,
+    "reading_glossary_rejected_by_reason": {"not_a_reading": 1},
+    "reading_glossary_batch_count": 2,
+    "reading_glossary_call_count": 3,
+    "reading_glossary_retry_count": 0,
+    "reading_glossary_block_count": 11,
+    "reading_glossary_cost_usd": 0.004,
+    "reading_glossary_artifact_path": "/run/glossary.json",
+}
+
+
+def test_narration_report_carries_the_spec_073_fields_and_summary_lines() -> None:
+    validation = _load_validation_module()
+
+    record = validation._extract_narration_artifact_record(
+        [{"event_id": "ui_audiobook_artifact_saved", "context": dict(_SPEC_073_EVENT_CONTEXT)}]
+    )
+    assert record is not None
+    for field in _SPEC_073_NEW_UI_ARTIFACT_FIELDS:
+        assert field in record, f"{field} is not carried into narration_artifact"
+    assert record["narration_book_pause_counts"] == {"chapter": 6, "heading": 2, "scene_break": 3}
+
+    lines = validation._build_narration_summary_lines(record)
+
+    assert "narration_scene_break_count=3" in lines
+    assert "narration_stress_mark_count=12" in lines
+    assert "narration_stress_marks_per_1000_words=4.5" in lines
+    assert "narration_latin_source_unit_count=21" in lines
+    assert "narration_book_status=built" in lines
+    assert "narration_book_chapter_count=7" in lines
+    assert "narration_reading_glossary_status=built" in lines
+    assert "narration_reading_glossary_candidate_count=30" in lines
+    assert "narration_reading_glossary_sent_count=28" in lines
+    assert "narration_reading_glossary_accepted_count=26" in lines
+    assert "narration_reading_glossary_rerequested_count=3" in lines
+    assert "narration_reading_glossary_unresolved_count=0" in lines
+    assert "narration_reading_glossary_dropped_by_limit_count=2" in lines
+    assert "narration_reading_glossary_batch_count=2" in lines
+    assert "narration_reading_glossary_call_count=3" in lines
+    assert "narration_reading_glossary_retry_count=0" in lines
+    assert "narration_reading_glossary_block_count=11" in lines
+    assert "narration_reading_glossary_cost_usd=0.004" in lines
+    assert 'narration_book_pause_counts={"chapter": 6, "heading": 2, "scene_break": 3}' in lines
+    assert 'narration_reading_glossary_rejected_by_reason={"not_a_reading": 1}' in lines
+    # The prefix is not doubled for a field that already starts with ``narration_`` (the 072 rule).
+    assert not any(line.startswith("narration_narration_") for line in lines)
+
+
+def test_narration_report_says_not_reported_for_spec_073_fields_the_event_lacks() -> None:
+    """An event from before spec 073 does not claim zero scene breaks or a book of zero chapters; a carried zero stays 0."""
+    validation = _load_validation_module()
+
+    lines = validation._build_narration_summary_lines({"char_count": 10})
+
+    for key in (
+        "narration_scene_break_count",
+        "narration_stress_mark_count",
+        "narration_stress_marks_per_1000_words",
+        "narration_latin_source_unit_count",
+        "narration_book_status",
+        "narration_book_chapter_count",
+        "narration_book_pause_counts",
+        "narration_reading_glossary_status",
+        "narration_reading_glossary_unresolved_count",
+        "narration_reading_glossary_cost_usd",
+        "narration_reading_glossary_rejected_by_reason",
+    ):
+        assert f"{key}=not_reported" in lines, key
+
+    carried = validation._build_narration_summary_lines({"scene_break_count": 0, "narration_book_chapter_count": 0})
+    assert "narration_scene_break_count=0" in carried
+    assert "narration_book_chapter_count=0" in carried
+
+
+def test_stage_cost_lines_list_the_reading_glossary_stage_separately() -> None:
+    """The price of the glossary step is its own line; a stage that reported no cost is ``not_reported``, not 0."""
+    validation = _load_validation_module()
+
+    lines = validation._build_stage_cost_summary_lines(
+        {
+            "stages": {
+                "text_generation": {"model_call_count": 10, "model_calls_without_cost": 0, "cost_usd_reported_by_provider": 0.5},
+                "audiobook_reading_glossary": {
+                    "model_call_count": 2,
+                    "model_calls_without_cost": 0,
+                    "cost_usd_reported_by_provider": 0.004,
+                },
+            }
+        }
+    )
+    assert "model_accounting_stage_audiobook_reading_glossary_cost_usd=0.004" in lines
+    assert "model_accounting_stage_audiobook_repair_cost_usd=not_reported" in lines
+
+    silent = validation._build_stage_cost_summary_lines(
+        {
+            "stages": {
+                "audiobook_reading_glossary": {
+                    "model_call_count": 2,
+                    "model_calls_without_cost": 2,
+                    "cost_usd_reported_by_provider": 0.0,
+                }
+            }
+        }
+    )
+    assert "model_accounting_stage_audiobook_reading_glossary_cost_usd=not_reported" in silent
+
+
+# Spec 073 T-I3: the book file and the glossary copy next to the run's other artifacts.
+
+_ACUTE = "́"
+
+
+def _narration_book_text(texts: list[str], *, schema_version: int = 1, chapter_count: int = 1) -> str:
+    """A book file of the contract's shape (``contracts/narration-book.md``), synthetic segments."""
+    segments = [
+        {
+            "ordinal": index,
+            "chapter_ordinal": 1,
+            "role": "body",
+            "heading_level": None,
+            "text": text,
+            "after_scene_break": False,
+            "pause_after": None,
+            "source_paragraph_ids": [f"p{index:04d}"],
+        }
+        for index, text in enumerate(texts, start=1)
+    ]
+    chapters = [
+        {"ordinal": ordinal, "title": None, "segment_ordinals": [ordinal] if ordinal > 1 else list(range(1, len(texts) + 1))}
+        for ordinal in range(1, chapter_count + 1)
+    ]
+    book = {
+        "schema_version": schema_version,
+        "producer": {"name": "DocxAICorrector", "version": None, "run_id": "r", "produced_at": "2026-11-10T00:00:00Z"},
+        "book": {"source_name": "kvazi.docx", "source_token": "kvazi.docx:1:00"},
+        "chapter_heading_level": None,
+        "chapters": chapters,
+        "segments": segments,
+        "reading_glossary": [],
+        "stats": {},
+    }
+    return json.dumps(book, ensure_ascii=False, indent=1) + "\n"
+
+
+_BOOK_TEXTS = [f"Ста{_ACUTE}рый за{_ACUTE}мок стоял на холме.", "Утром пришли гости.", "ABC-xyz"]
+
+
+def test_write_narration_book_artifact_saves_the_book_bytes_exactly(tmp_path) -> None:
+    validation = _load_validation_module()
+    book_text = _narration_book_text(_BOOK_TEXTS)
+
+    path = validation._write_narration_book_artifact(
+        {"book_json": book_text}, artifact_dir=tmp_path, output_basename="Квазибург"
+    )
+
+    assert path == tmp_path / "Квазибург.narration.json"
+    assert path.read_bytes() == book_text.encode("utf-8")
+    assert _ACUTE in path.read_text(encoding="utf-8")
+    assert b"\r" not in path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "exports",
+    [
+        None,
+        {},
+        {"book_json": None},
+        {"book_json": ""},
+        {"book_json": b"bytes-are-not-the-state-value"},
+        {"docx_bytes": b"PK", "pdf_bytes": None},
+        "not-a-mapping",
+    ],
+)
+def test_write_narration_book_artifact_without_a_book_writes_nothing_and_does_not_raise(tmp_path, exports) -> None:
+    validation = _load_validation_module()
+
+    path = validation._write_narration_book_artifact(exports, artifact_dir=tmp_path, output_basename="book")
+
+    assert path is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_inspect_narration_book_confirms_json_schema_chapters_and_equality_with_the_tts_text(tmp_path) -> None:
+    validation = _load_validation_module()
+    book_path = tmp_path / "book.narration.json"
+    tts_path = tmp_path / "book.tts.txt"
+    book_path.write_text(_narration_book_text(_BOOK_TEXTS, chapter_count=2), encoding="utf-8")
+    tts_path.write_bytes("\n\n".join(_BOOK_TEXTS).encode("utf-8"))
+
+    inspection = validation._inspect_narration_book(book_path, tts_path)
+
+    assert inspection == {
+        "narration_book_valid_json": True,
+        "narration_book_schema_version": 1,
+        "narration_book_segments_equal_tts": True,
+        "narration_book_chapter_count": 2,
+    }
+
+
+def test_inspect_narration_book_flags_a_planted_file_whose_segment_was_changed(tmp_path) -> None:
+    """Anti-vacuum: the equality is computed, not assumed -- one changed segment makes it ``False``."""
+    validation = _load_validation_module()
+    tts_path = tmp_path / "book.tts.txt"
+    tts_path.write_bytes("\n\n".join(_BOOK_TEXTS).encode("utf-8"))
+
+    tampered = [_BOOK_TEXTS[0], "Утром ушли гости.", _BOOK_TEXTS[2]]
+    book_path = tmp_path / "tampered.narration.json"
+    book_path.write_text(_narration_book_text(tampered), encoding="utf-8")
+    assert validation._inspect_narration_book(book_path, tts_path)["narration_book_segments_equal_tts"] is False
+
+    # The stress mark is part of the text: losing it is a difference, not noise.
+    unmarked = [_BOOK_TEXTS[0].replace(_ACUTE, ""), *_BOOK_TEXTS[1:]]
+    book_path.write_text(_narration_book_text(unmarked), encoding="utf-8")
+    assert validation._inspect_narration_book(book_path, tts_path)["narration_book_segments_equal_tts"] is False
+
+
+def test_inspect_narration_book_reports_a_missing_or_unreadable_file_without_raising(tmp_path) -> None:
+    validation = _load_validation_module()
+    tts_path = tmp_path / "book.tts.txt"
+    tts_path.write_text("text", encoding="utf-8")
+    broken = tmp_path / "broken.narration.json"
+    broken.write_text("{not json", encoding="utf-8")
+    shapeless = tmp_path / "shapeless.narration.json"
+    shapeless.write_text('{"schema_version": 1}', encoding="utf-8")
+    listed = tmp_path / "listed.narration.json"
+    listed.write_text("[1, 2]", encoding="utf-8")
+
+    for path in (None, tmp_path / "absent.narration.json", broken):
+        inspection = validation._inspect_narration_book(path, tts_path)
+        assert inspection["narration_book_valid_json"] is False
+        assert inspection["narration_book_schema_version"] is None
+        assert inspection["narration_book_segments_equal_tts"] is None
+        assert inspection["narration_book_chapter_count"] is None
+
+    # Valid JSON that is not a book: parsed, but nothing is claimed about the segments.
+    for path in (shapeless, listed):
+        inspection = validation._inspect_narration_book(path, tts_path)
+        assert inspection["narration_book_segments_equal_tts"] is None
+
+    # No ``.tts.txt`` to compare with: the equality is not computable, so it is not claimed.
+    book_path = tmp_path / "book.narration.json"
+    book_path.write_text(_narration_book_text(_BOOK_TEXTS), encoding="utf-8")
+    inspection = validation._inspect_narration_book(book_path, None)
+    assert inspection["narration_book_valid_json"] is True
+    assert inspection["narration_book_segments_equal_tts"] is None
+
+
+def _glossary_event(event_id: str, artifact_path: object) -> dict[str, object]:
+    return {"event_id": event_id, "context": {"artifact_path": artifact_path}}
+
+
+def test_reading_glossary_artifact_is_copied_from_the_built_event(tmp_path) -> None:
+    validation = _load_validation_module()
+    source = tmp_path / "source" / "glossary.json"
+    source.parent.mkdir()
+    source.write_text('{"schema": "audiobook_reading_glossary/v1"}', encoding="utf-8")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    copy = validation._copy_reading_glossary_artifact(
+        [_glossary_event("audiobook_reading_glossary_built", str(source))],
+        artifact_dir=run_dir,
+        output_basename="book",
+    )
+
+    assert copy == run_dir / "book.reading_glossary.json"
+    assert copy.read_bytes() == source.read_bytes()
+
+
+def test_reading_glossary_artifact_of_a_run_that_failed_on_it_is_copied_from_the_failed_event(tmp_path) -> None:
+    validation = _load_validation_module()
+    source = tmp_path / "glossary_failed.json"
+    source.write_text('{"failure": {"reason": "unavailable"}}', encoding="utf-8")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    copy = validation._copy_reading_glossary_artifact(
+        [_glossary_event("audiobook_reading_glossary_failed", str(source))], artifact_dir=run_dir, output_basename="book"
+    )
+
+    assert copy == run_dir / "book.reading_glossary.json"
+    assert copy.read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [],
+        [{"event_id": "processing_started", "context": {}}],
+        [_glossary_event("audiobook_reading_glossary_built", None)],
+        [_glossary_event("audiobook_reading_glossary_built", "")],
+        [_glossary_event("audiobook_reading_glossary_built", "/definitely/absent/glossary.json")],
+        [{"event_id": "audiobook_reading_glossary_built", "context": "not-a-mapping"}],
+    ],
+)
+def test_reading_glossary_copy_without_an_event_or_a_readable_source_is_none_and_does_not_raise(tmp_path, events) -> None:
+    validation = _load_validation_module()
+
+    copy = validation._copy_reading_glossary_artifact(events, artifact_dir=tmp_path, output_basename="book")
+
+    assert copy is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_write_latest_alias_artifacts_copies_the_narration_book_and_the_glossary_and_clears_stale_aliases(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    first = _run_alias_then_finalize_sequence(
+        validation,
+        artifact_root=tmp_path,
+        run_id="run-1",
+        with_tts_docx=False,
+        with_tts_pdf=False,
+        with_narration_book=True,
+        with_reading_glossary=True,
+    )
+    assert (tmp_path / "book.narration.json").read_text(encoding="utf-8") == '{"run": "run-1"}\n'
+    assert (tmp_path / "book.reading_glossary.json").read_text(encoding="utf-8") == '{"run": "run-1"}\n'
+    # The manifest keeps the fields across ``tracker.finalize`` (it rewrites the manifest from the tracker state).
+    assert first["latest_narration_book"] == validation._path_for_report(tmp_path / "book.narration.json")
+    assert first["latest_reading_glossary"] == validation._path_for_report(tmp_path / "book.reading_glossary.json")
+
+    second = _run_alias_then_finalize_sequence(
+        validation,
+        artifact_root=tmp_path,
+        run_id="run-2",
+        with_tts_docx=False,
+        with_tts_pdf=False,
+        with_narration_book=False,
+        with_reading_glossary=True,
+    )
+    # A run without a book must not leave the previous run's file under the stable name.
+    assert not (tmp_path / "book.narration.json").exists()
+    assert "latest_narration_book" in second and second["latest_narration_book"] is None
+    assert (tmp_path / "book.reading_glossary.json").read_text(encoding="utf-8") == '{"run": "run-2"}\n'
+    assert second["latest_reading_glossary"] == validation._path_for_report(tmp_path / "book.reading_glossary.json")
+
+
+def test_final_latest_manifest_without_the_narration_book_has_null_entries(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    manifest = _run_alias_then_finalize_sequence(
+        validation, artifact_root=tmp_path, run_id="run-1", with_tts_docx=False, with_tts_pdf=False
+    )
+
+    assert "latest_narration_book" in manifest and manifest["latest_narration_book"] is None
+    assert "latest_reading_glossary" in manifest and manifest["latest_reading_glossary"] is None
+
+
+def test_main_writes_the_narration_book_and_the_glossary_copy_and_reports_them(monkeypatch, tmp_path) -> None:
+    """The closing sequence of ``main()`` on a run that built a book: files in the run directory and under ``latest``,
+    the report's ``output_artifacts``, the summary line and the manifest."""
+    import logging
+
+    validation = _load_validation_module()
+    tts_text = "\n\n".join(_BOOK_TEXTS)
+    glossary_source = tmp_path / "glossary_source.json"
+    glossary_source.write_text('{"schema": "audiobook_reading_glossary/v1", "status": "built"}', encoding="utf-8")
+    context = dict(_SPEC_073_EVENT_CONTEXT, narration_book_chapter_count=1)
+
+    run_dir = _run_stubbed_main_emitting(
+        validation,
+        monkeypatch,
+        tmp_path / "case",
+        run_id="run-book",
+        events=[
+            (logging.INFO, "audiobook_reading_glossary_built", {"artifact_path": str(glossary_source), "status": "built"}),
+            (logging.INFO, "ui_audiobook_artifact_saved", context),
+        ],
+        state_extra={
+            "latest_narration_text": tts_text,
+            "latest_narration_exports": {"book_json": _narration_book_text(_BOOK_TEXTS)},
+        },
+    )
+
+    artifact_root = run_dir.parent.parent
+    book_in_run = run_dir / "Stub_events_validated.narration.json"
+    assert book_in_run.read_bytes() == _narration_book_text(_BOOK_TEXTS).encode("utf-8")
+    assert (artifact_root / "Stub_events_validated.narration.json").read_bytes() == book_in_run.read_bytes()
+    glossary_in_run = run_dir / "Stub_events_validated.reading_glossary.json"
+    assert glossary_in_run.read_bytes() == glossary_source.read_bytes()
+    assert (artifact_root / "Stub_events_validated.reading_glossary.json").read_bytes() == glossary_source.read_bytes()
+
+    report = json.loads((run_dir / "stub_events_validation_report.json").read_text(encoding="utf-8"))
+    outputs = report["output_artifacts"]
+    assert outputs["narration_book_path"] == validation._path_for_report(book_in_run)
+    assert outputs["latest_narration_book_path"] == validation._path_for_report(
+        artifact_root / "Stub_events_validated.narration.json"
+    )
+    assert outputs["narration_book_valid_json"] is True
+    assert outputs["narration_book_schema_version"] == 1
+    assert outputs["narration_book_segments_equal_tts"] is True
+    assert outputs["narration_book_chapter_count"] == 1
+    assert outputs["reading_glossary_path"] == validation._path_for_report(glossary_in_run)
+    assert report["narration_artifact"]["narration_book_status"] == "built"
+
+    summary_lines = (run_dir / "stub_events_validation_summary.txt").read_text(encoding="utf-8").splitlines()
+    book_line = f"narration_book_path={outputs['narration_book_path']}"
+    assert book_line in summary_lines
+    assert summary_lines.index(book_line) == summary_lines.index(f"tts_pdf_path={outputs['tts_pdf_path']}") + 1
+    assert "narration_scene_break_count=3" in summary_lines
+    assert "narration_book_status=built" in summary_lines
+
+    manifest = json.loads((artifact_root / "stub_events_validation_latest.json").read_text(encoding="utf-8"))
+    assert manifest["latest_narration_book"] == outputs["latest_narration_book_path"]
+    assert manifest["latest_reading_glossary"] is not None
+
+
+def test_main_reports_not_reported_values_for_a_run_without_a_book_or_a_glossary(monkeypatch, tmp_path) -> None:
+    import logging
+
+    validation = _load_validation_module()
+
+    run_dir = _run_stubbed_main_emitting(
+        validation,
+        monkeypatch,
+        tmp_path,
+        run_id="run-nobook",
+        events=[(logging.INFO, "processing_started", {"block_count": 1})],
+    )
+
+    report = json.loads((run_dir / "stub_events_validation_report.json").read_text(encoding="utf-8"))
+    outputs = report["output_artifacts"]
+    assert outputs["narration_book_path"] is None
+    assert outputs["latest_narration_book_path"] is None
+    assert outputs["narration_book_valid_json"] is False
+    assert outputs["narration_book_schema_version"] is None
+    assert outputs["narration_book_segments_equal_tts"] is None
+    assert outputs["narration_book_chapter_count"] is None
+    assert outputs["reading_glossary_path"] is None
+    assert not list(run_dir.glob("*.narration.json"))
+    assert not list(run_dir.glob("*.reading_glossary.json"))
+    summary_lines = (run_dir / "stub_events_validation_summary.txt").read_text(encoding="utf-8").splitlines()
+    assert "narration_book_path=None" in summary_lines
+    assert "model_accounting_stage_audiobook_reading_glossary_cost_usd=not_reported" in summary_lines

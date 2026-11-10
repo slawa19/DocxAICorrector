@@ -104,6 +104,12 @@ from docxaicorrector.validation.profiles import (
     load_validation_registry,
     resolve_runtime_resolution,
 )
+from docxaicorrector.core.model_accounting import (
+    STAGE_AUDIOBOOK_READING_GLOSSARY,
+    STAGE_AUDIOBOOK_REPAIR,
+    STAGE_TEXT_GENERATION,
+)
+from docxaicorrector.runtime.build_info import resolve_git_head
 from docxaicorrector.runtime.events import (
     AppendImageLogEvent,
     AppendLogEvent,
@@ -476,94 +482,6 @@ def _build_run_id(source_path: Path) -> str:
     return f"{timestamp}_{os.getpid()}_{sanitized_stem}"
 
 
-def _safe_git_head() -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            check=True,
-            text=True,
-        )
-    except Exception:
-        return _read_git_head_from_files(PROJECT_ROOT)
-    return result.stdout.strip() or _read_git_head_from_files(PROJECT_ROOT)
-
-
-_GIT_SHORT_HEAD_LENGTH = 7
-_WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^([A-Za-z]):[\\/](.*)$")
-_GIT_OBJECT_ID_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
-
-
-def _resolve_git_pointer_path(raw: str, *, relative_to: Path) -> Path:
-    """A path written by git into a pointer file (``gitdir:``, ``commondir``).
-
-    A side worktree created from Windows records its ``gitdir`` as a Windows path
-    (``D:/Work/…/.git/worktrees/<name>``), which a Linux process reads as RELATIVE. Under
-    WSL the drive maps to ``/mnt/<drive>/``, the documented mount of this runtime.
-    """
-
-    drive_path = _WINDOWS_DRIVE_PATH_PATTERN.match(raw)
-    if drive_path is not None and os.name != "nt":
-        drive, rest = drive_path.groups()
-        return Path("/mnt") / drive.lower() / rest.replace("\\", "/")
-    candidate = Path(raw)
-    return candidate if candidate.is_absolute() else (relative_to / candidate)
-
-
-def _read_git_head_from_files(project_root: Path) -> str | None:
-    """The checked-out commit read straight from the git files, no git subprocess.
-
-    Fallback for ``_safe_git_head``: under WSL, ``git`` cannot open a side worktree whose
-    ``.git`` FILE points at a Windows path (``AGENTS.md``, «Боковые worktree для агентов»),
-    and the 2026-11-07 run summaries recorded ``git_head=None`` — a run whose commit nobody
-    can name. ``.git`` (directory, or file with ``gitdir:``) → ``HEAD`` → the ref file in
-    the common dir, or ``packed-refs``. Any unreadable step returns ``None``, as before.
-    """
-
-    try:
-        dot_git = project_root / ".git"
-        if dot_git.is_file():
-            pointer = dot_git.read_text(encoding="utf-8").strip()
-            if not pointer.startswith("gitdir:"):
-                return None
-            git_dir = _resolve_git_pointer_path(pointer[len("gitdir:") :].strip(), relative_to=project_root)
-        elif dot_git.is_dir():
-            git_dir = dot_git
-        else:
-            return None
-        common_dir = git_dir
-        commondir_file = git_dir / "commondir"
-        if commondir_file.is_file():
-            common_dir = _resolve_git_pointer_path(
-                commondir_file.read_text(encoding="utf-8").strip(), relative_to=git_dir
-            )
-        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
-        if head.startswith("ref:"):
-            ref = head[len("ref:") :].strip()
-            object_id = None
-            for ref_root in (git_dir, common_dir):
-                ref_file = ref_root / ref
-                if ref_file.is_file():
-                    object_id = ref_file.read_text(encoding="utf-8").strip()
-                    break
-            if object_id is None:
-                packed_refs = common_dir / "packed-refs"
-                if packed_refs.is_file():
-                    for line in packed_refs.read_text(encoding="utf-8").splitlines():
-                        parts = line.split()
-                        if len(parts) == 2 and parts[1] == ref:
-                            object_id = parts[0]
-                            break
-        else:
-            object_id = head
-    except OSError:
-        return None
-    if not object_id or not _GIT_OBJECT_ID_PATTERN.match(object_id):
-        return None
-    return object_id[:_GIT_SHORT_HEAD_LENGTH]
-
-
 def _detect_wsl_runtime() -> bool:
     release = platform.release().lower()
     return "microsoft" in release or bool(os.environ.get("WSL_DISTRO_NAME"))
@@ -584,7 +502,7 @@ def _build_environment_snapshot() -> dict[str, object]:
         "release": platform.release(),
         "hostname": socket.gethostname(),
         "is_wsl": _detect_wsl_runtime(),
-        "git_head": _safe_git_head(),
+        "git_head": resolve_git_head(PROJECT_ROOT),
     }
 
 
@@ -1565,6 +1483,9 @@ class ValidationProgressTracker:
             "latest_tts_text": self.state.get("latest_tts_text"),
             "latest_tts_docx": self.state.get("latest_tts_docx"),
             "latest_tts_pdf": self.state.get("latest_tts_pdf"),
+            # Spec 073: the book file and the reading-glossary copy, carried the same way.
+            "latest_narration_book": self.state.get("latest_narration_book"),
+            "latest_reading_glossary": self.state.get("latest_reading_glossary"),
         }
 
     def _write_locked(self) -> None:
@@ -1613,16 +1534,22 @@ def _write_latest_alias_artifacts(
     tts_pdf_artifact: Path | None = None,
     latest_tts_docx_path: Path | None = None,
     latest_tts_pdf_path: Path | None = None,
+    narration_book_artifact: Path | None = None,
+    latest_narration_book_path: Path | None = None,
+    reading_glossary_artifact: Path | None = None,
+    latest_reading_glossary_path: Path | None = None,
 ) -> dict[str, str | None]:
     """Copy the run artifacts to their stable "latest" names and write the latest manifest.
 
     Returns the narration alias manifest fields (``latest_tts_text`` / ``latest_tts_docx`` /
-    ``latest_tts_pdf``) so the caller can store them in the tracker state, which keeps them
-    across later manifest rewrites (``tracker.finalize``).
+    ``latest_tts_pdf`` / ``latest_narration_book`` / ``latest_reading_glossary``) so the caller can
+    store them in the tracker state, which keeps them across later manifest rewrites
+    (``tracker.finalize``).
 
     Spec 072: a narration DOCX/PDF that this run did not build must not leave the previous
     run's file under the stable alias name, so ``latest_tts_docx_path`` / ``latest_tts_pdf_path``
-    are the alias TARGETS and the stale alias is removed when its artifact is absent.
+    are the alias TARGETS and the stale alias is removed when its artifact is absent. Spec 073:
+    the same for the book file and the reading-glossary copy.
     """
     latest_report_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(report_path, latest_report_path)
@@ -1648,10 +1575,28 @@ def _write_latest_alias_artifacts(
             tts_pdf_alias = latest_tts_pdf_path
         else:
             latest_tts_pdf_path.unlink(missing_ok=True)
+    narration_book_alias: Path | None = None
+    if latest_narration_book_path is not None:
+        if narration_book_artifact is not None:
+            shutil.copy2(narration_book_artifact, latest_narration_book_path)
+            narration_book_alias = latest_narration_book_path
+        else:
+            latest_narration_book_path.unlink(missing_ok=True)
+    reading_glossary_alias: Path | None = None
+    if latest_reading_glossary_path is not None:
+        if reading_glossary_artifact is not None:
+            shutil.copy2(reading_glossary_artifact, latest_reading_glossary_path)
+            reading_glossary_alias = latest_reading_glossary_path
+        else:
+            latest_reading_glossary_path.unlink(missing_ok=True)
     narration_fields: dict[str, str | None] = {
         "latest_tts_text": _path_for_report(latest_tts_path) if latest_tts_path is not None else None,
         "latest_tts_docx": _path_for_report(tts_docx_alias) if tts_docx_alias is not None else None,
         "latest_tts_pdf": _path_for_report(tts_pdf_alias) if tts_pdf_alias is not None else None,
+        "latest_narration_book": _path_for_report(narration_book_alias) if narration_book_alias is not None else None,
+        "latest_reading_glossary": (
+            _path_for_report(reading_glossary_alias) if reading_glossary_alias is not None else None
+        ),
     }
 
     latest_manifest = dict(manifest_payload)
@@ -5075,6 +5020,26 @@ _NARRATION_SUMMARY_FIELDS = (
     "narration_pdf_status",
     "narration_pdf_seconds",
     "narration_docx_paragraph_count",
+    # Spec 073 (contracts/events.md): the divider, the stress marks, the Latin in the source, the book file and the
+    # reading glossary, from the same event. The key of a line is ``narration_<field>``, never doubled.
+    "scene_break_count",
+    "stress_mark_count",
+    "stress_marks_per_1000_words",
+    "latin_source_unit_count",
+    "narration_book_status",
+    "narration_book_chapter_count",
+    "reading_glossary_status",
+    "reading_glossary_candidate_count",
+    "reading_glossary_sent_count",
+    "reading_glossary_accepted_count",
+    "reading_glossary_rerequested_count",
+    "reading_glossary_unresolved_count",
+    "reading_glossary_dropped_by_limit_count",
+    "reading_glossary_batch_count",
+    "reading_glossary_call_count",
+    "reading_glossary_retry_count",
+    "reading_glossary_block_count",
+    "reading_glossary_cost_usd",
 )
 _NARRATION_SUMMARY_JSON_FIELDS = (
     "missing_paragraph_ids",
@@ -5090,6 +5055,8 @@ _NARRATION_SUMMARY_JSON_FIELDS = (
     "heading_levels_present",
     "studio_limits_exceeded",
     "narration_pdf_unavailable_reason",
+    "narration_book_pause_counts",
+    "reading_glossary_rejected_by_reason",
 )
 
 
@@ -5150,6 +5117,113 @@ def _inspect_narration_docx(path: Path | None) -> dict[str, object]:
     return result
 
 
+def _write_narration_book_artifact(
+    exports: object,
+    *,
+    artifact_dir: Path,
+    output_basename: str,
+) -> Path | None:
+    """Spec 073 FR-008: write the book file for the narration tool next to ``<name>.tts.txt``.
+
+    ``exports["book_json"]`` is the text ``pipeline.narration_book`` produced (``NarrationExports.state_value()``);
+    it goes to disk as its own UTF-8 bytes -- no newline translation, U+0301 and Cyrillic as they are. No text
+    (an old run, a translate/edit run, a book that could not be built) means no file and a ``None`` path, never an
+    exception and never an empty file.
+    """
+
+    if not isinstance(exports, Mapping):
+        return None
+    book_json = exports.get("book_json")
+    if not isinstance(book_json, str) or not book_json:
+        return None
+    target = artifact_dir / f"{output_basename}.narration.json"
+    target.write_bytes(book_json.encode("utf-8"))
+    return target
+
+
+def _inspect_narration_book(book_path: Path | None, tts_text_path: Path | None) -> dict[str, object]:
+    """Spec 073 FR-008: open the saved book file; a file check, not a second count of the plan.
+
+    ``narration_book_segments_equal_tts`` is the contract invariant (``"\\n\\n".join(segment texts)`` equals the
+    run's ``.tts.txt``) COMPUTED on the files of the run; ``None`` when it cannot be computed (no readable book,
+    no segment list, no ``.tts.txt``) -- an unmeasured value is not a ``False``.
+    """
+
+    result: dict[str, object] = {
+        "narration_book_valid_json": False,
+        "narration_book_schema_version": None,
+        "narration_book_segments_equal_tts": None,
+        "narration_book_chapter_count": None,
+    }
+    if book_path is None:
+        return result
+    try:
+        payload = json.loads(book_path.read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return result
+    result["narration_book_valid_json"] = True
+    if not isinstance(payload, Mapping):
+        return result
+    schema_version = payload.get("schema_version")
+    if isinstance(schema_version, int) and not isinstance(schema_version, bool):
+        result["narration_book_schema_version"] = schema_version
+    chapters = payload.get("chapters")
+    if isinstance(chapters, list):
+        result["narration_book_chapter_count"] = len(chapters)
+    segments = payload.get("segments")
+    if (
+        tts_text_path is not None
+        and isinstance(segments, list)
+        and all(isinstance(segment, Mapping) and isinstance(segment.get("text"), str) for segment in segments)
+    ):
+        try:
+            tts_text = tts_text_path.read_bytes().decode("utf-8")
+        except (OSError, ValueError):
+            return result
+        joined = "\n\n".join(cast("str", cast(Mapping[str, object], segment)["text"]) for segment in segments)
+        result["narration_book_segments_equal_tts"] = joined == tts_text
+    return result
+
+
+_READING_GLOSSARY_EVENT_IDS = ("audiobook_reading_glossary_built", "audiobook_reading_glossary_failed")
+READING_GLOSSARY_COPY_SUFFIX = "reading_glossary.json"
+
+
+def _copy_reading_glossary_artifact(
+    event_log: Sequence[Mapping[str, object]],
+    *,
+    artifact_dir: Path,
+    output_basename: str,
+) -> Path | None:
+    """Spec 073 FR-004 / FR-008: the reading-glossary artifact, copied next to the run's other files.
+
+    The artifact lives in the app's ``.run/run_glossaries/`` (14 days, 200 files); the copy outlives that pruning.
+    Its path is the ``artifact_path`` of the step's last event: ``audiobook_reading_glossary_built``, or -- for a run
+    that failed ON the glossary -- ``audiobook_reading_glossary_failed``. No event, no path or a source that is gone
+    means ``None``; nothing here takes the run down.
+    """
+
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") not in _READING_GLOSSARY_EVENT_IDS:
+            continue
+        context = event.get("context") or {}
+        if not isinstance(context, Mapping):
+            continue
+        source_artifact = context.get("artifact_path")
+        if not isinstance(source_artifact, str) or not source_artifact.strip():
+            return None
+        source = Path(source_artifact)
+        if not source.is_file():
+            return None
+        target = artifact_dir / f"{output_basename}.{READING_GLOSSARY_COPY_SUFFIX}"
+        try:
+            shutil.copyfile(source, target)
+        except OSError:
+            return None
+        return target
+    return None
+
+
 def _event_context(event_log: Sequence[Mapping[str, object]], event_id: str) -> dict[str, object] | None:
     for event in reversed(event_log):
         if str(event.get("event_id") or "") != event_id:
@@ -5206,11 +5280,12 @@ def _build_narration_summary_lines(narration: Mapping[str, object] | None) -> li
     return lines
 
 
-_STAGE_COST_SUMMARY_STAGES = ("text_generation", "audiobook_repair")
+_STAGE_COST_SUMMARY_STAGES = (STAGE_TEXT_GENERATION, STAGE_AUDIOBOOK_REPAIR, STAGE_AUDIOBOOK_READING_GLOSSARY)
 
 
 def _build_stage_cost_summary_lines(model_accounting: Mapping[str, object] | None) -> list[str]:
-    """Spec 070 SC-005: the price of the main call and of the repair, one line each.
+    """Spec 070 SC-005 / spec 073 FR-010: the price of the main call, of the repair and of the reading-glossary
+    step, one line each.
 
     A stage that is absent from the ledger, or whose calls reported no provider cost, is
     ``not_reported`` -- never 0, which would claim a free stage.
@@ -6505,6 +6580,8 @@ def _run_single_validation(
     tts_artifact_path: Path | None = None
     latest_tts_docx_path = artifact_root / f"{output_basename}.tts.docx"
     latest_tts_pdf_path = artifact_root / f"{output_basename}.tts.pdf"
+    latest_narration_book_path = artifact_root / f"{output_basename}.narration.json"
+    latest_reading_glossary_path = artifact_root / f"{output_basename}.{READING_GLOSSARY_COPY_SUFFIX}"
 
     if final_markdown:
         markdown_artifact.write_text(final_markdown, encoding="utf-8")
@@ -6538,6 +6615,16 @@ def _run_single_validation(
         output_basename=output_basename,
     )
     tts_docx_inspection = _inspect_narration_docx(tts_docx_artifact_path)
+    # Spec 073: the book file for the narration tool and the copy of the reading-glossary artifact.
+    narration_book_artifact_path = _write_narration_book_artifact(
+        state.get("latest_narration_exports"),
+        artifact_dir=artifact_dir,
+        output_basename=output_basename,
+    )
+    narration_book_inspection = _inspect_narration_book(narration_book_artifact_path, tts_artifact_path)
+    reading_glossary_artifact_path = _copy_reading_glossary_artifact(
+        event_log, artifact_dir=artifact_dir, output_basename=output_basename
+    )
 
     formatting_diagnostics_paths = _extract_run_formatting_diagnostics_paths(event_log)
     formatting_diagnostics_discovery_source = None
@@ -6648,6 +6735,9 @@ def _run_single_validation(
             "tts_text_path": _path_for_report(tts_artifact_path),
             "tts_docx_path": _path_for_report(tts_docx_artifact_path),
             "tts_pdf_path": _path_for_report(tts_pdf_artifact_path),
+            "narration_book_path": _path_for_report(narration_book_artifact_path),
+            **narration_book_inspection,
+            "reading_glossary_path": _path_for_report(reading_glossary_artifact_path),
             **tts_docx_inspection,
             "output_docx_openable": openable_output,
             "output_paragraphs": output_paragraphs,
@@ -6666,6 +6756,12 @@ def _run_single_validation(
             ),
             "latest_tts_pdf_path": (
                 _path_for_report(latest_tts_pdf_path) if tts_pdf_artifact_path is not None else None
+            ),
+            "latest_narration_book_path": (
+                _path_for_report(latest_narration_book_path) if narration_book_artifact_path is not None else None
+            ),
+            "latest_reading_glossary_path": (
+                _path_for_report(latest_reading_glossary_path) if reading_glossary_artifact_path is not None else None
             ),
             "latest_manifest_json": _path_for_report(latest_manifest_path),
             "app_log": _path_for_report(artifact_dir / RUN_LOG_FILENAME),
@@ -6933,6 +7029,7 @@ def _run_single_validation(
         f"tts_text_path={report['output_artifacts']['tts_text_path']}",
         f"tts_docx_path={report['output_artifacts']['tts_docx_path']}",
         f"tts_pdf_path={report['output_artifacts']['tts_pdf_path']}",
+        f"narration_book_path={report['output_artifacts']['narration_book_path']}",
         f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
         f"app_log={report['output_artifacts']['app_log']}",
         f"events_jsonl={report['output_artifacts']['events_jsonl']}",
@@ -6980,6 +7077,10 @@ def _run_single_validation(
         tts_pdf_artifact=tts_pdf_artifact_path,
         latest_tts_docx_path=latest_tts_docx_path,
         latest_tts_pdf_path=latest_tts_pdf_path,
+        narration_book_artifact=narration_book_artifact_path,
+        latest_narration_book_path=latest_narration_book_path,
+        reading_glossary_artifact=reading_glossary_artifact_path,
+        latest_reading_glossary_path=latest_reading_glossary_path,
     )
     tracker.set_manifest_context(**narration_alias_fields)
     tracker.finalize(
