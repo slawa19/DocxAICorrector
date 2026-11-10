@@ -1,6 +1,7 @@
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -46,7 +47,9 @@ from docxaicorrector.pipeline.narration_postprocess import (  # noqa: F401
     _collect_narration_artifact_review_findings,
     _summarize_narration_review_findings,
 )
-from docxaicorrector.pipeline.narration_exports import NarrationExports, build_narration_exports
+from docxaicorrector.pipeline.narration_book import NarrationBookProducer, NarrationBookSource
+from docxaicorrector.pipeline.narration_exports import NarrationBookInputs, NarrationExports, build_narration_exports
+from docxaicorrector.runtime.build_info import resolve_git_head
 from docxaicorrector.reader_cleanup_mvp import write_reader_cleanup_diagnostics
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
@@ -610,6 +613,38 @@ def _log_post_delivery_secondary_failure(*, dependencies: Any, filename: str, ex
         )
     except Exception:  # pragma: no cover - logging itself must never break delivery
         pass
+
+
+def _narration_book_inputs(
+    *, context: Any, state: Any, audiobook_summary: Mapping[str, object] | None
+) -> NarrationBookInputs:
+    """The run's facts for the book file (spec 073 FR-007, contracts/narration-book.md §3, §4, §7, §8).
+
+    The accepted reading-glossary entries in their order (none without a glossary), the code version (git head, ``None``
+    outside a checkout -- never invented, research R18), the run id and the UTC time, the uploaded file and its source
+    token, and the run's exclusions from the same summary the audiobook events publish.
+    """
+
+    summary = audiobook_summary if audiobook_summary is not None else audiobook_narration_summary(state)
+    glossary = getattr(state, "audiobook_reading_glossary", None)
+    try:
+        version = resolve_git_head()
+    except Exception:  # an unreadable checkout is an unknown version, never a reason to lose the book file
+        version = None
+    return NarrationBookInputs(
+        glossary_entries=tuple(getattr(glossary, "entries", None) or ()),
+        producer=NarrationBookProducer(
+            version=version,
+            run_id=str(getattr(context, "run_id", "") or ""),
+            produced_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        ),
+        source=NarrationBookSource(
+            source_name=str(getattr(context, "uploaded_filename", "") or ""),
+            source_token=str(getattr(context, "source_token", "") or ""),
+        ),
+        excluded_count=int(cast(int, summary["excluded_count"])),
+        excluded_by_reason=cast(Mapping[str, int], summary["excluded_by_reason"]),
+    )
 
 
 def finalize_processing_success(
@@ -1309,10 +1344,12 @@ def finalize_processing_success(
         stopped_result = _stop_at_late_boundary("Обработка остановлена перед сборкой DOCX и PDF озвучки.")
         if stopped_result is not None:
             return stopped_result
+        # Spec 073 FR-007 (D-4): the book file for the narration tool is a third projection of the same groups.
         narration_exports = build_narration_exports(
             groups=tuple(getattr(state, "narration_groups", None) or ()),
             source_name=context.uploaded_filename,
             log_event=dependencies.log_event,
+            book_inputs=_narration_book_inputs(context=context, state=state, audiobook_summary=audiobook_summary),
         )
         studio_limits_notice = narration_exports.studio_limits_notice()
         if studio_limits_notice is not None:
@@ -1464,6 +1501,10 @@ def finalize_processing_success(
             artifact_writer_kwargs["narration_docx_bytes"] = narration_exports.docx_bytes
         if narration_exports is not None and narration_exports.pdf_bytes is not None:
             artifact_writer_kwargs["narration_pdf_bytes"] = narration_exports.pdf_bytes
+        # Spec 073 FR-008: the book file joins the same group, only when it was built.
+        narration_book_json = narration_exports.book_json if narration_exports is not None else None
+        if narration_book_json:
+            artifact_writer_kwargs["narration_book_json"] = narration_book_json
         result_artifact_paths = dict(
             dependencies.write_ui_result_artifacts(**artifact_writer_kwargs)
         )
