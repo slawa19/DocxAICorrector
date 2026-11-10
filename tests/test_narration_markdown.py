@@ -69,7 +69,7 @@ def test_cleanup_keeps_a_raw_url_and_the_detector_reports_it():
 
     cleaned = _clean(source)
 
-    assert cleaned == "Text with raw URL https://example.com/path and www.example.org inside."
+    assert cleaned == "Текст с сырым адресом https://example.com/path и www.example.org внутри."
     assert [finding.residue_class for finding in detect_narration_residue(cleaned)] == ["url_or_domain"]
 
 

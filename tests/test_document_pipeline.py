@@ -1306,8 +1306,8 @@ def test_standalone_audiobook_clean_narration_publishes_no_review_notice():
 # it around: such a block is narrated from its own source with ``needs_review``
 # ``source_fallback``, and a block the model returned unchanged is simply the right text.
 _UNTRANSLATED_SOURCE_BLOCK = (
-    "Many tides ago, in a small hamlet by the old Saltmarsh, sailors used tallies for all their "
-    "cargoes, and on every harbour day they walked around with nets, ropes and barrels."
+    "Много приливов назад, в маленькой деревушке у старого болота, рыбаки вели счёт всему своему "
+    "грузу, и в каждый портовый день они ходили с сетями, канатами и бочками."
 )
 _NARRATED_RUSSIAN_BLOCK = "Однажды в маленькой гавани моряки обменивались снастями."
 
