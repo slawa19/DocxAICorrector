@@ -80,6 +80,25 @@ def isolate_repo_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(env_name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_real_libreoffice_in_unit_tests(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec 072: the audiobook late phase exports the narration PDF through a real LibreOffice
+    (about 7 s per book). A test not marked ``system_deps`` gets the converter answering
+    ``soffice_not_found`` -- the same outcome CI has, where LibreOffice is not installed -- so
+    the unit suite stays fast and identical on every machine. ``system_deps`` tests keep the real
+    converter; a test that patches the converter itself overrides this one."""
+
+    if request.node.get_closest_marker("system_deps") is not None:
+        return
+    from docxaicorrector.generation.narration_pdf import NarrationPdfOutcome
+    from docxaicorrector.pipeline import narration_exports
+
+    def _soffice_not_found(_docx_bytes: bytes, **_kwargs: Any) -> NarrationPdfOutcome:
+        return NarrationPdfOutcome(pdf_bytes=None, reason="soffice_not_found", seconds=0.0, detail="")
+
+    monkeypatch.setattr(narration_exports, "export_narration_pdf", _soffice_not_found)
+
+
 @pytest.fixture
 def fake_png_bytes() -> bytes:
     return base64.b64decode(
