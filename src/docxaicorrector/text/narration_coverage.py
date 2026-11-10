@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from docxaicorrector.text.narration_forms import without_combining_marks
+
 __all__ = [
     "COVERAGE_MIN_LONG_WORDS",
     "COVERAGE_MIN_TOKENS",
@@ -46,6 +48,9 @@ def _stem(word: str) -> str:
 
 
 def paragraph_coverage(source: str, answer: str) -> CoverageResult:
+    # Spec 073 FR-002: both sides are read without stress marks, so a marked word is one word.
+    source = without_combining_marks(source)
+    answer = without_combining_marks(answer)
     long_words = [word for word in _LETTER_RUN.findall(source) if len(word) >= LONG_WORD_MIN_LETTERS]
     long_word_count = len(long_words)
     if long_word_count < COVERAGE_MIN_LONG_WORDS or len(source.split()) < COVERAGE_MIN_TOKENS:

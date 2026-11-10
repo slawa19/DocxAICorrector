@@ -65,6 +65,13 @@ from docxaicorrector.pipeline.contracts import LatePhaseStopped
 # generation layer, so the edge cannot close a cycle.
 from docxaicorrector.pipeline.output_validation import structural_meta_comment
 
+# Spec 073 FR-002: the one helper of the lexical comparisons; a leaf module (standard library only).
+from docxaicorrector.text.narration_forms import (
+    original_span,
+    without_combining_marks,
+    without_combining_marks_with_offsets,
+)
+
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
     from openai import OpenAI
@@ -1460,7 +1467,8 @@ def _strip_and_validate_paragraph_markers(
 
 
 def _normalize_leakage_comparison_text(text: str) -> str:
-    return " ".join(match.group(0).lower() for match in _WORD_TOKEN_PATTERN.finditer(text))
+    # A stress mark belongs to its letter (spec 073 FR-002): the words are compared without it.
+    return " ".join(match.group(0).lower() for match in _WORD_TOKEN_PATTERN.finditer(without_combining_marks(text)))
 
 
 def _detect_context_leakage(
@@ -1471,7 +1479,10 @@ def _detect_context_leakage(
     *,
     min_word_sequence: int = 6,
 ) -> str | None:
-    response_tokens = list(_WORD_TOKEN_PATTERN.finditer(response_text))
+    # Tokens are read from the answer WITHOUT stress marks; the returned fragment is cut from the ORIGINAL
+    # answer (marks included), because ``_trim_boundary_context_leakage`` finds it there as a substring.
+    stripped_response, offsets = without_combining_marks_with_offsets(response_text)
+    response_tokens = list(_WORD_TOKEN_PATTERN.finditer(stripped_response))
     if len(response_tokens) < min_word_sequence:
         return None
 
@@ -1489,14 +1500,14 @@ def _detect_context_leakage(
 
     for start_index in range(0, len(response_tokens) - min_word_sequence + 1):
         end_index = start_index + min_word_sequence
-        fragment = response_text[
-            response_tokens[start_index].start() : response_tokens[end_index - 1].end()
-        ]
-        normalized_fragment = _normalize_leakage_comparison_text(fragment)
+        span_start = response_tokens[start_index].start()
+        span_end = response_tokens[end_index - 1].end()
+        normalized_fragment = _normalize_leakage_comparison_text(stripped_response[span_start:span_end])
         if not normalized_fragment or normalized_fragment in normalized_target:
             continue
         if any(normalized_fragment in normalized_context for normalized_context in normalized_contexts):
-            return fragment
+            original_start, original_end = original_span(response_text, offsets, span_start, span_end)
+            return response_text[original_start:original_end]
     return None
 
 
