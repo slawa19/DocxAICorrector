@@ -508,8 +508,8 @@ bash scripts/test.sh tests/test_config.py::test_name -vv -x
 
 - Режим `Литературное редактирование` показывает `Отредактированный DOCX` и `Отредактированный Markdown`.
 - Режим `Перевод` показывает `Переведённый DOCX` и `Переведённый Markdown`.
-- Режим `Подготовка аудиокниги (ElevenLabs)` делает narration artifact основным результатом. В UI доступны `Текст для ElevenLabs (.txt)`, `Markdown (для инспекции)` и `DOCX (для инспекции)`.
-- Narration artifact сохраняется как `.run/ui_results/<timestamp>_<stem>.result.tts.txt` рядом со стандартными `.result.md` и `.result.docx`.
+- Режим `Подготовка аудиокниги (ElevenLabs)` делает narration artifact основным результатом. В UI две строки кнопок: «Текст для озвучки» — `DOCX для ElevenLabs Studio`, `PDF` и `Текст для ElevenLabs (.txt)`; «Для проверки» — `DOCX (для инспекции)` и `Markdown (для инспекции)`. DOCX и PDF собираются из тех же абзацев, что и `.txt`; PDF делает LibreOffice, и без него остаётся DOCX и TXT (причина — на экране и в логе).
+- Narration artifact сохраняется как `.run/ui_results/<timestamp>_<stem>.result.tts.txt` (и `.result.tts.docx`, `.result.tts.pdf`, когда собраны) рядом со стандартными `.result.md` и `.result.docx`.
 - В standalone audiobook effective `image_mode` всегда принудительно становится `no_change` на runtime-уровне.
 - Аудиокнига — технический проход над готовым текстом: без пары языков и интенсивности редактуры, без тегов озвучки, числа и сокращения словами. Исключения (изображения, таблицы, подписи, оглавление, указатель, примечания, обрывки) решаются по абзацам и публикуются с адресами; абзацы, требующие проверки, помечаются `needs_review`. Подробности — в `docs/WORKFLOW_AND_IMAGE_MODES.md`.
 

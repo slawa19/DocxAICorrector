@@ -1604,6 +1604,10 @@ def _write_latest_alias_artifacts(
     run_id: str,
     run_dir: Path,
     manifest_payload: Mapping[str, object],
+    tts_docx_artifact: Path | None = None,
+    tts_pdf_artifact: Path | None = None,
+    latest_tts_docx_path: Path | None = None,
+    latest_tts_pdf_path: Path | None = None,
 ) -> None:
     latest_report_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(report_path, latest_report_path)
@@ -1614,6 +1618,11 @@ def _write_latest_alias_artifacts(
         shutil.copy2(docx_artifact, latest_docx_path)
     if tts_artifact is not None and latest_tts_path is not None:
         shutil.copy2(tts_artifact, latest_tts_path)
+    # Spec 072 FR-007: the narration DOCX/PDF travel with the other narration artifacts.
+    if tts_docx_artifact is not None and latest_tts_docx_path is not None:
+        shutil.copy2(tts_docx_artifact, latest_tts_docx_path)
+    if tts_pdf_artifact is not None and latest_tts_pdf_path is not None:
+        shutil.copy2(tts_pdf_artifact, latest_tts_pdf_path)
 
     latest_manifest = dict(manifest_payload)
     latest_manifest.update(
@@ -1625,6 +1634,8 @@ def _write_latest_alias_artifacts(
             "latest_markdown": _path_for_report(latest_markdown_path) if latest_markdown_path is not None else None,
             "latest_docx": _path_for_report(latest_docx_path) if latest_docx_path is not None else None,
             "latest_tts_text": _path_for_report(latest_tts_path) if latest_tts_path is not None else None,
+            "latest_tts_docx": _path_for_report(latest_tts_docx_path) if latest_tts_docx_path is not None else None,
+            "latest_tts_pdf": _path_for_report(latest_tts_pdf_path) if latest_tts_pdf_path is not None else None,
         }
     )
     _write_json_atomic(latest_manifest_path, latest_manifest)
@@ -5025,6 +5036,16 @@ _NARRATION_SUMMARY_FIELDS = (
     "coverage_low_count",
     "review_finding_count",
     "review_match_count",
+    # Spec 072 (contracts/events.md): the narration DOCX/PDF and the Studio plan, from the same event.
+    "heading1_count",
+    "heading_merge_count",
+    "demoted_heading_count",
+    "studio_max_chapter_paragraph_count",
+    "studio_max_paragraph_chars",
+    "narration_docx_status",
+    "narration_pdf_status",
+    "narration_pdf_seconds",
+    "narration_docx_paragraph_count",
 )
 _NARRATION_SUMMARY_JSON_FIELDS = (
     "missing_paragraph_ids",
@@ -5036,7 +5057,68 @@ _NARRATION_SUMMARY_JSON_FIELDS = (
     "needs_review_by_reason",
     "repair_rejected_by_reason",
     "review_rules",
+    "heading_merges",
+    "heading_levels_present",
+    "studio_limits_exceeded",
+    "narration_pdf_unavailable_reason",
 )
+
+
+def _write_narration_export_artifacts(
+    exports: object,
+    *,
+    artifact_dir: Path,
+    output_basename: str,
+) -> tuple[Path | None, Path | None]:
+    """Spec 072 FR-007: write ``state["latest_narration_exports"]`` next to ``<name>.tts.txt``.
+
+    ``exports`` is the state value of ``NarrationExports.state_value()`` (or ``None``: an old
+    run, a translate/edit run, a failed export). No bytes means no file and a ``None`` path --
+    never an exception and never an empty file. The counters are not computed here; they come
+    from ``ui_audiobook_artifact_saved``.
+    """
+
+    if not isinstance(exports, Mapping):
+        return None, None
+
+    def write(key: str, suffix: str) -> Path | None:
+        payload = exports.get(key)
+        if not isinstance(payload, (bytes, bytearray)) or not payload:
+            return None
+        target = artifact_dir / f"{output_basename}.tts.{suffix}"
+        target.write_bytes(bytes(payload))
+        return target
+
+    return write("docx_bytes", "docx"), write("pdf_bytes", "pdf")
+
+
+def _inspect_narration_docx(path: Path | None) -> dict[str, object]:
+    """Spec 072 FR-011: open the saved narration DOCX; a file check, not a second count of the plan.
+
+    ``tts_docx_other_heading_style_count`` counts ``Heading N`` paragraphs other than
+    ``Heading 1`` (must be 0, SC-002: Studio takes only one chapter level).
+    """
+
+    result: dict[str, object] = {
+        "tts_docx_openable": False,
+        "tts_docx_paragraphs": 0,
+        "tts_docx_heading1_count": 0,
+        "tts_docx_other_heading_style_count": 0,
+    }
+    if path is None:
+        return result
+    try:
+        paragraphs = Document(str(path)).paragraphs
+        style_names = [str(paragraph.style.name if paragraph.style is not None else "") for paragraph in paragraphs]
+    except Exception:
+        return result
+    result["tts_docx_openable"] = True
+    result["tts_docx_paragraphs"] = len(paragraphs)
+    result["tts_docx_heading1_count"] = sum(1 for name in style_names if name == "Heading 1")
+    result["tts_docx_other_heading_style_count"] = sum(
+        1 for name in style_names if name.startswith("Heading") and name != "Heading 1"
+    )
+    return result
 
 
 def _event_context(event_log: Sequence[Mapping[str, object]], event_id: str) -> dict[str, object] | None:
@@ -5072,16 +5154,22 @@ def _extract_narration_artifact_record(
     return record
 
 
+def _narration_summary_key(field: str) -> str:
+    """The summary line key of an event field: ``narration_<field>``, never ``narration_narration_<...>``."""
+
+    return field if field.startswith("narration_") else f"narration_{field}"
+
+
 def _build_narration_summary_lines(narration: Mapping[str, object] | None) -> list[str]:
     if narration is None:
         return ["narration_artifact=not_reported"]
     lines = [
-        f"narration_{field}={narration[field] if field in narration else 'not_reported'}"
+        f"{_narration_summary_key(field)}={narration[field] if field in narration else 'not_reported'}"
         for field in _NARRATION_SUMMARY_FIELDS
     ]
     for field in _NARRATION_SUMMARY_JSON_FIELDS:
         value = json.dumps(narration[field], ensure_ascii=False, sort_keys=True) if field in narration else "not_reported"
-        lines.append(f"narration_{field}={value}")
+        lines.append(f"{_narration_summary_key(field)}={value}")
     records = narration.get("needs_review_records")
     if isinstance(records, Sequence) and not isinstance(records, str):
         paragraph_ids = [str(record.get("paragraph_id")) for record in records if isinstance(record, Mapping)]
@@ -6386,6 +6474,8 @@ def _run_single_validation(
     tts_artifact = artifact_dir / f"{output_basename}.tts.txt"
     latest_tts_path = artifact_root / f"{output_basename}.tts.txt"
     tts_artifact_path: Path | None = None
+    latest_tts_docx_path = artifact_root / f"{output_basename}.tts.docx"
+    latest_tts_pdf_path = artifact_root / f"{output_basename}.tts.pdf"
 
     if final_markdown:
         markdown_artifact.write_text(final_markdown, encoding="utf-8")
@@ -6412,6 +6502,13 @@ def _run_single_validation(
     if latest_narration_text:
         tts_artifact.write_text(latest_narration_text, encoding="utf-8")
         tts_artifact_path = tts_artifact
+
+    tts_docx_artifact_path, tts_pdf_artifact_path = _write_narration_export_artifacts(
+        state.get("latest_narration_exports"),
+        artifact_dir=artifact_dir,
+        output_basename=output_basename,
+    )
+    tts_docx_inspection = _inspect_narration_docx(tts_docx_artifact_path)
 
     formatting_diagnostics_paths = _extract_run_formatting_diagnostics_paths(event_log)
     formatting_diagnostics_discovery_source = None
@@ -6520,6 +6617,9 @@ def _run_single_validation(
             "markdown_path": _path_for_report(markdown_artifact_path),
             "docx_path": _path_for_report(docx_artifact_path),
             "tts_text_path": _path_for_report(tts_artifact_path),
+            "tts_docx_path": _path_for_report(tts_docx_artifact_path),
+            "tts_pdf_path": _path_for_report(tts_pdf_artifact_path),
+            **tts_docx_inspection,
             "output_docx_openable": openable_output,
             "output_paragraphs": output_paragraphs,
             "output_inline_shapes": output_inline_shapes,
@@ -6532,6 +6632,12 @@ def _run_single_validation(
             "latest_markdown_path": _path_for_report(latest_markdown_path) if markdown_artifact_path is not None else None,
             "latest_docx_path": _path_for_report(latest_docx_path) if docx_artifact_path is not None else None,
             "latest_tts_text_path": _path_for_report(latest_tts_path) if tts_artifact_path is not None else None,
+            "latest_tts_docx_path": (
+                _path_for_report(latest_tts_docx_path) if tts_docx_artifact_path is not None else None
+            ),
+            "latest_tts_pdf_path": (
+                _path_for_report(latest_tts_pdf_path) if tts_pdf_artifact_path is not None else None
+            ),
             "latest_manifest_json": _path_for_report(latest_manifest_path),
             "app_log": _path_for_report(artifact_dir / RUN_LOG_FILENAME),
             "events_jsonl": _path_for_report(events_jsonl_path),
@@ -6796,6 +6902,8 @@ def _run_single_validation(
         f"reader_verifier_evidence_json={cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('artifact_paths') or {}).get('source_evidence_json')}",
         f"reader_mvp_status_md={cast(Mapping[str, object], report.get('output_artifacts') or {}).get('reader_mvp_status_md')}",
         f"tts_text_path={report['output_artifacts']['tts_text_path']}",
+        f"tts_docx_path={report['output_artifacts']['tts_docx_path']}",
+        f"tts_pdf_path={report['output_artifacts']['tts_pdf_path']}",
         f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
         f"app_log={report['output_artifacts']['app_log']}",
         f"events_jsonl={report['output_artifacts']['events_jsonl']}",
@@ -6839,6 +6947,10 @@ def _run_single_validation(
         run_id=run_id,
         run_dir=artifact_dir,
         manifest_payload=cast(Mapping[str, object], tracker._build_manifest_payload_locked()),
+        tts_docx_artifact=tts_docx_artifact_path,
+        tts_pdf_artifact=tts_pdf_artifact_path,
+        latest_tts_docx_path=latest_tts_docx_path if tts_docx_artifact_path is not None else None,
+        latest_tts_pdf_path=latest_tts_pdf_path if tts_pdf_artifact_path is not None else None,
     )
     tracker.finalize(
         status=final_status,
