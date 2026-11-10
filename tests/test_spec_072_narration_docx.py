@@ -10,7 +10,6 @@ from __future__ import annotations
 import io
 import xml.etree.ElementTree as etree
 import zipfile
-import xml.etree.ElementTree as etree
 from dataclasses import dataclass
 
 import docx
