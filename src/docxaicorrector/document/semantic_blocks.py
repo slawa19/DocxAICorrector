@@ -317,31 +317,8 @@ def build_editing_jobs(
     narration_reasons_by_block: list[list[str | None]] | None = None
     context_blocks = blocks
     if normalized_operation == "audiobook":
-        # The narration reads the back matter through its own guard (fix-1, Codex acceptance
-        # finding 1; `_resolve_reference_sections`): a reference title without a heading level
-        # at the tail of its block anchors a section only behind a finished sentence. Only the
-        # exclusion decision reads it; the job fields shared with translate and edit
-        # (`paragraph_regions`, `back_matter_section`) keep the common detector.
-        narration_sections = _resolve_reference_sections(
-            blocks, structure_phase=structure_phase, tail_title_needs_a_finished_sentence_before_it=True
-        )
-        narration_reference_indexes = {
-            block_index for start, end, _ in narration_sections for block_index in range(start, end)
-        }
-        narration_back_matter_sections = _back_matter_kinds_by_block(narration_sections)
-        narration_regions_by_block = paragraph_regions_by_block
-        narration_notes_in_body_positions = notes_in_body_positions
-        if narration_reference_indexes != reference_region_indexes:
-            narration_regions_by_block = _resolve_paragraph_regions(
-                blocks,
-                reference_region_indexes=narration_reference_indexes,
-                structure_phase=structure_phase,
-            )
-            narration_notes_in_body_positions = _resolve_notes_in_body_positions(
-                flat_paragraphs,
-                [region for block_regions in narration_regions_by_block for region in block_regions],
-                structure_phase=structure_phase,
-            )
+        # The narration reads the same regions, back-matter sections and notes-in-body positions
+        # as the job fields every operation carries (spec 071: one detector, no second pass).
         narration_reasons_by_block = []
         position = 0
         for index, block in enumerate(blocks):
@@ -350,9 +327,9 @@ def build_editing_jobs(
                     resolve_narration_exclusion_reason(
                         structural_role=_paragraph_structural_kind(paragraph, structure_phase=structure_phase),
                         paragraph_role=paragraph.role,
-                        region=narration_regions_by_block[index][paragraph_index],
-                        back_matter_section=narration_back_matter_sections.get(index),
-                        in_notes_in_body=position + paragraph_index in narration_notes_in_body_positions,
+                        region=paragraph_regions_by_block[index][paragraph_index],
+                        back_matter_section=back_matter_sections.get(index),
+                        in_notes_in_body=position + paragraph_index in notes_in_body_positions,
                         text=_strip_internal_placeholders(paragraph.text),
                     )
                     for paragraph_index, paragraph in enumerate(block.paragraphs)
@@ -882,32 +859,36 @@ def _resolve_reference_sections(
     blocks: list[DocumentBlock],
     *,
     structure_phase: str = "post_ai_final",
-    tail_title_needs_a_finished_sentence_before_it: bool = False,
 ) -> list[tuple[int, int, str]]:
     """Every back-matter reference section of the document, as `(start, end, title)` with a
     half-open block range, in document order. `title` is the normalised anchor title that
     opened the section -- the one fact spec 063 FR-011 needs to tell notes from a reference
     list from an index, and it is the anchor itself, not a reading of the entries.
 
+    This is the ONE back-matter detector of the document layer: the paragraph regions, the
+    back-matter section kinds, the notes-in-body positions and the narration exclusions of
+    every operation (translate, edit, audiobook) are all derived from it (spec 071), so the
+    operations can never disagree about which blocks are back matter.
+
     Resolved in two passes on purpose: all the anchors first, then the ends. The end rule needs
     to know where the NEXT reference section starts, and a single forward pass cannot tell it
     that without re-deriving the anchor it is about to walk into.
 
-    `tail_title_needs_a_finished_sentence_before_it` is the audiobook narration's guard (spec
-    070 fix-1, Codex acceptance finding 1) and is off for every other caller. A title WITHOUT a
-    heading level that closes its block (`_block_reference_region_start`, the tail case) is
-    believed to be a section opening only when the paragraph in front of it ends a sentence
-    (`narration_exclusion.ends_as_a_sentence`) -- the closing paragraph of the last chapter,
-    which is what the tail case was built for (Rethinking Money's `**NOTES**` behind the
-    chapter's last prose). When the paragraph in front of it is an unfinished line -- a heading,
-    another row -- the title is one more row of a list of section names: an untagged table of
-    contents. Measured 2026-11-09 on the translated full Money: the last row of such a list,
-    `**Библиография**` (role body, no level) behind `Приложения` and three more rows, opened a
-    region the top-depth bound ran over 18 blocks of forewords, a preface and an executive
-    summary -- 101 paragraphs of prose excluded from the narration. Every anchor of the eight
-    corpus books and the three translated inputs that opens a real section carries a heading
-    level, so the guard changes nothing there. Refusing an anchor leaves material IN the
-    narration, the direction every rule of this family fails towards.
+    A title WITHOUT a heading level that closes its block (`_block_reference_region_start`, the
+    tail case) is believed to be a section opening only when the paragraph in front of it ends
+    a sentence (`narration_exclusion.ends_as_a_sentence`) -- the closing paragraph of the last
+    chapter, which is what the tail case was built for. When the paragraph in front of it is an
+    unfinished line -- a heading, another row -- the title is one more row of a list of section
+    names: an untagged table of contents (spec 070 fix-1, Codex acceptance finding 1; moved here
+    from the audiobook's own second pass by spec 071). Measured on the translated full Money:
+    the last row of such a list, `**Библиография**` (role body, no level) behind `Приложения`
+    and three more rows, opened a region the top-depth bound ran over 18 blocks of forewords, a
+    preface and an executive summary. On translate that prose would have been treated as a
+    reference list (spec 063 D1 keeps it in the source language), on the audiobook it was
+    excluded from the narration. Measured 2026-11-10 on every source of the corpus registry
+    (spec 071): the guard changes nothing else. Refusing an anchor leaves material out of the
+    back matter -- translated and narrated -- the direction every rule of this family fails
+    towards.
     """
     anchors: list[tuple[int, int | None, str]] = []
     for index in range(len(blocks)):
@@ -917,8 +898,7 @@ def _resolve_reference_sections(
         hit = _block_reference_title_position(blocks[index], structure_phase=structure_phase)
         title_level = _paragraph_heading_level(blocks[index].paragraphs[hit[0]]) if hit is not None else None
         if (
-            tail_title_needs_a_finished_sentence_before_it
-            and hit is not None
+            hit is not None
             and title_level is None
             and hit[0] > 0
             and not ends_as_a_sentence(_strip_internal_placeholders(blocks[index].paragraphs[hit[0] - 1].text))
@@ -954,17 +934,6 @@ def _resolve_reference_regions(blocks: list[DocumentBlock], *, structure_phase: 
     ]
 
 
-def _back_matter_kinds_by_block(sections: list[tuple[int, int, str]]) -> dict[int, str]:
-    kinds: dict[int, str] = {}
-    for start_index, end_index, title in sections:
-        kind = _BACK_MATTER_SECTION_KIND_BY_TITLE.get(title)
-        if kind is None:
-            continue
-        for block_index in range(start_index, end_index):
-            kinds[block_index] = kind
-    return kinds
-
-
 def _resolve_back_matter_sections(
     blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final"
 ) -> dict[int, str]:
@@ -977,7 +946,14 @@ def _resolve_back_matter_sections(
     know (impossible while the import-time check below holds) gets none either: no kind means
     no policy, which is the direction that cannot keep prose in the source language.
     """
-    return _back_matter_kinds_by_block(_resolve_reference_sections(blocks, structure_phase=structure_phase))
+    kinds: dict[int, str] = {}
+    for start_index, end_index, title in _resolve_reference_sections(blocks, structure_phase=structure_phase):
+        kind = _BACK_MATTER_SECTION_KIND_BY_TITLE.get(title)
+        if kind is None:
+            continue
+        for block_index in range(start_index, end_index):
+            kinds[block_index] = kind
+    return kinds
 
 
 def _resolve_reference_region_indexes(blocks: list[DocumentBlock], *, structure_phase: str = "post_ai_final") -> set[int]:

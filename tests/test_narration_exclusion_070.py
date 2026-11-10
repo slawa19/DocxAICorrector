@@ -395,11 +395,12 @@ def test_a_levelled_reference_title_still_runs_over_its_deeper_headings() -> Non
 
 
 @pytest.mark.parametrize("operation", ["translate", "edit"])
-def test_the_narration_bound_does_not_change_the_translate_and_edit_jobs(operation: str) -> None:
-    # The bound is the audiobook's own (fix-1 scope): the shared back-matter fields of the jobs
-    # -- the ones translate and edit read -- are the same for the audiobook and the operation.
+def test_the_audiobook_reads_the_same_back_matter_as_translate_and_edit(operation: str) -> None:
+    # One detector for every operation (spec 071 moved the fix-1 guard into it): the back-matter
+    # fields of the jobs are the same for the audiobook and the operation. What each operation does
+    # with them is spec 071's test file (`tests/test_spec_071_shared_reference_guard.py`).
     blocks = _contents_line_then_prose()
-    shared = ("paragraph_regions", "back_matter_section")
+    shared = ("paragraph_regions", "back_matter_section", "notes_in_body_paragraph_ids")
     other = build_editing_jobs(blocks, max_chars=3000, processing_operation=operation)
     audiobook = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
 
