@@ -119,6 +119,8 @@
   "result.narration_pdf_unavailable.not_pdf": "PDF не собран: созданный файл не является PDF. DOCX и TXT доступны.",
   "result.blocked_download_narration_docx": "Скачать заблокированный DOCX озвучки (диагностика)",
   "result.blocked_download_narration_pdf": "Скачать заблокированный PDF озвучки (диагностика)",
+  "result.narration_book": "Файл книги для озвучки (.json)",
+  "result.blocked_download_narration_book": "Скачать заблокированный файл книги для озвучки (диагностика)",
   "result.audiobook_studio_limits_exceeded": "Текст озвучки превышает лимиты ElevenLabs Studio: {limits}. Файл не изменён — проверьте его перед импортом.",
   "result.success_document_processed": "Документ обработан.",
   "result.blocked_delivery_notice": "Результат заблокирован итоговой проверкой качества. Файлы ниже доступны только для диагностики.",
