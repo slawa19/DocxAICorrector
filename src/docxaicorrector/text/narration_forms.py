@@ -7,7 +7,8 @@ the exact assembly of the narration text (byte-exact, by id) must keep it.
 
 This module is a leaf: it imports only the standard library, so the document layer, the text layer and the
 generator can all use it without a cycle. Nothing here knows a word of any book or a list of anything
-(Constitution VII): every rule is a Unicode general category or a fixed character.
+(Constitution VII): every rule is a Unicode general category or a fixed character -- and the one fixed table
+of letters drawn identically in the Latin and the Cyrillic alphabets (``unify_mixed_script_words``).
 """
 
 from __future__ import annotations
@@ -17,9 +18,11 @@ from dataclasses import dataclass
 
 __all__ = [
     "LetterSeries",
+    "is_cyrillic_letter",
     "is_latin_letter",
     "letter_series",
     "original_span",
+    "unify_mixed_script_words",
     "without_combining_marks",
     "without_combining_marks_with_offsets",
 ]
@@ -121,3 +124,60 @@ def is_latin_letter(character: str) -> bool:
     if len(character) != 1 or not unicodedata.category(character).startswith("L"):
         return False
     return "LATIN" in unicodedata.name(character, "")
+
+
+def is_cyrillic_letter(character: str) -> bool:
+    """One character that is a letter (L*) of the Cyrillic script, by its Unicode name."""
+
+    if len(character) != 1 or not unicodedata.category(character).startswith("L"):
+        return False
+    return "CYRILLIC" in unicodedata.name(character, "")
+
+
+# Spec 073 (measurement WP-Y, 2026-11-10): the basic Latin letters that are drawn exactly like a Cyrillic letter,
+# paired with that letter. A fixed table of the two alphabets (homoglyphs), not a list of words: it says nothing
+# about any book. Only visually identical pairs -- a letter that merely resembles another (Latin ``n`` / Cyrillic
+# ``п``, Latin ``u`` / ``и``) is not here, so a word with such a letter keeps it and stays residue for the repair.
+_LATIN_LOOKALIKES = "aeopcxyABEKMHOPCTX"
+_CYRILLIC_TWINS = "аеорсхуАВЕКМНОРСТХ"
+_LOOKALIKE_TO_CYRILLIC = str.maketrans(_LATIN_LOOKALIKES, _CYRILLIC_TWINS)
+_LATIN_LOOKALIKE_SET = frozenset(_LATIN_LOOKALIKES)
+
+
+def _is_word_character(character: str) -> bool:
+    return unicodedata.category(character).startswith(("L", "M"))
+
+
+def _unified_word(word: str) -> str:
+    decomposed = unicodedata.normalize("NFD", word)
+    if not any(character in _LATIN_LOOKALIKE_SET for character in decomposed):
+        return word
+    if not any(is_cyrillic_letter(character) for character in decomposed):
+        return word
+    return unicodedata.normalize("NFC", decomposed.translate(_LOOKALIKE_TO_CYRILLIC))
+
+
+def unify_mixed_script_words(text: str) -> str:
+    """A Latin look-alike letter inside a Cyrillic word becomes its Cyrillic twin.
+
+    A word here is a maximal run of letters (L*) and their marks (M*); a hyphen, an apostrophe, a digit or a
+    space ends it, so each part of ``ABC-рынок`` is a word of its own. A word that holds a Cyrillic letter is
+    decomposed (NFD: a precomposed Latin ``á`` becomes ``a`` + U+0301), each Latin letter of the table above
+    is replaced by its Cyrillic twin, and the word is recomposed (NFC), so a stress mark ends as U+0301 on the
+    Cyrillic letter. A word without a Cyrillic letter, or without a look-alike, is returned byte for byte: real
+    Latin stays Latin and remains residue for the repair call. Pure and idempotent.
+    """
+
+    if text.isascii():
+        return text
+    pieces: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        start = index
+        in_word = _is_word_character(text[index])
+        while index < length and _is_word_character(text[index]) == in_word:
+            index += 1
+        piece = text[start:index]
+        pieces.append(_unified_word(piece) if in_word else piece)
+    return "".join(pieces)

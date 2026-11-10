@@ -16,7 +16,13 @@ What is removed, in order:
 4. Markdown the model returned against its prompt: heading, quote and bullet prefixes, a decoration
    glyph at the start of a line, emphasis, backticks, ``[text](url)`` links. A numbered-list marker
    (``1990. ...``) is NOT touched: a year must survive, and numbers are rewritten by the model;
-5. whitespace is collapsed.
+5. whitespace is collapsed;
+6. (spec 073, measurement WP-Y) a Latin letter drawn exactly like a Cyrillic one, inside a word that
+   holds Cyrillic letters, becomes its Cyrillic twin (``narration_forms.unify_mixed_script_words``): the
+   model wrote such a word in Cyrillic but kept one Latin letter, and the one repair call returned it
+   unchanged. Every finalisation of a narrated paragraph goes through this function before the residue
+   detector reads it (``pipeline/audiobook_pass.py``, ``finalize_audiobook_block`` and
+   ``residue_classes_by_paragraph_count``), so the record, the ``.tts.txt`` and the counters see one text.
 
 Documented decisions where the rule text leaves room:
 
@@ -36,6 +42,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from docxaicorrector.text.narration_forms import unify_mixed_script_words
 from docxaicorrector.text.unicode_emoji_data import (
     EMOJI,
     EMOJI_COMPONENT,
@@ -361,4 +368,6 @@ def clean_narration_paragraph(text: str) -> CleanupResult:
         if cleaned == current:
             break
         current = cleaned
-    return CleanupResult(text=current, stats=stats)
+    # Step 6 (module docstring): idempotent on its own and it neither adds nor removes markup, so it runs once,
+    # after the fixed point.
+    return CleanupResult(text=unify_mixed_script_words(current), stats=stats)

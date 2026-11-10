@@ -203,3 +203,129 @@ def test_an_ordinary_transport_exception_is_not_sent_again() -> None:
 @pytest.mark.parametrize("text", ["обычная проза без латиницы.", "Он сказал: «да»."])
 def test_prose_without_latin_has_no_latin_finding(text: str) -> None:
     assert _latin(text) is None
+
+
+# --- WP-Y (measurement 2026-11-10): a Cyrillic word with a Latin look-alike letter ------------------------
+# The measured form: the model wrote a name in Cyrillic and kept one Latin letter (U+0061), then put a stress
+# mark on it as a precomposed Latin letter (U+00E1); the one repair call returned it unchanged. The words below
+# are invented and carry only that form.
+
+ACUTE = "́"
+LATIN_A_ACUTE = "á"
+LATIN_O_ACUTE = "ó"
+
+
+def _unify(text: str) -> str:
+    from docxaicorrector.text.narration_forms import unify_mixed_script_words
+
+    return unify_mixed_script_words(text)
+
+
+def _scripts(text: str) -> set[str]:
+    import unicodedata
+
+    return {unicodedata.name(char).split()[0] for char in text if unicodedata.category(char).startswith("L")}
+
+
+@pytest.mark.parametrize(
+    ("mixed", "unified"),
+    [
+        ("Квазибургa", "Квазибурга"),  # Latin a
+        ("Тоpвель", "Торвель"),  # Latin p
+        ("ВEТЕР", "ВЕТЕР"),  # Latin capital E
+        ("KМHОРТ", "КМНОРТ"),  # three Latin capitals with twins
+        ("сxема", "схема"),  # Latin x
+        ("yзел", "узел"),  # Latin y at the start
+    ],
+)
+def test_a_latin_lookalike_inside_a_cyrillic_word_becomes_its_cyrillic_twin(mixed: str, unified: str) -> None:
+    assert _scripts(mixed) == {"CYRILLIC", "LATIN"}
+    assert _unify(mixed) == unified
+    assert _scripts(_unify(mixed)) == {"CYRILLIC"}
+
+
+def test_a_precomposed_latin_stressed_letter_becomes_the_cyrillic_letter_with_u0301() -> None:
+    word = f"Велм{LATIN_O_ACUTE}ра"
+    assert _unify(word) == f"Велмо{ACUTE}ра"
+    assert _unify(f"Юрт{LATIN_A_ACUTE}ни") == f"Юрта{ACUTE}ни"
+
+
+@pytest.mark.parametrize("text", ["Zentrix", "café", "TRX", "Quorvel Labs", "www.example.test"])
+def test_a_word_without_cyrillic_letters_is_untouched(text: str) -> None:
+    assert _unify(text) == text
+
+
+def test_hyphen_and_digit_end_a_word_so_a_latin_part_stays_latin() -> None:
+    assert _unify("TRX-рынок") == "TRX-рынок"
+    assert _unify("ABC2рынок") == "ABC2рынок"
+
+
+def test_a_latin_letter_without_a_twin_stays_and_is_still_residue() -> None:
+    unified = _unify("Квазиbургa")
+    assert unified == "Квазиbурга"
+    finding = _latin(unified)
+    assert finding is not None and finding.count == 1
+
+
+def test_a_cyrillic_word_without_lookalikes_is_returned_byte_for_byte() -> None:
+    decomposed = "йод"  # a Cyrillic word in decomposed form: no rewrite, so no recomposition either
+    assert _unify(decomposed) == decomposed
+    text = f"мешок муки{ACUTE} и долгие му{ACUTE}ки"
+    assert _unify(text) == text
+
+
+def test_unify_is_idempotent() -> None:
+    for text in ("Квазибургa и Zentrix", f"Велм{LATIN_O_ACUTE}ра", "Квазиbургa", "ВEТЕР-XY"):
+        once = _unify(text)
+        assert _unify(once) == once
+
+
+def test_the_cleanup_unifies_before_the_residue_detector_reads_the_text() -> None:
+    from docxaicorrector.text.narration_cleanup import clean_narration_paragraph
+
+    text = f"Статья вышла в журнале Юрт{LATIN_A_ACUTE}ни прошлой весной."
+    assert _latin(text) is not None, "the raw form is residue"
+    cleaned = clean_narration_paragraph(text).text
+    assert cleaned == f"Статья вышла в журнале Юрта{ACUTE}ни прошлой весной."
+    assert _latin(cleaned) is None
+
+
+def test_the_block_records_the_unified_word_counts_its_mark_and_does_not_call_repair() -> None:
+    from docxaicorrector.pipeline.audiobook_pass import _stress_mark_counts
+    from docxaicorrector.pipeline.narration_postprocess import assemble_narration_records
+
+    source = "Статья вышла в журнале *Quorvelpost* прошлой весной."
+    delivered = f"Статья вышла в журнале Кворвелп{LATIN_O_ACUTE}ст прошлой весной."
+    calls: list[object] = []
+
+    def repair(items, context_before, context_after):
+        calls.append(items)
+        raise AssertionError("a word unified by the cleanup must not reach the repair call")
+
+    block = finalize_audiobook_block(
+        block_index=0,
+        paragraphs=[
+            AudiobookParagraphInput(
+                paragraph_id="p1",
+                role="body",
+                source_text=source,
+                delivered_text=delivered,
+                status=PARAGRAPH_STATUS_ACCEPTED,
+            )
+        ],
+        repair=repair,
+    )
+    assert calls == []
+    (record,) = block.records
+    expected = f"Статья вышла в журнале Кворвелпо{ACUTE}ст прошлой весной."
+    assert record.text == expected
+    assert block.texts_by_id == {"p1": expected}
+    assert [finding.residue_class for finding in record.residue_before] == []
+    assert record.residue_after == ()
+    assert NEEDS_REVIEW_RESIDUE not in record.needs_review_reasons
+    assert record.source_latin_unit_count == 1, "the source's Latin word is still the SC-001 denominator"
+    assert _stress_mark_counts(block.records)["stress_mark_count"] == 1
+    # The exact assembly of spec 070 reads the same text back: ``.tts.txt`` and the records agree.
+    assembly = assemble_narration_records(block.records, expected_paragraph_ids=["p1"])
+    assert assembly.text == expected
+    assert assembly.boundary_check == "ok"

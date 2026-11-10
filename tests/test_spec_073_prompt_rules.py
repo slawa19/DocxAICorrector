@@ -101,24 +101,42 @@ def _assert_no_other_stress_notation(prompt: str) -> None:
     assert not _MARK_NOT_AFTER_VOWEL.search(prompt), "the mark stands right after the stressed vowel"
 
 
-def _assert_latin_priority(instructions: str) -> None:
+def _latin_priority_items(instructions: str) -> tuple[str, str, str, str]:
     rule = _rule_with(instructions, _SECTION_NAME, "инициал")
     starts: list[int] = []
     for anchor in _LATIN_PRIORITY_ANCHORS:
         match = re.compile(anchor, re.IGNORECASE).search(rule, (starts[-1] + 1) if starts else 0)
         assert match, f"priority item {anchor!r} is missing or out of order"
         starts.append(match.start())
-    first, second, third, fourth = (
+    return (
         rule[starts[0] : starts[1]],
         rule[starts[1] : starts[2]],
         rule[starts[2] : starts[3]],
         rule[starts[3] :],
     )
+
+
+def _assert_latin_priority(instructions: str) -> None:
+    first, second, third, fourth = _latin_priority_items(instructions)
     assert "ровно" in first, "a record of the reading section is read exactly as written"
     assert "букв" in second, "a Latin abbreviation without a record is read by the names of its letters"
     assert "букв" in third and "имя" in third, "a Latin initial is the name of its letter; no name is invented"
     assert "как есть" in fourth
-    assert "как есть" not in rule[: starts[3]], "'as is' belongs to the Cyrillic item only"
+    assert "как есть" not in first + second + third, "'as is' belongs to the Cyrillic item only"
+
+
+def _assert_a_section_record_is_not_expanded(instructions: str) -> None:
+    """WP-Y (2026-11-10): an abbreviation of the reading section is written as its reading, everywhere, and is not
+    replaced by its full name even when the model knows it (measured: the section's letter reading was replaced by
+    the full name in place in a share of occurrences, a second reading in one book)."""
+
+    first = _latin_priority_items(instructions)[0]
+    clauses = [clause for clause in re.split(r"[;:]", first) if "полн" in clause and "назван" in clause]
+    assert len(clauses) == 1, "one clause speaks of the full name"
+    clause = clauses[0]
+    assert re.search(r"\bне\s+раскрыва", clause), "the full name is forbidden, not offered"
+    assert "даже если" in clause and "известн" in clause, "a known expansion is no exception"
+    assert "в каждом месте одинаково" in first, "the same reading at every occurrence"
 
 
 def _assert_as_is_only_for_cyrillic(instructions: str) -> None:
@@ -156,6 +174,10 @@ def test_main_prompt_states_the_latin_priority_in_order():
     _assert_latin_priority(_instructions())
 
 
+def test_main_prompt_writes_a_section_record_as_given_and_never_expands_it():
+    _assert_a_section_record_is_not_expanded(_instructions())
+
+
 def test_main_prompt_keeps_the_initials_rule_of_spec_070():
     assert "не восстанавливайте имя по памяти" in _instructions().lower()
 
@@ -188,6 +210,57 @@ def test_main_prompt_reads_a_heading_number_as_a_neuter_ordinal_in_one_line():
     assert 1 <= len(ordinal_examples) <= 2, "an illustration of the form, not a list of numerals"
 
 
+# WP-Y (measurement 2026-11-10): the rule above over-applied -- a heading of the form "<word> <roman numeral>" lost its
+# word and became a bare neuter ordinal, a heading of the form "<word> <n.m>" lost its word, a heading without a number
+# got one, and two headings got their number twice. The three statements below are checked on the rendered rule; the
+# split keeps "**1. …**" whole (a sentence ends at a period followed by a space and a capital letter).
+
+
+def _heading_number_rule() -> str:
+    lines = [line for line in _instructions().splitlines() if "заголов" in line and "порядков" in line and "средн" in line]
+    assert len(lines) == 1
+    return lines[0]
+
+
+def _rule_sentences(rule: str) -> list[str]:
+    return [part for part in re.split(r"(?<=[.!?»])\s+(?=[А-ЯЁ])", rule) if part.strip()]
+
+
+def test_heading_number_rule_applies_only_when_the_heading_itself_begins_with_the_number():
+    prescribing = [sentence for sentence in _rule_sentences(_heading_number_rule()) if "порядков" in sentence]
+    assert len(prescribing) == 1, "one sentence prescribes the neuter ordinal"
+    sentence = prescribing[0]
+    assert sentence.startswith("Если "), "the ordinal is a conditional, not a rule for every heading"
+    assert re.search(r"заголовок\s+сам\s+начинается\s+с\s+номера", sentence), "the condition is the heading's own head"
+    assert "перед номером" not in sentence, "a heading with a word before its number is outside this sentence"
+
+
+def test_heading_number_rule_keeps_a_word_that_stands_before_the_number():
+    sentences = [sentence for sentence in _rule_sentences(_heading_number_rule()) if "перед номером" in sentence]
+    assert len(sentences) == 1
+    sentence = sentences[0]
+    assert re.search(r"перед номером стоит слово", sentence), "said by form, not by a list of words"
+    assert re.search(r"слово\s+оставьте", sentence), "the word is kept"
+    assert "соглас" in sentence and "словами" in sentence, "the number is written in words that agree with the word"
+    assert "порядков" not in sentence and "средн" not in sentence, "no neuter ordinal for this form"
+    examples = re.findall(r"«([^»]+)»", sentence)
+    assert examples, "the form is illustrated"
+    for example in examples:
+        words = example.split()
+        assert len(words) >= 2 and words[0][0].isupper(), "the word first, then the number"
+        assert not re.search(r"\d|[IVXLCDM]{2,}|\.$", example), "the number is written in words, without a period"
+
+
+def test_heading_number_rule_adds_no_number_or_word_and_does_not_repeat_the_heading():
+    sentences = [sentence for sentence in _rule_sentences(_heading_number_rule()) if "не добавля" in sentence]
+    assert len(sentences) == 1
+    sentence = sentences[0]
+    assert re.search(r"\bни в один заголовок\b", sentence, re.IGNORECASE), "said of every heading, numbered or not"
+    assert "номер" in sentence and "слово" in sentence, "neither a number nor a word is added"
+    assert "которых в нём нет" in sentence, "only what the heading itself carries"
+    assert re.search(r"не повторяйте заголовок", sentence), "the heading is not said twice"
+
+
 # ---------------------------------------------------------------- T-B5: the rendered repair prompt
 
 
@@ -206,6 +279,43 @@ def test_repair_prompt_shows_no_other_way_to_mark_stress():
 
 def test_repair_prompt_states_the_same_latin_priority_in_order():
     _assert_latin_priority(_instructions("repair"))
+
+
+def test_repair_prompt_writes_a_section_record_as_given_and_never_expands_it():
+    _assert_a_section_record_is_not_expanded(_instructions("repair"))
+
+
+# ------------------------------------------------- WP-Y: the reading-glossary instructions (FR-004)
+# Measured 2026-11-10: about a third of the candidates of a full book are ordinary words and surnames set in capitals
+# (they pass the form rule by design, Non-goals); the model returned them lower-case, so a surname reached the
+# narration lower-case. The instructions the step actually sends are read through the step's own loader.
+
+
+def _glossary_instructions() -> str:
+    from docxaicorrector.pipeline.reading_glossary import _load_reading_glossary_instructions
+
+    _load_reading_glossary_instructions.cache_clear()
+    try:
+        return _load_reading_glossary_instructions()
+    finally:
+        _load_reading_glossary_instructions.cache_clear()
+
+
+def test_glossary_prompt_returns_a_word_or_a_name_in_capitals_in_its_normal_spelling():
+    instructions = _glossary_instructions()
+    bullets = [line for line in instructions.splitlines() if line.startswith("- ") and "имя" in line]
+    assert len(bullets) == 1, "one item speaks of a word or a name in capitals"
+    item = bullets[0]
+    assert "не сокращение" in item and "обычное слово" in item and "заглавными" in item
+    assert re.search(r"а не названиями букв", item), "not spelled out by the names of its letters"
+    assert re.search(r"обычное слово\s+—\s+строчными", item), "an ordinary word: lower case"
+    assert re.search(r"заглавной первой буквы", item), "a name: a capital first letter"
+    assert "не строчными целиком" in item, "a name is not written all lower-case"
+
+
+def test_glossary_prompt_says_candidates_may_be_names():
+    intro = next(line for line in _glossary_instructions().splitlines() if '"candidates"' in line)
+    assert re.search(r"обычные слова и имена заглавными", intro)
 
 
 def test_repair_prompt_names_the_reading_section_and_says_as_is_of_cyrillic_only():
@@ -262,3 +372,42 @@ def test_example_shows_a_heading_number_inside_emphasis_read_as_a_neuter_ordinal
         assert "#" not in read and "*" not in read, "no markup in the result"
         if "глав" not in source_paragraphs[marker].lower():
             assert "глав" not in read.lower(), "no word is added to the number"
+
+
+# WP-Y: the example teaches the three forms of the rule, one invented case each.
+_HEADING_PREFIX = re.compile(r"^#+\s+")
+_NUMBER_AFTER_A_WORD = re.compile(r"^([А-ЯЁ][а-яё]+)\s+(\d+(?:\.\d+)*|[IVXLCDM]+)\.?(?=\s|$)")
+_ANY_NUMBER = re.compile(r"\d|\b[IVXLCDM]+\b")
+
+
+def _example_headings() -> list[tuple[str, str]]:
+    """``(heading without markup, its result)`` for every heading paragraph of every example pair."""
+
+    headings = []
+    for source, result in _example_pairs():
+        source_paragraphs, result_paragraphs = _paragraphs(source), _paragraphs(result)
+        for marker, text in source_paragraphs.items():
+            if _HEADING_PREFIX.match(text):
+                headings.append((_HEADING_PREFIX.sub("", text).replace("*", "").strip(), result_paragraphs[marker]))
+    return headings
+
+
+def test_example_keeps_the_word_before_a_heading_number_and_writes_the_number_in_words():
+    cases = [(plain, read, match) for plain, read in _example_headings() if (match := _NUMBER_AFTER_A_WORD.match(plain))]
+    assert {"roman" if match.group(2).isalpha() else "digits" for _, _, match in cases} == {"roman", "digits"}
+    for plain, read, match in cases:
+        word = match.group(1)
+        assert read.split()[0] == word, f"the word before the number stays first: {read!r}"
+        assert [token.lower() for token in read.split()].count(word.lower()) == 1, "the heading is not repeated"
+        assert not _NEUTER_ORDINAL_HEAD.match(read), "no neuter ordinal for a number after a word"
+        assert not _ANY_NUMBER.search(read), "the number is written in words"
+        remainder = plain[match.end() :].strip()
+        if remainder:
+            assert read.endswith(remainder), "the title after the number is kept"
+
+
+def test_example_gives_no_number_to_a_heading_without_one():
+    cases = [(plain, read) for plain, read in _example_headings() if not _ANY_NUMBER.search(plain)]
+    assert cases
+    for plain, read in cases:
+        assert read == plain, "nothing is added to a heading without a number"
