@@ -97,10 +97,13 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_070_postpass_removed.py`
 - `tests/test_spec_070_request_golden.py`
 - `tests/test_spec_071_shared_reference_guard.py`
-- `tests/test_spec_072_narration_groups.py`
-- `tests/test_spec_072_narration_docx.py`
 - `tests/test_spec_072_narration_document.py`
+- `tests/test_spec_072_narration_docx.py`
+- `tests/test_spec_072_narration_groups.py`
+- `tests/test_spec_072_narration_pdf.py`
+- `tests/test_spec_072_narration_pdf_system.py`
 - `tests/test_spec_072_result_group.py`
+- `tests/test_spec_072_result_screen.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`
