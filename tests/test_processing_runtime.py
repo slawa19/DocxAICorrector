@@ -14,6 +14,7 @@ import pytest
 
 import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.processing.upload_ports as upload_ports
+import docxaicorrector.runtime.external_process as external_process
 import docxaicorrector.runtime.state as state
 from docxaicorrector.document.extraction import extract_document_content_from_docx, extract_paragraph_units_from_docx
 from docxaicorrector.pdf_import.images import PdfImageObject
@@ -1003,6 +1004,8 @@ def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(m
         # Spec 069 FR-007: no snapshot was frozen for this result, so it carries no estimate.
         "cost_estimate_snapshot": None,
         "cost_actual": None,
+        # Spec 072 FR-008: no narration exports for this result (old bundle shape / not an audiobook run).
+        "narration_exports": None,
     }
 
 
@@ -1027,6 +1030,7 @@ def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
         "controlled_block_fallback_artifact": None,
         "cost_estimate_snapshot": None,
         "cost_actual": None,
+        "narration_exports": None,
     }
 
 
@@ -1436,7 +1440,7 @@ def test_run_completed_process_cleans_process_group_on_timeout(monkeypatch):
             return "", ""
 
     monkeypatch.setattr(processing_runtime.subprocess, "Popen", PopenStub)
-    monkeypatch.setattr(processing_runtime, "_terminate_process_tree", lambda process: terminated.append(process))
+    monkeypatch.setattr(external_process, "terminate_process_tree", lambda process: terminated.append(process))
 
     with pytest.raises(RuntimeError, match="Превышено время ожидания"):
         processing_runtime._run_completed_process(
