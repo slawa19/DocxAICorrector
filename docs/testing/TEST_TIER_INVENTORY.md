@@ -104,6 +104,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_072_narration_groups.py`
 - `tests/test_spec_072_narration_pdf.py`
 - `tests/test_spec_072_narration_pdf_system.py`
+- `tests/test_spec_072_process_group_kill.py`
 - `tests/test_spec_072_result_group.py`
 - `tests/test_spec_072_result_screen.py`
 - `tests/test_spec_072_state_bundle.py`
