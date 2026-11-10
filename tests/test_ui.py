@@ -1596,8 +1596,16 @@ def test_render_result_bundle_renders_narration_download_when_present(monkeypatc
         def download_button(self, *args, **kwargs):
             self.calls.append(kwargs)
 
-    cols = [FakeColumn(), FakeColumn(), FakeColumn()]
-    monkeypatch.setattr(ui.st, "columns", lambda n: cols)
+    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
+    row_counts = []
+    rows = []
+
+    def fake_columns(n):
+        row_counts.append(n)
+        rows.append([FakeColumn() for _ in range(n)])
+        return rows[-1]
+
+    monkeypatch.setattr(ui.st, "columns", fake_columns)
 
     ui.render_result_bundle(
         docx_bytes=b"docx",
@@ -1607,9 +1615,12 @@ def test_render_result_bundle_renders_narration_download_when_present(monkeypatc
         processing_operation="audiobook",
     )
 
-    assert cols[0].calls[0]["label"] == "Текст для ElevenLabs (.txt)"
-    assert cols[1].calls[0]["label"] == "Markdown (для инспекции)"
-    assert cols[2].calls[0]["label"] == "DOCX (для инспекции)"
+    # Spec 072 FR-009: a bundle without ``narration_exports`` (old session) keeps the TXT alone in
+    # the narration row; the review row carries the inspection DOCX and Markdown.
+    assert row_counts == [1, 2]
+    assert rows[0][0].calls[0]["label"] == "Текст для ElevenLabs (.txt)"
+    assert rows[1][0].calls[0]["label"] == "DOCX (для инспекции)"
+    assert rows[1][1].calls[0]["label"] == "Markdown (для инспекции)"
 
 
 def test_render_result_bundle_uses_inspection_labels_for_audiobook_without_narration(monkeypatch):
