@@ -119,6 +119,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_073_result_screen.py`
 - `tests/test_spec_073_scene_breaks.py`
 - `tests/test_spec_074_chapter_level.py`
+- `tests/test_spec_074_letter_readings.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`
