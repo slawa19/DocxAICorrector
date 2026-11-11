@@ -20,6 +20,11 @@ are asked ONCE more. A batch that gets no usable answer after all its attempts r
 (``pipeline/block_failures.py``, ``handle_block_generation_failure``). There is no "book without a
 glossary" branch.
 
+Spec 074 FR-303: a PURELY letter-by-letter reading of an abbreviation made only of letters is rewritten, in
+``parse_reading_glossary_response``, to one convention (Cyrillic letter -- Russian name, Latin letter -- English
+name written in Cyrillic); every other reading is accepted as the model wrote it, nothing is rejected for it and
+no request is added.
+
 Nothing here keeps state between runs: the glossary lives in the run's ``ProcessingState`` and in the
 run's artifact. Spellings and readings never go to the log (LOGGING §1.5) -- only to the artifact.
 """
@@ -32,7 +37,7 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.core.model_accounting import STAGE_AUDIOBOOK_READING_GLOSSARY
@@ -59,7 +64,7 @@ from docxaicorrector.text.glossary_pass import (
     _request_envelope,
     glossary_max_output_tokens,
 )
-from docxaicorrector.text.narration_forms import is_latin_letter, letter_series
+from docxaicorrector.text.narration_forms import is_latin_letter, letter_series, without_combining_marks
 from docxaicorrector.text.narration_residue import is_all_caps_paragraph, is_roman_numeral_form, mask_url_or_domain
 
 __all__ = [
@@ -177,6 +182,9 @@ class ReadingCandidate:
 class ReadingEntry:
     abbreviation: str
     reading: str
+    # Spec 074 FR-305: what the model answered, kept only when ``reading`` is its rewrite by FR-303
+    # (artifact only, never the log).
+    model_reading: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +204,12 @@ class ReadingGlossary:
     completion_tokens: int | None = None
     cost_usd: float | None = None
     artifact_path: str | None = None
+
+    @property
+    def letter_reading_normalized_count(self) -> int:
+        """Entries whose reading FR-303 rewrote to the letter-name convention."""
+
+        return sum(1 for entry in self.entries if entry.model_reading is not None)
 
     def entry_for(self, abbreviation: str) -> ReadingEntry | None:
         return next((entry for entry in self.entries if entry.abbreviation == abbreviation), None)
@@ -286,12 +300,111 @@ def _is_cyrillic_reading(reading: str) -> bool:
     return has_cyrillic_letter
 
 
+# ---------------------------------------------------------------------------------------------
+# Letter names (spec 074 FR-303): the alphabet, a closed table -- not a list of words
+# ---------------------------------------------------------------------------------------------
+#
+# The convention is a product policy of the owner (spec 074, "Решение о соглашении названий латинских букв"):
+# a Cyrillic letter is named by its Russian name, a Latin letter by its English name written in Cyrillic.
+# ``accepted`` are the names the convention accepts for a letter (the first is the canonical one; the
+# other variants are kept, not churned); ``school`` are the names the school / German convention gives a
+# Latin letter -- recognised as the name of that letter, so that such a reading is rewritten, and not accepted.
+
+
+@dataclass(frozen=True)
+class _LetterNames:
+    accepted: tuple[str, ...]
+    school: tuple[str, ...] = ()
+
+    @property
+    def canonical(self) -> str:
+        return self.accepted[0]
+
+    @property
+    def recognised(self) -> frozenset[str]:
+        return frozenset(self.accepted) | frozenset(self.school)
+
+
+_CYRILLIC_LETTER_NAMES: dict[str, _LetterNames] = {
+    letter: _LetterNames(tuple(names.split()))
+    for letter, names in {
+        "а": "а", "б": "бэ", "в": "вэ", "г": "гэ", "д": "дэ", "е": "е", "ё": "ё", "ж": "жэ же", "з": "зэ", "и": "и",
+        "к": "ка", "л": "эль эл", "м": "эм", "н": "эн", "о": "о", "п": "пэ", "р": "эр", "с": "эс", "т": "тэ", "у": "у",
+        "ф": "эф", "х": "ха", "ц": "цэ", "ч": "че чэ", "ш": "ша", "щ": "ща", "ы": "ы", "э": "э", "ю": "ю", "я": "я",
+    }.items()
+}
+_LATIN_LETTER_NAMES: dict[str, _LetterNames] = {
+    letter: _LetterNames(tuple(english.split()), tuple(school.split()))
+    for letter, (english, school) in {
+        "a": ("эй", "а"), "b": ("би", "бэ"), "c": ("си", "цэ"), "d": ("ди", "дэ"), "e": ("и", "е э"),
+        "f": ("эф", "эф"), "g": ("джи", "гэ же"), "h": ("эйч", "ха аш"), "i": ("ай", "и"), "j": ("джей", "йот жи"),
+        "k": ("кей кэй", "ка"), "l": ("эл эль", "эль эл"), "m": ("эм", "эм"), "n": ("эн", "эн"), "o": ("о оу", "о"),
+        "p": ("пи", "пэ"), "q": ("кью", "ку"), "r": ("ар эр", "эр"), "s": ("эс", "эс"), "t": ("ти", "тэ"),
+        "u": ("ю", "у"), "v": ("ви", "вэ фау"), "w": ("дабл-ю", "вэ дубль-вэ"), "x": ("экс икс", "икс"),
+        "y": ("уай", "игрек ипсилон"), "z": ("зед зи", "зэт зет"),
+    }.items()
+}
+_LETTER_NAMES: dict[str, _LetterNames] = {**_CYRILLIC_LETTER_NAMES, **_LATIN_LETTER_NAMES}
+# The names that are written with a hyphen themselves: one part of a reading, not two.
+_HYPHENATED_LETTER_NAMES = frozenset(
+    name for names in _LETTER_NAMES.values() for name in names.recognised if "-" in name
+)
+
+
+def _letter_name_parts(reading: str) -> list[str] | None:
+    """The parts of a reading written as hyphen-joined names: no space, no empty part, a name that
+    contains a hyphen of its own taken as one part. ``None`` when the reading is not of that form."""
+
+    if any(character.isspace() for character in reading):
+        return None
+    raw = "".join("-" if character in _READING_JOINERS else character for character in reading).split("-")
+    if not all(raw):
+        return None
+    parts: list[str] = []
+    index = 0
+    while index < len(raw):
+        if index + 1 < len(raw) and f"{raw[index]}-{raw[index + 1]}" in _HYPHENATED_LETTER_NAMES:
+            parts.append(f"{raw[index]}-{raw[index + 1]}")
+            index += 2
+        else:
+            parts.append(raw[index])
+            index += 1
+    return parts
+
+
+def _normalize_letter_reading(abbreviation: str, reading: str) -> str:
+    """FR-303: a PURELY letter-by-letter reading of an abbreviation made only of letters follows the
+    convention; anything else -- a word, an expansion, a syllabic or mixed reading, a spelling with a digit,
+    a hyphen or a space -- is returned exactly as it is.
+
+    Purely letter-by-letter: the spelling has at least two letters, every one of them in the alphabet
+    tables; the reading splits into exactly as many parts as the spelling has letters, and EVERY part is a
+    name (of the table of its letter's script) of the letter at the same position. Case and stress marks do
+    not count in the comparison. The rewrite replaces each part the convention does not accept for its
+    letter by the canonical name; it is lowercase, without stress marks, joined by an ASCII hyphen."""
+
+    names = [_LETTER_NAMES.get(character.casefold()) for character in abbreviation]
+    if len(names) < 2 or any(item is None for item in names):
+        return reading
+    plain = without_combining_marks(unicodedata.normalize("NFC", reading)).casefold()
+    parts = _letter_name_parts(plain)
+    if parts is None or len(parts) != len(names):
+        return reading
+    letters = cast(list[_LetterNames], names)
+    if not all(part in letter.recognised for part, letter in zip(parts, letters)):
+        return reading
+    return "-".join(part if part in letter.accepted else letter.canonical for part, letter in zip(parts, letters))
+
+
 def parse_reading_glossary_response(
     raw_text: str, *, sent: Sequence[ReadingCandidate]
 ) -> tuple[tuple[ReadingEntry, ...], dict[str, int]]:
     """``(accepted entries, rejections by reason)``. An answer that is not JSON or carries no
     ``readings`` list raises ``GlossaryResponseError`` (``empty_response`` / ``no_json`` /
-    ``invalid_json`` / ``invalid_shape``) -- the batch is asked again."""
+    ``invalid_json`` / ``invalid_shape``) -- the batch is asked again.
+
+    An accepted purely letter-by-letter reading is rewritten to the letter-name convention
+    (``_normalize_letter_reading``, spec 074 FR-303): nothing is rejected for it and nothing is asked again."""
 
     payload = _load_json_object(raw_text)
     readings = payload.get("readings")
@@ -319,7 +432,12 @@ def parse_reading_glossary_response(
         elif not _is_cyrillic_reading(reading):
             rejected["not_cyrillic_reading"] += 1
         else:
-            accepted[abbreviation] = ReadingEntry(abbreviation=abbreviation, reading=reading)
+            normalized = _normalize_letter_reading(abbreviation, reading)
+            accepted[abbreviation] = ReadingEntry(
+                abbreviation=abbreviation,
+                reading=normalized,
+                model_reading=reading if normalized != reading else None,
+            )
     return tuple(accepted.values()), rejected
 
 
@@ -435,6 +553,14 @@ def _batches(candidates: Sequence[ReadingCandidate]) -> list[tuple[ReadingCandid
     return [tuple(candidates[start : start + size]) for start in range(0, len(candidates), size)]
 
 
+def _artifact_reading(entry: ReadingEntry) -> dict[str, str]:
+    item = {"abbreviation": entry.abbreviation, "reading": entry.reading}
+    if entry.model_reading is not None:
+        # FR-305: the model's own reading next to the accepted one, for an entry FR-303 rewrote.
+        item["model_reading"] = entry.model_reading
+    return item
+
+
 def _artifact_payload(
     *,
     filename: str,
@@ -465,7 +591,7 @@ def _artifact_payload(
             }
             for item in candidates
         ],
-        "readings": [{"abbreviation": entry.abbreviation, "reading": entry.reading} for entry in ledger.accepted.values()],
+        "readings": [_artifact_reading(entry) for entry in ledger.accepted.values()],
         "unresolved": list(unresolved),
         "rejected_by_reason": dict(ledger.rejected),
         "batches": [dict(item) for item in ledger.batches],
@@ -679,6 +805,7 @@ def _log_built(log_event: Callable[..., object], *, glossary: ReadingGlossary, f
         candidate_count=len(glossary.candidates),
         sent_count=sent_count,
         accepted_count=len(glossary.entries),
+        letter_reading_normalized_count=glossary.letter_reading_normalized_count,
         rerequested_count=len(glossary.rerequested),
         unresolved_count=len(glossary.unresolved),
         dropped_by_limit_count=len(glossary.candidates) - sent_count,
