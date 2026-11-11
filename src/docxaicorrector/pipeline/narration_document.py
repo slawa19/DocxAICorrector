@@ -8,10 +8,16 @@ assembly ids it carries, which heading series were merged, and the ElevenLabs St
 counters — everything the DOCX renderer, the event and the runner report need.
 
 FR-003 as amended by the owner on 2026-11-10 (Studio makes a chapter of EVERY Word heading,
-any level):
+any level) and by spec 074 FR-101/FR-102 (the chapter level is decided by the Studio limit):
 
-* (а) The topmost heading level among the narrated groups is the chapter level (rank 1).
-  Only a paragraph of that level is ``Heading 1``; every deeper heading is ``Normal``.
+* (а) The chapter level is the topmost heading level at which no chapter is longer than
+  ``STUDIO_MAX_CHAPTER_PARAGRAPHS`` (spec 074 FR-101; spec 072 took the topmost level present
+  unconditionally, which is the same answer whenever that level fits). A chapter is opened by every
+  series of that level or above; the paragraphs before the first one are a chapter of their own, and
+  a chapter is counted without its own ``Heading 1``. When no level fits, the chapter level is the
+  deepest level present (the exceeded limit is reported, as before). A series at or above the
+  chapter level is ``Heading 1`` (FR-102); every deeper heading is ``Normal``. The chapter level is a
+  THRESHOLD: ``Heading 1`` is the style of every series AT OR ABOVE it, not only at it.
 * (б) Consecutive heading groups with a level form a series while each next member is not
   deeper than the shallowest member already in it; a deeper heading starts a new series.
   A series is ONE paragraph: parts joined with ``". "`` (a part already ending in ``.``
@@ -27,8 +33,8 @@ The rule reads role and level only, never the words of the text (Constitution VI
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
 NARRATION_DOCUMENT_STYLE_HEADING_1: Literal["Heading 1"] = "Heading 1"
@@ -129,20 +135,28 @@ def _join_series_text(parts: Sequence[str]) -> str:
     return joined
 
 
-def _studio_limits(paragraphs: Sequence[NarrationDocumentParagraph]) -> StudioLimits:
-    heading1_count = 0
-    chapter_sizes: list[int] = []
+def _chapter_sizes(opens_chapter: Iterable[bool]) -> list[int]:
+    """Paragraph counts of the chapters Studio sees, for a plan given as one flag per paragraph: ``True`` when the
+    paragraph is a chapter opener (``Heading 1``). An opener is not counted in its own chapter; the paragraphs before
+    the first opener are a chapter of their own; a plan without paragraphs has no chapter."""
+
+    sizes: list[int] = []
     current: int | None = None  # paragraphs of the open chapter; None until one is open
-    for paragraph in paragraphs:
-        if paragraph.style == NARRATION_DOCUMENT_STYLE_HEADING_1:
-            heading1_count += 1
+    for opens in opens_chapter:
+        if opens:
             if current is not None:
-                chapter_sizes.append(current)
+                sizes.append(current)
             current = 0
         else:
             current = 1 if current is None else current + 1
     if current is not None:
-        chapter_sizes.append(current)
+        sizes.append(current)
+    return sizes
+
+
+def _studio_limits(paragraphs: Sequence[NarrationDocumentParagraph]) -> StudioLimits:
+    heading1_count = sum(1 for paragraph in paragraphs if paragraph.style == NARRATION_DOCUMENT_STYLE_HEADING_1)
+    chapter_sizes = _chapter_sizes(paragraph.style == NARRATION_DOCUMENT_STYLE_HEADING_1 for paragraph in paragraphs)
 
     max_chapter_paragraph_count = max(chapter_sizes, default=0)
     max_paragraph_chars = max((len(paragraph.text) for paragraph in paragraphs), default=0)
@@ -162,47 +176,59 @@ def _studio_limits(paragraphs: Sequence[NarrationDocumentParagraph]) -> StudioLi
     )
 
 
+def _chapter_level(drafts: Sequence[NarrationDocumentParagraph], levels_present: Sequence[int]) -> int | None:
+    """Spec 074 FR-101: the topmost level at which no chapter is longer than the Studio limit.
+
+    ``levels_present`` is sorted from the topmost (1) down. For a level ``L`` a series with a level ``<= L`` opens a
+    chapter (``_chapter_sizes``). Nothing fits -> the deepest level present; no levels -> ``None``. Only roles, levels
+    and counts are read, never words (Constitution VII).
+    """
+
+    for level in levels_present:
+        sizes = _chapter_sizes(
+            draft.source_heading_level is not None and draft.source_heading_level <= level for draft in drafts
+        )
+        if max(sizes, default=0) <= STUDIO_MAX_CHAPTER_PARAGRAPHS:
+            return level
+    return levels_present[-1] if levels_present else None
+
+
 def build_narration_document_plan(groups: Sequence[NarrationGroupLike]) -> NarrationDocumentPlan:
-    """The ``.tts.docx`` paragraph plan of the narration groups (FR-003, FR-006)."""
+    """The ``.tts.docx`` paragraph plan of the narration groups (FR-003, FR-006; spec 074 FR-101...FR-104).
+
+    Two passes over ONE source of truth: the series and their texts and ids are built first, with the style
+    still open; the chapter level is chosen from them (``_chapter_level``); the styles follow from that level and
+    from nothing else (FR-104).
+    """
 
     levels = [level for level in (_group_heading_level(group) for group in groups) if level is not None]
-    chapter_level = min(levels) if levels else None
 
-    paragraphs: list[NarrationDocumentParagraph] = []
-    merges: list[HeadingMerge] = []
-    demoted_heading_count = 0
+    drafts: list[NarrationDocumentParagraph] = []
+    merge_members: list[tuple[tuple[str, ...], tuple[int, ...]]] = []
     series: list[tuple[NarrationGroupLike, int]] = []
 
     def close_series() -> None:
-        nonlocal demoted_heading_count
         if not series:
             return
         series_level = min(level for _, level in series)
-        style: NarrationDocumentStyle = (
-            NARRATION_DOCUMENT_STYLE_HEADING_1 if series_level == chapter_level else NARRATION_DOCUMENT_STYLE_NORMAL
-        )
         paragraph_ids = tuple(pid for group, _ in series for pid in group.paragraph_ids)
-        paragraphs.append(
+        drafts.append(
             NarrationDocumentParagraph(
-                style=style,
+                style=NARRATION_DOCUMENT_STYLE_NORMAL,
                 text=_join_series_text([group.text for group, _ in series]),
                 paragraph_ids=paragraph_ids,
                 source_heading_level=series_level,
             )
         )
         if len(series) > 1:
-            merges.append(
-                HeadingMerge(paragraph_ids=paragraph_ids, levels=tuple(level for _, level in series), style=style)
-            )
-        if style == NARRATION_DOCUMENT_STYLE_NORMAL:
-            demoted_heading_count += 1
+            merge_members.append((paragraph_ids, tuple(level for _, level in series)))
         series.clear()
 
     for group in groups:
         level = _group_heading_level(group)
         if level is None:
             close_series()
-            paragraphs.append(
+            drafts.append(
                 NarrationDocumentParagraph(
                     style=NARRATION_DOCUMENT_STYLE_NORMAL,
                     text=group.text,
@@ -215,6 +241,29 @@ def build_narration_document_plan(groups: Sequence[NarrationGroupLike]) -> Narra
             close_series()
         series.append((group, level))
     close_series()
+
+    chapter_level = _chapter_level(drafts, sorted(set(levels)))
+    style_of_series: dict[tuple[str, ...], NarrationDocumentStyle] = {}
+    paragraphs: list[NarrationDocumentParagraph] = []
+    demoted_heading_count = 0
+    for draft in drafts:
+        series_level = draft.source_heading_level
+        if series_level is None:
+            paragraphs.append(draft)
+            continue
+        style: NarrationDocumentStyle = (
+            NARRATION_DOCUMENT_STYLE_HEADING_1
+            if chapter_level is not None and series_level <= chapter_level
+            else NARRATION_DOCUMENT_STYLE_NORMAL
+        )
+        style_of_series[draft.paragraph_ids] = style
+        if style == NARRATION_DOCUMENT_STYLE_NORMAL:
+            demoted_heading_count += 1
+        paragraphs.append(replace(draft, style=style))
+    merges = [
+        HeadingMerge(paragraph_ids=paragraph_ids, levels=member_levels, style=style_of_series[paragraph_ids])
+        for paragraph_ids, member_levels in merge_members
+    ]
 
     return NarrationDocumentPlan(
         paragraphs=tuple(paragraphs),

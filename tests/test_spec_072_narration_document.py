@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+import docxaicorrector.pipeline.narration_document as narration_document
 from docxaicorrector.pipeline.narration_document import (
     NARRATION_DOCUMENT_STYLE_HEADING_1,
     NARRATION_DOCUMENT_STYLE_NORMAL,
@@ -301,11 +302,54 @@ def test_generated_books_are_numerous_and_contain_merges() -> None:
     assert sum(plan.studio_limits.heading1_count for plan in plans) > 100
 
 
-def _book_invariant_violations(groups: tuple[_Group, ...]) -> list[str]:
+def _oracle_chapter_level(groups: tuple[_Group, ...], limit: int) -> int | None:
+    """The chapter level of spec 074 FR-101, written independently of the module under test.
+
+    Tokens of the plan: ``("S", level)`` for a heading series (a heading with a level joins the open series unless it
+    is deeper than the shallowest member; the series level is its minimum) and ``("B", 0)`` for everything else. The
+    level is the first, from the top, whose division (a series of that level or above opens a chapter; paragraphs
+    before the first opener are a chapter of their own; the opening series is not counted) has no chapter over the
+    limit; none fits -> the deepest level present; no levels -> ``None``.
+    """
+
+    tokens: list[tuple[str, int]] = []
+    series_levels: list[int] = []
+    present: set[int] = set()
+    for group in groups:
+        level = group.heading_level if group.role == "heading" else None
+        if level is None:
+            if series_levels:
+                tokens.append(("S", min(series_levels)))
+                series_levels = []
+            tokens.append(("B", 0))
+            continue
+        present.add(level)
+        if series_levels and level > min(series_levels):
+            tokens.append(("S", min(series_levels)))
+            series_levels = []
+        series_levels.append(level)
+    if series_levels:
+        tokens.append(("S", min(series_levels)))
+    if not present:
+        return None
+    for candidate in sorted(present):
+        chapters: list[int] = []
+        for kind, level in tokens:
+            if kind == "S" and level <= candidate:
+                chapters.append(0)
+            elif chapters:
+                chapters[-1] += 1
+            else:
+                chapters.append(1)
+        if max(chapters) <= limit:
+            return candidate
+    return max(present)
+
+
+def _book_invariant_violations(groups: tuple[_Group, ...], limit: int = STUDIO_MAX_CHAPTER_PARAGRAPHS) -> list[str]:
     plan = build_narration_document_plan(groups)
     by_id = {group.paragraph_ids[0]: group for group in groups}
-    levels = [group.heading_level for group in groups if group.role == "heading" and group.heading_level is not None]
-    chapter_level = min(levels) if levels else None
+    chapter_level = _oracle_chapter_level(groups, limit)
     violations: list[str] = []
 
     # The ids of the plan, in order and with multiplicity, are the ids of the groups.
@@ -317,14 +361,19 @@ def _book_invariant_violations(groups: tuple[_Group, ...]) -> list[str]:
         violations.append("chapter_level")
     for paragraph in plan.paragraphs:
         members = [by_id[pid] for pid in paragraph.paragraph_ids]
-        is_rank1 = [
-            m.role == "heading" and m.heading_level is not None and m.heading_level == chapter_level for m in members
+        # Spec 074 FR-102: a member at or above the chapter level (not only AT it, as in spec 072 FR-003 (a)).
+        reaches_chapter_level = [
+            m.role == "heading"
+            and m.heading_level is not None
+            and chapter_level is not None
+            and m.heading_level <= chapter_level
+            for m in members
         ]
         # Only the two styles, ever.
         if paragraph.style not in (H1, NORMAL):
             violations.append(f"style {paragraph.style}")
-        # Heading 1 if and only if a rank-1 heading group is in the paragraph.
-        if (paragraph.style == H1) != any(is_rank1):
+        # Heading 1 if and only if a member at or above the chapter level is in the paragraph.
+        if (paragraph.style == H1) != any(reaches_chapter_level):
             violations.append(f"heading1 {paragraph.paragraph_ids}")
         # Every member text is in the plan byte for byte (demoted headings included).
         if any(member.text not in paragraph.text for member in members):
@@ -347,6 +396,46 @@ def test_generated_book_invariants() -> None:
     }
 
     assert not failures, dict(itertools.islice(failures.items(), 10))
+
+
+# The generated books are far under the Studio limit, so the limit rule never leaves the topmost level above. A limit of
+# 1 or 2 paragraphs per chapter makes the same books exercise the rule itself (spec 074 FR-101): the level goes down, the
+# fallback to the deepest level is taken, and series at or above the level are ``Heading 1`` (FR-102).
+@pytest.mark.parametrize("limit", [1, 2])
+def test_generated_book_invariants_under_a_small_chapter_limit(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+    monkeypatch.setattr(narration_document, "STUDIO_MAX_CHAPTER_PARAGRAPHS", limit)
+    failures = {
+        index: violations
+        for index, groups in enumerate(_GENERATED_BOOKS)
+        if (violations := _book_invariant_violations(groups, limit))
+    }
+
+    assert not failures, dict(itertools.islice(failures.items(), 10))
+
+
+@pytest.mark.parametrize("limit", [1, 2])
+def test_a_small_chapter_limit_moves_the_level_down_on_the_generated_books(
+    monkeypatch: pytest.MonkeyPatch, limit: int
+) -> None:
+    # Anti-vacuum for the test above: the small limit really changes the level on many generated books.
+    shallow = {
+        index: build_narration_document_plan(groups).chapter_level for index, groups in enumerate(_GENERATED_BOOKS)
+    }
+    monkeypatch.setattr(narration_document, "STUDIO_MAX_CHAPTER_PARAGRAPHS", limit)
+    moved = sum(
+        1
+        for index, groups in enumerate(_GENERATED_BOOKS)
+        if build_narration_document_plan(groups).chapter_level != shallow[index]
+    )
+
+    assert moved > 50
+
+
+def test_the_oracle_gives_min_levels_when_nothing_is_over_the_limit() -> None:
+    # What spec 072 FR-003 (a) said survives as a special case: a book whose topmost level fits keeps it.
+    for groups in _GENERATED_BOOKS:
+        levels = [g.heading_level for g in groups if g.role == "heading" and g.heading_level is not None]
+        assert _oracle_chapter_level(groups, STUDIO_MAX_CHAPTER_PARAGRAPHS) == (min(levels) if levels else None)
 
 
 # --- T-B3: no style but Heading 1 and Normal, whatever the levels ---------------------------
@@ -382,9 +471,10 @@ def test_only_heading1_and_normal_for_any_levels(levels: tuple[int, ...], separa
 
     assert set(_styles(plan)) <= {H1, NORMAL}
     assert H1 in _styles(plan)
+    # Spec 074 FR-101: the books here are far under the Studio limit, so the topmost level fits and is the chapter level.
     assert plan.chapter_level == min(levels)
     if separated:
-        expected = [H1 if level == min(levels) else NORMAL for level in levels]
+        expected = [H1 if level <= min(levels) else NORMAL for level in levels]
         assert [p.style for p in plan.paragraphs if p.source_heading_level is not None] == expected
 
 

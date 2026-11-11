@@ -295,6 +295,45 @@ _SC001_EXPECTED_DOCX = [
 ]
 
 
+def _chapter_level_by_studio_limit(groups: Sequence[Any], limit: int = 400) -> int | None:
+    """Spec 074 FR-101, written independently of ``pipeline/narration_document``: the topmost heading level at which
+    no chapter is longer than ``limit`` paragraphs (a series of that level or above opens a chapter, the opener is not
+    counted, paragraphs before the first opener are a chapter of their own); none fits -> the deepest level present;
+    no levels -> ``None``. A series is consecutive headings with a level while the next is not deeper than the
+    shallowest member; its level is the minimum."""
+
+    tokens: list[int | None] = []  # a series level, or None for any other paragraph
+    series: list[int] = []
+    present: set[int] = set()
+    for group in groups:
+        level = group.heading_level if group.role == "heading" else None
+        if level is None:
+            if series:
+                tokens.append(min(series))
+                series = []
+            tokens.append(None)
+            continue
+        present.add(level)
+        if series and level > min(series):
+            tokens.append(min(series))
+            series = []
+        series.append(level)
+    if series:
+        tokens.append(min(series))
+    for candidate in sorted(present):
+        chapters: list[int] = []
+        for token in tokens:
+            if token is not None and token <= candidate:
+                chapters.append(0)
+            elif chapters:
+                chapters[-1] += 1
+            else:
+                chapters.append(1)
+        if max(chapters) <= limit:
+            return candidate
+    return max(present) if present else None
+
+
 def _docx_equals_tts_with_merges(
     docx_paragraphs: Sequence[tuple[str, str]],
     *,
@@ -311,8 +350,7 @@ def _docx_equals_tts_with_merges(
     tts_paragraphs = tts_text.split("\n\n")
     if tts_paragraphs != [group.text for group in groups]:
         return False
-    levels = [group.heading_level for group in groups if group.role == "heading" and group.heading_level is not None]
-    chapter_level = min(levels) if levels else None
+    chapter_level = _chapter_level_by_studio_limit(groups)
     merge_by_first_id = {str(list(m["paragraph_ids"])[0]): m for m in merges}  # type: ignore[call-overload]
     expected: list[tuple[str, str]] = []
     index = 0
@@ -331,12 +369,17 @@ def _docx_equals_tts_with_merges(
             for part in parts:
                 text = part if not text else (f"{text} {part}" if text.endswith(".") else f"{text}. {part}")
             merge_levels = list(merge["levels"])  # type: ignore[call-overload]
-            style = "Heading 1" if min(merge_levels) == chapter_level else "Normal"
+            style = "Heading 1" if chapter_level is not None and min(merge_levels) <= chapter_level else "Normal"
             if merge.get("style") != style:
                 return False
             expected.append((style, text))
             continue
-        is_chapter = group.role == "heading" and group.heading_level is not None and group.heading_level == chapter_level
+        is_chapter = (
+            group.role == "heading"
+            and group.heading_level is not None
+            and chapter_level is not None
+            and group.heading_level <= chapter_level
+        )
         expected.append(("Heading 1" if is_chapter else "Normal", tts_paragraphs[index]))
         index += 1
     return list(docx_paragraphs) == expected
@@ -440,6 +483,47 @@ def test_t_h2_tts_docx_is_the_tts_text_with_exactly_the_listed_merges(monkeypatc
     body_as_heading[1] = ("Heading 1", body_as_heading[1][1])
     for broken in (dropped, duplicated, body_as_heading):
         assert not _docx_equals_tts_with_merges(broken, tts_text=tts_text, groups=groups, merges=merges)  # type: ignore[arg-type]
+
+
+def _long_chapter_records() -> list[NarrationParagraphRecord]:
+    """A title (level 1) and two sections (level 2) of 250 paragraphs each: the one level-1 chapter holds 502 paragraphs,
+    over the Studio limit of 400, so spec 074 FR-101 takes level 2 and every one of the three headings is ``Heading 1``."""
+
+    records = [_record("t1", "Название книги", role="heading", level=1)]
+    for section in ("a", "b"):
+        records.append(_record(f"{section}h", f"Раздел {section}", role="heading", level=2))
+        records += [_record(f"{section}{number}", f"Абзац номер {number}.") for number in range(250)]
+    return records
+
+
+def test_t_h2_chapter_over_the_studio_limit_moves_the_chapter_level_and_the_oracle_follows(monkeypatch, tmp_path):
+    # Anti-vacuum for the oracle of the test above: with ``min(levels)`` as the chapter level this book would have its
+    # two sections as ``Normal`` (one chapter of 502 paragraphs); the product and the oracle give three ``Heading 1``.
+    _patch_pdf_export(monkeypatch, NarrationPdfOutcome(pdf_bytes=_FAKE_PDF, reason=None, seconds=0.5, detail=""))
+    state = _audiobook_state(_long_chapter_records())
+
+    result, emitters, dependencies = _run(monkeypatch, tmp_path, operation="audiobook", state=state)
+
+    assert result == "succeeded"
+    tts_text = _delivery_call(emitters)["latest_narration_text"]
+    assert isinstance(tts_text, str)
+    docx_bytes = _exports_state_value(emitters)["docx_bytes"]
+    assert isinstance(docx_bytes, bytes)
+    paragraphs = _docx_paragraphs(docx_bytes)
+    saved = _saved_event(dependencies)
+    groups = list(state.narration_groups)
+    merges = saved["heading_merges"]
+
+    assert saved["chapter_heading_level"] == 2
+    assert saved["heading1_count"] == 3
+    assert saved["studio_limits_exceeded"] == []
+    assert [style for style, _text in paragraphs].count("Heading 1") == 3
+    assert _chapter_level_by_studio_limit(groups) == 2
+    assert _docx_equals_tts_with_merges(paragraphs, tts_text=tts_text, groups=groups, merges=merges)  # type: ignore[arg-type]
+    # The spec 072 oracle (the topmost level present) would have written the sections as Normal and fails on this DOCX.
+    min_level_style = [("Heading 1" if style == "Heading 1" and text == "Название книги" else "Normal", text) for style, text in paragraphs]
+    assert min_level_style != paragraphs
+    assert not _docx_equals_tts_with_merges(min_level_style, tts_text=tts_text, groups=groups, merges=merges)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------------------------------------------
