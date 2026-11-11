@@ -8,13 +8,19 @@ list, no table of domain zones. The expected answers are the ones the spec wrote
 from __future__ import annotations
 
 import re
+from io import BytesIO
 from pathlib import Path
 from typing import cast
 
 import pytest
+from docx import Document
+from docx.opc.constants import RELATIONSHIP_TYPE
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 import docxaicorrector.core.config as config
 from docxaicorrector.core.models import DocumentBlock, ParagraphUnit
+from docxaicorrector.document.extraction import extract_document_content_from_docx
 from docxaicorrector.document.semantic_blocks import build_editing_jobs
 from docxaicorrector.pipeline.audiobook_pass import _block_source_texts
 from docxaicorrector.pipeline.audiobook_plan import build_audiobook_block_plan
@@ -312,6 +318,106 @@ def test_every_reader_of_the_audiobook_job_sees_the_same_shortened_source() -> N
     # the reading glossary
     sources = {paragraph.paragraph_id: paragraph.text for paragraph in reading_paragraphs_from_jobs(_jobs("audiobook"))}
     assert sources["p0001"] == _SHORT_PROSE
+
+
+# =====================================================================================================
+# Codex acceptance review 2026-11-11, finding 1: a DOCX hyperlink -- the importer writes ``[label](target)``
+# =====================================================================================================
+
+
+def _imported_paragraph(before: str, label: str, url: str, after: str) -> ParagraphUnit:
+    """One paragraph with a real DOCX hyperlink, read back through the production importer."""
+
+    document = Document()
+    paragraph = document.add_paragraph(before)
+    relationship_id = paragraph.part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), relationship_id)
+    run = OxmlElement("w:r")
+    text_element = OxmlElement("w:t")
+    text_element.text = label
+    run.append(text_element)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+    paragraph.add_run(after)
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    (unit,) = extract_document_content_from_docx(buffer)[0]
+    return unit
+
+
+@pytest.mark.parametrize(
+    ("label", "url", "imported", "narrated"),
+    [
+        (
+            "www.example.org",
+            "https://www.example.org/a",
+            "См. [www.example.org](https://www.example.org/a) сегодня.",
+            "См. example.org сегодня.",
+        ),
+        # the VISIBLE domain is read, never the domain of the link target
+        (
+            "example.org",
+            "https://example.net/a",
+            "См. [example.org](https://example.net/a) сегодня.",
+            "См. example.org сегодня.",
+        ),
+        # a label that is no address at all is read as it is
+        (
+            "сайт фонда",
+            "https://example.org/a",
+            "См. [сайт фонда](https://example.org/a) сегодня.",
+            "См. сайт фонда сегодня.",
+        ),
+    ],
+)
+def test_a_docx_hyperlink_is_narrated_by_its_visible_label(label: str, url: str, imported: str, narrated: str) -> None:
+    unit = _imported_paragraph("См. ", label, url, " сегодня.")
+    assert unit.text == imported  # the premise: the importer's link form
+
+    blocks = [DocumentBlock(paragraphs=[unit])]
+    (audiobook_job,) = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+    assert audiobook_job["narration_exclusion_reasons"] == [None]
+    assert audiobook_job["target_text"] == narrated
+    assert str(audiobook_job["target_text_with_markers"]).endswith("\n" + narrated)
+    for operation in ("translate", "edit"):
+        (job,) = build_editing_jobs(blocks, max_chars=3000, processing_operation=operation)
+        assert job["target_text"] == imported
+
+
+def test_an_address_token_never_runs_across_markdown_link_syntax() -> None:
+    text = "См. [www.example.org](https://example.net/a) сегодня."
+    tokens = residue.address_tokens(text)
+    assert [token.text for token in tokens] == ["www.example.org", "https://example.net/a"]
+    assert [token.domain for token in tokens] == ["example.org", "example.net"]
+    # even without the label step, shortening keeps the link syntax whole
+    assert residue.shorten_addresses_to_domain(text) == "См. [example.org](example.net) сегодня."
+    assert _masked_spans(text) == ["www.example.org", "https://example.net/a"]
+
+
+# =====================================================================================================
+# Codex acceptance review 2026-11-11, finding 2: the domain comes from the token's own start
+# =====================================================================================================
+
+
+@pytest.mark.parametrize(
+    ("text", "domain", "shortened"),
+    [
+        ("www.example.org/redirect?next=https://example.net/a", "example.org", "example.org"),
+        ("example.org/redirect?next=https://example.net/a", "example.org", "example.org"),
+        ("https://example.org/redirect?next=https://example.net/a", "example.org", "example.org"),
+        # an "@" after the path is no e-mail: the host is still read and shortened
+        ("example.org/share?to=team@example.net", "example.org", "example.org"),
+        # a port is not part of the host
+        ("example.org:8080/a", "example.org", "example.org"),
+    ],
+)
+def test_a_url_inside_the_query_does_not_lend_its_domain(text: str, domain: str, shortened: str) -> None:
+    (token,) = residue.address_tokens(text)
+    assert token.text == text
+    assert token.domain == domain
+    assert residue.shorten_addresses_to_domain(text) == shortened
 
 
 # =====================================================================================================

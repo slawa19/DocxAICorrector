@@ -21,6 +21,7 @@ from docxaicorrector.core.models import (
     ParagraphUnit,
 )
 from docxaicorrector.pipeline.output_validation import is_notes_run_paragraph
+from docxaicorrector.text.narration_cleanup import unwrap_markdown_links
 from docxaicorrector.text.narration_residue import shorten_addresses_to_domain
 from docxaicorrector.validation.formatting_coverage import (
     _BACKMATTER_SECTION_TITLES,
@@ -339,8 +340,9 @@ def build_editing_jobs(
             )
             position += len(block.paragraphs)
         # Spec 074 FR-405: the reasons above are decided on the ORIGINAL text; from here on every narrated
-        # paragraph carries its web addresses shortened to the domain, so the request, the context, the
-        # coverage and residue source and the reading glossary all read one and the same shortened source.
+        # paragraph carries its links as their labels and its web addresses shortened to the domain, so the
+        # request, the context, the coverage and residue source and the reading glossary all read one and the
+        # same shortened source.
         source_blocks = [
             DocumentBlock(
                 paragraphs=[
@@ -515,10 +517,12 @@ def _build_semantic_block_units(
 
 def _with_addresses_shortened(paragraph: ParagraphUnit) -> ParagraphUnit:
     """Spec 074 FR-405: a copy of a narrated paragraph whose web addresses are shortened to the domain (the same
-    object when there is nothing to shorten). The copy lives only inside ``build_editing_jobs``: the jobs carry
-    its text, never the unit."""
+    object when there is nothing to shorten). A Markdown link ``[label](target)`` of the importer becomes its
+    label first -- the narration reads the visible text, never the target (Codex acceptance review 2026-11-11,
+    finding 1) -- and an address inside the label is then shortened as any other. The copy lives only inside
+    ``build_editing_jobs``: the jobs carry its text, never the unit."""
 
-    shortened = shorten_addresses_to_domain(paragraph.text)
+    shortened = shorten_addresses_to_domain(unwrap_markdown_links(paragraph.text))
     if shortened == paragraph.text:
         return paragraph
     return replace(paragraph, text=shortened, pdf_emphasis_runs=[])

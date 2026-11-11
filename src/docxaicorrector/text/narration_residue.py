@@ -108,10 +108,16 @@ _ADDRESS_TRAILING_PUNCTUATION = frozenset(".,;:!?")
 _ADDRESS_CLOSERS = {")": "(", "]": "["}
 _TRAILING_NOTE_ELEMENT = re.compile(r"<sup>[^<>]*</sup>$")
 _TRAILING_TAG = re.compile(r"</?[A-Za-z]+>$")
-# FR-401: the host ends where the path, the query, the fragment or the port begins.
-_HOST_END = re.compile(r"[/?#:]")
+# FR-401: the host is read from the token's OWN start only -- a leading scheme, then the authority up to the
+# path, the query or the fragment (Codex acceptance review 2026-11-11, finding 2: a URL inside the query must
+# not lend its host); the port is not part of the host.
+_LEADING_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+_PATH_START = re.compile(r"[/?#]")
 _SCHEME_SEPARATOR = "://"
 _WWW_PREFIX = "www."
+# The syntax of a Markdown link ``[label](target)`` that the DOCX importer writes for a hyperlink: an address
+# never runs across it (Codex acceptance review 2026-11-11, finding 1).
+_LINK_BRACKETS = frozenset("[]")
 
 
 @dataclass(frozen=True)
@@ -133,13 +139,15 @@ class AddressToken:
 
     @property
     def domain(self) -> str | None:
-        """The host without the scheme and a leading ``www.``; ``None`` for an e-mail, which is not a web
-        address in the sense of FR-401."""
+        """The host without the scheme and a leading ``www.``; ``None`` for an e-mail (an ``@`` before the
+        path), which is not a web address in the sense of FR-401."""
 
-        if "@" in self.text:
+        scheme = _LEADING_SCHEME.match(self.text)
+        rest = self.text[scheme.end() :] if scheme is not None else self.text
+        authority = _PATH_START.split(rest, maxsplit=1)[0]
+        if "@" in authority:
             return None
-        before, separator, after = self.text.partition(_SCHEME_SEPARATOR)
-        host = _HOST_END.split(after if separator else before, maxsplit=1)[0]
+        host = authority.split(":", 1)[0]
         if host[: len(_WWW_PREFIX)].lower() == _WWW_PREFIX:
             host = host[len(_WWW_PREFIX) :]
         return host or None
@@ -244,12 +252,16 @@ def _is_letter_label(label: str) -> bool:
 def _address_spans(text: str) -> list[tuple[int, int]]:
     """Spec 074 FR-302: the addresses of ``text`` as ``(start, end)``. A note after an address is cut off the
     match; a match without a scheme and without ``www.`` is an address only when its last label is letters
-    (category L), so a word before a note ("слово.¹⁵") is never one."""
+    (category L), so a word before a note ("слово.¹⁵") is never one. A match stops at the bracket of a Markdown
+    link, and the search goes on from there, so the label and the target of ``[label](target)`` are separate."""
 
     spans: list[tuple[int, int]] = []
-    for match in _URL_OR_DOMAIN.finditer(text):
+    position = 0
+    while (match := _URL_OR_DOMAIN.search(text, position)) is not None:
         start = match.start()
-        end = _trim_address_end(text, start, match.end())
+        raw_end = next((index for index in range(start, match.end()) if text[index] in _LINK_BRACKETS), match.end())
+        position = max(raw_end, start + 1)
+        end = _trim_address_end(text, start, raw_end)
         candidate = text[start:end]
         if not candidate:
             continue
@@ -282,16 +294,20 @@ def address_tokens(text: str) -> tuple[AddressToken, ...]:
 
     A token is the run of non-space characters around an address match. It begins at its first match -- or,
     for an e-mail, at the local part in front of ``@`` -- so markup and brackets before the address are not in
-    it, and it ends before the markup, punctuation and note that close it (``_trim_address_end``)."""
+    it, and it ends before the markup, punctuation and note that close it (``_trim_address_end``). The brackets
+    of a Markdown link bound a token like a space does: the label and the target are two tokens."""
+
+    def is_boundary(char: str) -> bool:
+        return char.isspace() or char in _LINK_BRACKETS
 
     first_match_by_token: dict[int, int] = {}
     token_end_by_start: dict[int, int] = {}
     for start, end in _address_spans(text):
         token_start = start
-        while token_start > 0 and not text[token_start - 1].isspace():
+        while token_start > 0 and not is_boundary(text[token_start - 1]):
             token_start -= 1
         token_end = end
-        while token_end < len(text) and not text[token_end].isspace():
+        while token_end < len(text) and not is_boundary(text[token_end]):
             token_end += 1
         first_match_by_token[token_start] = min(start, first_match_by_token.get(token_start, start))
         token_end_by_start[token_start] = token_end

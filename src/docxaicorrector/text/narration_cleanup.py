@@ -59,6 +59,7 @@ __all__ = [
     "clean_narration_paragraph",
     "find_emoji_sequences",
     "find_html_tags",
+    "unwrap_markdown_links",
 ]
 
 
@@ -281,6 +282,14 @@ _STRONG_UNDERSCORE = re.compile(r"(?<![\w_])__(?=\S)(.+?)(?<=\S)__(?![\w_])")
 _EMPHASIS_STAR = re.compile(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])")
 _EMPHASIS_UNDERSCORE = re.compile(r"(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])")
 _INLINE_SPACE = re.compile(r"[ \t ]+")
+
+
+def unwrap_markdown_links(text: str) -> str:
+    """``text`` with every Markdown link ``[label](target)`` (an image link too) replaced by its label: a listener
+    hears the visible text of a link, never its target. The same rule as the cleanup's inline step; spec 074
+    (Codex acceptance review 2026-11-11, finding 1) applies it to the audiobook source as well."""
+
+    return _LINK_PATTERN.sub(r"\1", text)
 
 
 def _is_decoration_glyph(char: str) -> bool:
