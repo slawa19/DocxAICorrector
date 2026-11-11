@@ -31,10 +31,10 @@
 | `narration_pdf_status` | `"built" \| "unavailable"` | |
 | `narration_pdf_unavailable_reason` | `str \| null` | код `data-model.md` §4 |
 | `narration_pdf_seconds` | `float` | стена конвертации, `0.0` если не запускалась |
-| `chapter_heading_level` | `int \| null` | уровень ранга 1 (FR-003 (а)) |
+| `chapter_heading_level` | `int \| null` | уровень главы — порог: `Heading 1` получают серии этого уровня и выше (FR-003 (а) в редакции спеки 074 FR-101…FR-103: самый верхний уровень, при котором ни одна глава не длиннее 400 абзацев) |
 | `heading_levels_present` | `list[int]` | различные уровни заголовков среди озвучиваемых групп |
 | `heading1_count` | `int` | число `Heading 1` = ожидаемое число глав Studio |
-| `demoted_heading_count` | `int` | абзацев из заголовков глубже ранга 1, записанных `Normal` |
+| `demoted_heading_count` | `int` | абзацев из заголовков глубже уровня главы, записанных `Normal` |
 | `heading_merge_count` | `int` | серий из ≥ 2 заголовков |
 | `heading_merges` | `list[{paragraph_ids: list[str], levels: list[int], style: str}]` | все слияния FR-003 (в); тексты не пишутся |
 | `studio_max_chapter_paragraph_count` | `int` | FR-006 |

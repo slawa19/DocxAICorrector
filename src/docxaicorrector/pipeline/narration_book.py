@@ -19,7 +19,10 @@ The rules (``data-model.md`` §7, research R9):
   ``ValueError`` (the late phase turns it into a WARNING and ships the book without the file).
 * **Chapters** — the 072 rule (``StudioLimits.chapter_count_for_limits``): a ``Heading 1`` plan
   paragraph opens a chapter titled with that paragraph's text (the merged series "A. B"); the
-  segments before the first one form a chapter with ``title: null``.
+  segments before the first one form a chapter with ``title: null``. Which series are ``Heading 1``
+  is decided ONCE, by the plan (spec 074 FR-101/FR-103: the series at or above ``plan.chapter_level``,
+  the topmost level whose chapters fit Studio); this module only follows the plan's styles, so
+  ``chapter_heading_level`` is a threshold and the file, the DOCX and the event always agree.
 * **Pause kinds.** The last segment of a series that became ``Heading 1`` — ``chapter``; of a
   series that became ``Normal`` — ``heading``; the segment before a segment with
   ``after_scene_break`` — ``scene_break``. A coincidence keeps the kind with the longer seconds
