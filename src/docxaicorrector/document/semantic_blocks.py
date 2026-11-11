@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 
 from docxaicorrector.document.structure_authority import (
     get_effective_structural_role,
@@ -20,6 +21,7 @@ from docxaicorrector.core.models import (
     ParagraphUnit,
 )
 from docxaicorrector.pipeline.output_validation import is_notes_run_paragraph
+from docxaicorrector.text.narration_residue import shorten_addresses_to_domain
 from docxaicorrector.validation.formatting_coverage import (
     _BACKMATTER_SECTION_TITLES,
     _normalize_structural_text,
@@ -336,16 +338,31 @@ def build_editing_jobs(
                 ]
             )
             position += len(block.paragraphs)
+        # Spec 074 FR-405: the reasons above are decided on the ORIGINAL text; from here on every narrated
+        # paragraph carries its web addresses shortened to the domain, so the request, the context, the
+        # coverage and residue source and the reading glossary all read one and the same shortened source.
+        source_blocks = [
+            DocumentBlock(
+                paragraphs=[
+                    _with_addresses_shortened(paragraph) if reason is None else paragraph
+                    for paragraph, reason in zip(block.paragraphs, block_reasons)
+                ]
+            )
+            for block, block_reasons in zip(blocks, narration_reasons_by_block)
+        ]
         context_blocks = [
             DocumentBlock(
                 paragraphs=[
                     paragraph for paragraph, reason in zip(block.paragraphs, block_reasons) if reason is None
                 ]
             )
-            for block, block_reasons in zip(blocks, narration_reasons_by_block)
+            for block, block_reasons in zip(source_blocks, narration_reasons_by_block)
         ]
+    else:
+        source_blocks = blocks
 
     for index, block in enumerate(blocks):
+        source_block = source_blocks[index]
         context_before = build_context_excerpt(context_blocks, index, context_before_chars, reverse=True)
         context_after = build_context_excerpt(context_blocks, index, context_after_chars, reverse=False)
         structural_roles = [_paragraph_structural_kind(paragraph, structure_phase=structure_phase) for paragraph in block.paragraphs]
@@ -390,8 +407,8 @@ def build_editing_jobs(
         ]
         job: dict[str, object] = {
             "job_kind": job_kind,
-            "target_text": block.text,
-            "target_text_with_markers": build_marker_wrapped_block_text(block.paragraphs, paragraph_ids=paragraph_ids),
+            "target_text": source_block.text,
+            "target_text_with_markers": build_marker_wrapped_block_text(source_block.paragraphs, paragraph_ids=paragraph_ids),
             "paragraph_ids": paragraph_ids,
             "structural_roles": structural_roles,
             # Spec 059 A-II: parallel to ``paragraph_ids``, one label per paragraph.
@@ -417,7 +434,7 @@ def build_editing_jobs(
             "paragraph_count": paragraph_count,
             "context_before": context_before,
             "context_after": context_after,
-            "target_chars": len(block.text),
+            "target_chars": len(source_block.text),
             "context_chars": len(context_before) + len(context_after),
             "structure_phase": structure_phase,
             "structure_source": structure_source,
@@ -494,6 +511,17 @@ def _build_semantic_block_units(
             continue
         units.append([paragraphs[index] for index in indexes])
     return units
+
+
+def _with_addresses_shortened(paragraph: ParagraphUnit) -> ParagraphUnit:
+    """Spec 074 FR-405: a copy of a narrated paragraph whose web addresses are shortened to the domain (the same
+    object when there is nothing to shorten). The copy lives only inside ``build_editing_jobs``: the jobs carry
+    its text, never the unit."""
+
+    shortened = shorten_addresses_to_domain(paragraph.text)
+    if shortened == paragraph.text:
+        return paragraph
+    return replace(paragraph, text=shortened, pdf_emphasis_runs=[])
 
 
 def _resolve_marker_paragraph_id(paragraph: ParagraphUnit, fallback_index: int) -> str:

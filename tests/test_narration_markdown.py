@@ -70,7 +70,8 @@ def test_cleanup_keeps_a_raw_url_and_the_detector_reports_it():
     cleaned = _clean(source)
 
     assert cleaned == "Текст с сырым адресом https://example.com/path и www.example.org внутри."
-    assert [finding.residue_class for finding in detect_narration_residue(cleaned)] == ["url_or_domain"]
+    # Spec 074 FR-403: the "/" of the path is a ``symbols`` residue as well.
+    assert [finding.residue_class for finding in detect_narration_residue(cleaned)] == ["symbols", "url_or_domain"]
 
 
 @pytest.mark.parametrize("glyph", ["•", "●", "◦", "‣"])
