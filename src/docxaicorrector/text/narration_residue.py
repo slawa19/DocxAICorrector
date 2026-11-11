@@ -12,6 +12,10 @@ one Latin letter, outside an address and not a roman numeral.
 
 The first seven classes (up to and including ``latin``) are repairable by the one repair call;
 ``html_left`` and ``emoji_left`` are a check on the deterministic cleanup itself and are only reported.
+
+The address form (spec 074 FR-302, FR-401) lives here too, because every reader of an address uses it: the
+mask of the reading glossary and of ``latin``, the ``url_or_domain`` class, and the audiobook source, where
+``shorten_addresses_to_domain`` replaces each web address by its domain (FR-405).
 """
 
 from __future__ import annotations
@@ -32,12 +36,15 @@ from docxaicorrector.text.narration_forms import (
 __all__ = [
     "REPAIRABLE_RESIDUE_CLASSES",
     "RESIDUE_CLASSES",
+    "AddressToken",
     "ResidueFinding",
+    "address_tokens",
     "detect_narration_residue",
     "is_all_caps_paragraph",
     "is_roman_numeral_form",
     "latin_units",
     "mask_url_or_domain",
+    "shorten_addresses_to_domain",
 ]
 
 RESIDUE_DIGITS = "digits"
@@ -77,7 +84,8 @@ SAMPLE_MAX_CHARS = 120
 _SAMPLE_LEAD_CHARS = 40
 _ALL_CAPS_MIN_WORD_LETTERS = 4
 _ALL_CAPS_MIN_WORDS = 2
-_SIGN_CHARS = frozenset("%№§&")
+# Spec 074 FR-403: "/" and "\" have no reading either; left in a narration they are a symbol to repair.
+_SIGN_CHARS = frozenset("%№§&/\\")
 _SUPERSCRIPT_SUBSCRIPT_DIGITS = frozenset("²³¹")
 _LETTER_RUN = re.compile(r"[^\W\d_]+")
 _ROMAN_RUN = "[IVXLCDM]{2,}"
@@ -92,6 +100,18 @@ _URL_OR_DOMAIN = re.compile(
     r"|www\.\S+"
     r"|(?<![\w.])(?:[^\W\d_][\w-]*\.)+[^\W\d_]{2,}(?![\w]))",
 )
+# Spec 074 FR-302 / FR-401: what can close a token after its address and is not part of it -- the markup the
+# import writes (emphasis delimiters, ``<u>``/``<sup>``/``<sub>`` tags), brackets and quotes, sentence
+# punctuation, and a note: a run of characters of category No (``¹²``) or a ``<sup>`` element.
+_ADDRESS_EDGE_MARKS = frozenset("*_<>()[]«»\"'“”‘’„")
+_ADDRESS_TRAILING_PUNCTUATION = frozenset(".,;:!?")
+_ADDRESS_CLOSERS = {")": "(", "]": "["}
+_TRAILING_NOTE_ELEMENT = re.compile(r"<sup>[^<>]*</sup>$")
+_TRAILING_TAG = re.compile(r"</?[A-Za-z]+>$")
+# FR-401: the host ends where the path, the query, the fragment or the port begins.
+_HOST_END = re.compile(r"[/?#:]")
+_SCHEME_SEPARATOR = "://"
+_WWW_PREFIX = "www."
 
 
 @dataclass(frozen=True)
@@ -99,6 +119,30 @@ class ResidueFinding:
     residue_class: str
     count: int
     sample: str
+
+
+@dataclass(frozen=True)
+class AddressToken:
+    """Spec 074 FR-401: one address -- the whole token around an address match (scheme, ``www.``, domain, path,
+    query; the local part of an e-mail), without the import's markup, the trailing punctuation and a note.
+    ``start``/``end`` are positions of the original string."""
+
+    start: int
+    end: int
+    text: str
+
+    @property
+    def domain(self) -> str | None:
+        """The host without the scheme and a leading ``www.``; ``None`` for an e-mail, which is not a web
+        address in the sense of FR-401."""
+
+        if "@" in self.text:
+            return None
+        before, separator, after = self.text.partition(_SCHEME_SEPARATOR)
+        host = _HOST_END.split(after if separator else before, maxsplit=1)[0]
+        if host[: len(_WWW_PREFIX)].lower() == _WWW_PREFIX:
+            host = host[len(_WWW_PREFIX) :]
+        return host or None
 
 
 def _is_digit_char(char: str) -> bool:
@@ -167,11 +211,120 @@ def is_roman_numeral_form(token: str) -> bool:
     return _ROMAN_FORM.fullmatch(stripped) is not None or all(_is_roman_numeral_char(char) for char in stripped)
 
 
-def mask_url_or_domain(text: str) -> str:
-    """``text`` with every address (scheme, ``www.`` or ``label.label``) replaced by spaces of the same length,
-    so the length of the string and the positions of everything else are kept."""
+def _trim_address_end(text: str, start: int, end: int) -> int:
+    """The end of ``text[start:end]`` without what closes a token and is not an address (FR-302 (b)): the
+    import's tags and a ``<sup>`` note, a run of No characters with the punctuation in front of it, trailing
+    punctuation, markup, quotes and unbalanced closing brackets."""
 
-    return _URL_OR_DOMAIN.sub(lambda match: " " * len(match.group()), text)
+    while end > start:
+        segment = text[start:end]
+        tag = _TRAILING_NOTE_ELEMENT.search(segment) or _TRAILING_TAG.search(segment)
+        if tag is not None:
+            end = start + tag.start()
+            continue
+        char = text[end - 1]
+        opener = _ADDRESS_CLOSERS.get(char)
+        if opener is not None and segment.count(opener) >= segment.count(char):
+            break
+        if (
+            unicodedata.category(char) == "No"
+            or char in _ADDRESS_EDGE_MARKS
+            or char in _ADDRESS_TRAILING_PUNCTUATION
+        ):
+            end -= 1
+            continue
+        break
+    return end
+
+
+def _is_letter_label(label: str) -> bool:
+    return len(label) >= 2 and all(unicodedata.category(char).startswith("L") for char in label)
+
+
+def _address_spans(text: str) -> list[tuple[int, int]]:
+    """Spec 074 FR-302: the addresses of ``text`` as ``(start, end)``. A note after an address is cut off the
+    match; a match without a scheme and without ``www.`` is an address only when its last label is letters
+    (category L), so a word before a note ("слово.¹⁵") is never one."""
+
+    spans: list[tuple[int, int]] = []
+    for match in _URL_OR_DOMAIN.finditer(text):
+        start = match.start()
+        end = _trim_address_end(text, start, match.end())
+        candidate = text[start:end]
+        if not candidate:
+            continue
+        if _SCHEME_SEPARATOR not in candidate and candidate[: len(_WWW_PREFIX)].lower() != _WWW_PREFIX:
+            if "." not in candidate or not _is_letter_label(candidate.rpartition(".")[2]):
+                continue
+        spans.append((start, end))
+    return spans
+
+
+def mask_url_or_domain(text: str) -> str:
+    """``text`` with every address (scheme, ``www.`` or ``label.label``; spec 074 FR-302 form) replaced by
+    spaces of the same length, so the length of the string and the positions of everything else are kept."""
+
+    spans = _address_spans(text)
+    if not spans:
+        return text
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        pieces.append(text[cursor:start])
+        pieces.append(" " * (end - start))
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def address_tokens(text: str) -> tuple[AddressToken, ...]:
+    """Spec 074 FR-401: the addresses of ``text`` as whole tokens, in order, one per token.
+
+    A token is the run of non-space characters around an address match. It begins at its first match -- or,
+    for an e-mail, at the local part in front of ``@`` -- so markup and brackets before the address are not in
+    it, and it ends before the markup, punctuation and note that close it (``_trim_address_end``)."""
+
+    first_match_by_token: dict[int, int] = {}
+    token_end_by_start: dict[int, int] = {}
+    for start, end in _address_spans(text):
+        token_start = start
+        while token_start > 0 and not text[token_start - 1].isspace():
+            token_start -= 1
+        token_end = end
+        while token_end < len(text) and not text[token_end].isspace():
+            token_end += 1
+        first_match_by_token[token_start] = min(start, first_match_by_token.get(token_start, start))
+        token_end_by_start[token_start] = token_end
+    tokens: list[AddressToken] = []
+    for token_start in sorted(first_match_by_token):
+        core_start = first_match_by_token[token_start]
+        if core_start > token_start and text[core_start - 1] == "@":
+            while core_start > token_start and text[core_start - 1] not in _ADDRESS_EDGE_MARKS:
+                core_start -= 1
+        core_end = _trim_address_end(text, core_start, token_end_by_start[token_start])
+        if core_end > core_start:
+            tokens.append(AddressToken(start=core_start, end=core_end, text=text[core_start:core_end]))
+    return tuple(tokens)
+
+
+def shorten_addresses_to_domain(text: str) -> str:
+    """Spec 074 FR-405: ``text`` with every web address (FR-401) replaced by its domain -- the scheme, a leading
+    ``www.``, the path, the query and the fragment are dropped; the markup, punctuation and note around the
+    address stay. An e-mail and an address that is already its bare domain are left as they are."""
+
+    pieces: list[str] = []
+    cursor = 0
+    for token in address_tokens(text):
+        domain = token.domain
+        if domain is None or domain == token.text:
+            continue
+        pieces.append(text[cursor : token.start])
+        pieces.append(domain)
+        cursor = token.end
+    if not pieces:
+        return text
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def latin_units(text: str) -> tuple[LetterSeries, ...]:
@@ -212,7 +365,7 @@ def detect_narration_residue(text: str) -> tuple[ResidueFinding, ...]:
     if all_caps:
         findings.append(ResidueFinding(RESIDUE_ALL_CAPS, 1, _sample(text, caps_position)))
 
-    url_positions = [match.start() for match in _URL_OR_DOMAIN.finditer(text)]
+    url_positions = [start for start, _ in _address_spans(text)]
     if url_positions:
         findings.append(ResidueFinding(RESIDUE_URL_OR_DOMAIN, len(url_positions), _sample(text, url_positions[0])))
 

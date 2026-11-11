@@ -117,9 +117,14 @@ SNAPSHOT: list[dict[str, object]] = (
   'residue': (),
   'fragment': False,
   'leakage': 'Подробности даны в главе XIV и'},
+ # Spec 074 FR-403 changed this entry on purpose: the "/" of the address is now a ``symbols`` residue.
  {'coverage_same': (7, 7, 1.0),
   'coverage_half': (7, 4, 0.5714285714285714),
-  'residue': (('url_or_domain',
+  'residue': (('symbols',
+               1,
+               'Адрес страницы www.example.test/page указан внизу, а письмо ушло с домена mail.example.test '
+               'сегодня.'),
+              ('url_or_domain',
                2,
                'Адрес страницы www.example.test/page указан внизу, а письмо ушло с домена mail.example.test '
                'сегодня.'),),
@@ -136,9 +141,10 @@ SNAPSHOT: list[dict[str, object]] = (
   'residue': (('tag_form', 2, '[pause] Он замолчал [whisper] и медленно вышел из комнаты, не оглядываясь назад.'),),
   'fragment': False,
   'leakage': 'Цена выросла на 15 % за 3'},
+ # Spec 074 FR-403: the "/" of the closing tag is a fifth symbol next to the four angle brackets.
  {'coverage_same': (6, 6, 1.0),
   'coverage_half': (6, 4, 0.6666666666666666),
-  'residue': (('symbols', 4, '<b>Жирный</b> текст остался в абзаце вместе с разметкой, которую никто не убрал.'),
+  'residue': (('symbols', 5, '<b>Жирный</b> текст остался в абзаце вместе с разметкой, которую никто не убрал.'),
               ('html_left', 2, '<b>Жирный</b> текст остался в абзаце вместе с разметкой, которую никто не убрал.')),
   'fragment': False,
   'leakage': 'pause] Он замолчал [whisper] и медленно'},
