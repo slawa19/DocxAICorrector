@@ -16,8 +16,8 @@
 
 ## Requirement Completeness
 
-- [x] No [NEEDS CLARIFICATION] markers remain; one owner question (В-1, source-side address shortening) with a
-      recommendation; it does not block the FRs as written
+- [x] No [NEEDS CLARIFICATION] markers remain; no open owner question (source-side address shortening decided by the
+      orchestrator as FR-405)
 - [x] Requirements are testable and unambiguous (each FR has an offline replay or synthetic criterion)
 - [x] Success criteria are measurable (chapter counts, glossary entries rewritten, addresses per book)
 - [x] Every rule measured on ALL available documents, including those without the defect (15 documents, 6 glossaries /
