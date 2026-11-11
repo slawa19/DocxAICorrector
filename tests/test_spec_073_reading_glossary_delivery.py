@@ -44,7 +44,7 @@ from docxaicorrector.text.glossary_pass import glossary_max_output_tokens
 _MARKER = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
 
 _READING_ABC = "эй-би-си"
-_READING_XYZ = "икс-игрек-зет"
+_READING_XYZ = "икс-уай-зед"  # spec 074 FR-303: the letter-name convention (a model answer in it is not rewritten)
 
 _SECTION_ABC = f"{READING_GLOSSARY_SECTION_HEADER}\n- ABC -> {_READING_ABC}"
 _SECTION_XYZ = f"{READING_GLOSSARY_SECTION_HEADER}\n- XYZ -> {_READING_XYZ}"
