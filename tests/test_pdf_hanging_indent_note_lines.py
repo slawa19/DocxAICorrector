@@ -203,6 +203,31 @@ def test_numbered_instruction_at_body_size_stays_narrated() -> None:
     assert not any("removing the cover. Follow the isolation" in text for text, _ in reasons)
 
 
+def test_body_size_numbered_line_after_a_small_print_entry_stays_narrated() -> None:
+    # Codex review round 2, P1: the first two lines are small print and join by the rule; the
+    # third, a numbered line at the BODY size, used to join them through the ordinary body
+    # merge, and the paragraph -- a chain 1, 2 with a citation mark -- left the narration
+    # together with that body-size line. A numbered line at the body size after small print
+    # starts a paragraph of its own.
+    spans = _lines(
+        ("1 Disconnect the supply before opening the enclosure or removing the cover.", _LEFT, 410.0, _SMALL),
+        ("Follow the isolation procedure described in the manual (2024).", _HANG, 380.0, _SMALL),
+        ("2 Verify the absence of voltage before touching any exposed conductor.", _LEFT, 400.0),
+    )
+
+    reasons = _narration_reasons(spans)
+
+    body_line = [(text, reason) for text, reason in reasons if "Verify the absence" in text]
+    assert body_line
+    assert all(reason is None for _, reason in body_line), body_line
+    # The small-print pair stays joined, and alone it is one entry without a lead -- not a
+    # run of notes -- so it is narrated too.
+    small_print = [(text, reason) for text, reason in reasons if "removing the cover. Follow the isolation" in text]
+    assert small_print
+    assert all(reason is None for _, reason in small_print), small_print
+    assert not any("(2024). 2 Verify" in text for text, _ in reasons)
+
+
 def test_rule_never_fires_when_the_body_size_is_unknown() -> None:
     # Condition: the body size is known. Without it nothing says the lines are small print.
     def _profile(body_font_size: float | None):
