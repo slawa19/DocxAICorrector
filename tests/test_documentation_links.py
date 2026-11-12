@@ -45,7 +45,9 @@ _PATHLIKE_EXT = (".md", ".py", ".toml", ".txt", ".json", ".sh", ".ps1", ".cfg")
 def _is_pathlike(token: str) -> bool:
     if not token or token != token.strip():
         return False
-    if token.startswith(("http://", "https://", "mailto:", "#", ".run")):
+    # ``.run`` and ``.venv`` exist only in a local checkout (gitignored): a doc may cite them, CI cannot resolve them.
+    # ``.venv`` joined on 2026-11-12 after CI had been red since 2026-11-06 on AGENTS.md citing the installed Streamlit.
+    if token.startswith(("http://", "https://", "mailto:", "#", ".run", ".venv")):
         return False
     if any(ch in token for ch in "<>*() \t\r\n") or "::" in token or "..." in token:
         return False
