@@ -307,6 +307,33 @@ def test_the_refused_main_file_is_not_deleted_when_its_replacement_went_next_to_
     assert sorted(p.name for p in folder.iterdir()) == ["a_edited (новая).docx", "a_edited.docx"]
 
 
+def test_a_locked_book_file_keeps_its_compound_extension_so_the_studio_list_sees_it(tmp_path, monkeypatch):
+    # Studio review 2026-11-12, finding 19: the fallback was ``a.narration (новая).json``, which the studio's
+    # results list (``*.narration.json``) does not see; the marker now goes before the compound extension.
+    out = tmp_path / "out"
+    folder = out / "a"
+    folder.mkdir(parents=True)
+    (folder / "a.narration.json").write_bytes(b'{"old": "book"}')
+    (folder / "a.tts.txt").write_bytes(b"old text")
+    real_write = results_folder._write_atomic
+
+    def locked(path: Path, data: bytes) -> None:
+        if path.name in {"a.narration.json", "a.tts.txt"}:
+            raise PermissionError(13, "in use")
+        real_write(path, data)
+
+    monkeypatch.setattr(results_folder, "_write_atomic", locked)
+    results_folder.publish_result_files(
+        source_name="a.docx",
+        artifact_paths=_group(tmp_path, docx_path=b"d", tts_text_path=b"new text", narration_book_path=b'{"new": 1}'),
+        results_dir=out,
+    )
+
+    assert (folder / "a (новая).narration.json").read_bytes() == b'{"new": 1}'
+    assert (folder / "a (новая).tts.txt").read_bytes() == b"new text"
+    assert sorted(p.name for p in folder.glob("*.narration.json")) == ["a (новая).narration.json", "a.narration.json"]
+
+
 def test_a_stale_file_that_cannot_be_removed_is_reported_and_the_rest_goes(tmp_path, monkeypatch):
     out = tmp_path / "out"
     five = _group(tmp_path, docx_path=b"d", tts_text_path=b"t", narration_book_path=b"{}")

@@ -119,6 +119,18 @@ def _file_name(stem: str, suffix: str) -> str:
 
 
 def _renamed_variant(name: str) -> str:
+    """``(новая)`` goes before the whole compound extension of a managed name (``a (новая).narration.json``,
+    ``a (новая).tts.txt``, ``a_edited (новая).docx``), so a reader matching ``*.narration.json`` — the studio's
+    results list — still sees the file. Before 2026-11-12 (studio review, finding 19) it went before the last
+    dot only: ``a.narration (новая).json``; ``_legacy_renamed_variant`` keeps recognising that form."""
+    for _key, suffix in PUBLISHED_FILE_SUFFIXES:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            extension = suffix[suffix.index("."):]
+            return f"{name[: -len(extension)]}{NEW_FILE_MARKER}{extension}"
+    return _legacy_renamed_variant(name)
+
+
+def _legacy_renamed_variant(name: str) -> str:
     path = Path(name)
     return f"{path.stem}{NEW_FILE_MARKER}{path.suffix}"
 
@@ -236,7 +248,7 @@ def _remove_stale_managed_files(
     """
     for _key, suffix in PUBLISHED_FILE_SUFFIXES:
         main_name = _file_name(source_stem, suffix)
-        for name in (main_name, _renamed_variant(main_name)):
+        for name in dict.fromkeys((main_name, _renamed_variant(main_name), _legacy_renamed_variant(main_name))):
             if name in keep:
                 continue
             candidate = folder / name
