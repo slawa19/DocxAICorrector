@@ -71,6 +71,11 @@ _BLANK_PAGE_NOTICE_PATTERN = re.compile(
 )
 _TERMINAL_SENTENCE_PUNCTUATION = ".!?;:»”\"'"
 _SUPERSCRIPT_REFERENCE_TAIL_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹ "
+# A line that reaches this share of the body column did not end short: the body merge reads a
+# shorter line before a new sentence as a paragraph end, the list merge a longer one as a line
+# the item ran on from, and spec 078 a longer numbered line as one that wrapped. One value,
+# named in spec 078 where it had been written out twice; the value is unchanged.
+_FULL_LINE_FILL_RATIO = 0.72
 # Spec 064 FR-007: two spans are in one table row when their tops differ by at most this share
 # of a line's height and their sizes by less than this many points.
 _TABLE_ROW_BASELINE_TOLERANCE = 0.3
@@ -2921,7 +2926,10 @@ def _page_torn_continuation_rationale(
     the running head between the halves is dropped (FR-007) -- 29 of 32. The notes-run
     alternative (spec 068 FR-003) joins the two chapter-end notes of Money and Sustainability
     set on pages with no line at the body size -- 31 of 32, still no false one. Not joined:
-    one bibliography entry inside a references section, which belongs to the notes-join."""
+    one bibliography entry inside a references section, which belongs to the notes-join.
+    Re-measured 2026-11-12 with spec 078's hanging-indent rule, which changes the note
+    paragraphs of Money and Sustainability: the same joins on every book (27 body, 2 notes
+    run), the rule on or off."""
     if head.role != "body" or head.structural_role != "body":
         return None
     if tail.role != "body" or tail.structural_role != "body":
@@ -3072,7 +3080,7 @@ def _can_merge_body_span(
         and current_text
         and previous_sentence_text[-1] in _TERMINAL_SENTENCE_PUNCTUATION
         and _starts_like_new_body_sentence(current_text)
-        and _span_line_fill_ratio(previous, layout_profile) < 0.72
+        and _span_line_fill_ratio(previous, layout_profile) < _FULL_LINE_FILL_RATIO
         and (
             _is_near_body_left(current, layout_profile)
             or _is_near_paragraph_left(current, paragraph_left_x0, layout_profile)
@@ -3091,7 +3099,8 @@ def _is_near_paragraph_left(
 
     The sentence-end boundary in `_can_merge_body_span` -- the previous line ends a sentence
     (terminal punctuation, optionally followed by a superscript reference: "settled.” ¹¹"),
-    ends short (fill < 0.72), and the next line starts a new sentence at the left edge --
+    ends short (fill < 0.72, `_FULL_LINE_FILL_RATIO`), and the next line starts a new
+    sentence at the left edge --
     read that left edge only as the document's BODY margin. A quotation or a box set apart
     from the body has its own margin, so inside it the boundary never fired: Money and
     Sustainability sets its body at x0 5.0 and Box 4.1 at 33.8, and a quotation's last line
@@ -3103,7 +3112,8 @@ def _is_near_paragraph_left(
     Everything p. 207 (1); Creating Wealth pp. 23, 72, 93, 155-156 (13: a dialogue, a list
     of principles, resource entries); Money and Sustainability pp. 9, 54, 57, 73-74, 77, 81,
     91, 105, 134-135 (24, Box 4.1 among them); Rethinking Money none. Headings, levels 1-2,
-    superscripts and the symbol multiset unchanged."""
+    superscripts and the symbol multiset unchanged. Re-measured 2026-11-12 with spec 078's
+    hanging-indent rule: the same 38 boundaries on the same pages, the rule on or off."""
     if paragraph_left_x0 is None:
         return False
     body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
@@ -3125,13 +3135,55 @@ def _looks_like_body_paragraph_indent_boundary(
     indent_delta = current_x0 - previous_x0
     body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
     if indent_delta >= body_leading * 0.45:
-        return True
+        # Spec 078: the indent under a full line that opens with a note number is that
+        # entry's hanging indent, not the first-line indent of the next paragraph.
+        return not _continues_hanging_numbered_line(
+            previous, current, layout_profile=layout_profile
+        )
     if layout_profile.body_left_x0 is None or not _is_near_body_left(current, layout_profile):
         return False
     if previous_text[-1] not in _TERMINAL_SENTENCE_PUNCTUATION:
         return False
     first_char = current_text[0]
     return first_char in _OPENING_TEXT_BOUNDARY_CHARS or first_char.isupper()
+
+
+def _continues_hanging_numbered_line(
+    previous: PdfTextSpan,
+    current: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """Spec 078: `current` is the wrapped line of a numbered entry set with a HANGING indent.
+
+    A note set with a hanging indent puts its number at the margin and every wrapped line
+    further right; the first-line-indent branch above reads that step as a new paragraph and
+    tears each such note after its first line. All of it is required:
+      * `previous` opens with a note number (`opens_with_note_number`, the spec 068 form: a
+        1-3 digit token without a full stop, whitespace, then a capital or an entry opener);
+      * `current` does not -- an indented line that opens with a number is the next entry;
+      * both lines are set in one size (`_font_sizes_match`);
+      * `previous` is a FULL line: it reaches `_FULL_LINE_FILL_RATIO` of the body column, the
+        share the body and list merges already read as a line that did not end short. A line
+        wraps only when it is full, so a numbered line that ends short -- a numbered heading
+        ("3 Results"), a one-line list item, a one-line note -- is never continued by the
+        indented line under it, which stays the first line of the next paragraph.
+    The step itself is the one the branch above measured (at least 0.45 of the body leading);
+    the vertical-gap limit of `_can_merge_body_span` still applies after this. Only lines are
+    joined: no text is dropped or rewritten.
+
+    Measured on the four corpus PDFs (2026-11-12): fires 62 times, all in Money and
+    Sustainability's chapter-end notes (number at x0 5.0, wrapped lines at 27.3, one at 33.8;
+    10.8 pt against a 14.5 pt body), every one the second line of the note above it; the
+    numbered lines fill 0.867-1.0 of the column, nine of them end a sentence. Not one line of
+    Rethinking Money, The Value of Everything or Creating Wealth has this form."""
+    previous_text = _normalize_text(previous.text)
+    current_text = _normalize_text(current.text)
+    if not opens_with_note_number(previous_text) or opens_with_note_number(current_text):
+        return False
+    if not _font_sizes_match(_span_font_size(previous), _span_font_size(current)):
+        return False
+    return _span_line_fill_ratio(previous, layout_profile) >= _FULL_LINE_FILL_RATIO
 
 
 def _starts_like_new_body_sentence(text: str) -> bool:
@@ -3200,7 +3252,7 @@ def _can_merge_list_continuation_span(
         return False
     return (
         _starts_like_sentence_continuation(current_text)
-        or _span_line_fill_ratio(previous, layout_profile) >= 0.72
+        or _span_line_fill_ratio(previous, layout_profile) >= _FULL_LINE_FILL_RATIO
     )
 
 
