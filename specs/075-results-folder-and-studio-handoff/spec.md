@@ -184,3 +184,7 @@ AudiobookStudio (`D:\Work\Projects\AudiobookStudio`, API `POST /api/books`, `doc
   `studio_dir_missing`. Headless Chromium по ссылке `http://localhost:8611/#book=<id>` открыл эту книгу, адрес стал без хэша.
   Экран результата Streamlit вживую не открывался (нужен платный прогон); его устойчивость закрыта тестами с подменами.
   Второй раунд Codex не запускался: правки раунда 1 точечные, у каждой есть тест, падающий без неё.
+- 2026-11-12: ревью студии (AudiobookStudio `docs/specs/002-review-2026-11-12.md`, находка 19): запасное имя занятого
+  файла было `a.narration (новая).json`, и список студии (`*.narration.json`) его не видел. Теперь «(новая)» стоит перед
+  составным расширением (`a (новая).narration.json`, `a (новая).tts.txt`); варианты старой формы уборка по-прежнему
+  узнаёт (`runtime/results_folder.py: _renamed_variant`, тест в `tests/test_spec_075_review_round1.py`).
