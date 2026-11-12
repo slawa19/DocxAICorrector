@@ -3061,6 +3061,10 @@ def _can_merge_body_span(
         previous, current, layout_profile=layout_profile
     ):
         return False
+    if _opens_body_size_entry_after_small_print(
+        previous, current_text, current, layout_profile=layout_profile
+    ):
+        return False
     previous_font_size = previous.font_size if isinstance(previous.font_size, (int, float)) else 10.0
     current_font_size = current.font_size if isinstance(current.font_size, (int, float)) else previous_font_size
     vertical_gap = max(0.0, float(current.top) - float(previous.bottom))
@@ -3195,6 +3199,27 @@ def _continues_hanging_numbered_line(
     ):
         return False
     return _span_line_fill_ratio(previous, layout_profile) >= _FULL_LINE_FILL_RATIO
+
+
+def _opens_body_size_entry_after_small_print(
+    previous: PdfTextSpan,
+    current_text: str,
+    current: PdfTextSpan,
+    *,
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """Spec 078 (Codex review round 2, P1): a line set at the body size that opens with a note
+    number does not continue a paragraph whose last line is set below the body size -- it
+    starts a paragraph of its own. Without this, small print joined by the hanging-indent rule
+    ("1 Disconnect ...", its indented line "... (2024).") took the next numbered body-size line
+    in through the ordinary merge, read as a run of notes and left the narration with it.
+    Same size test as the rule (`_is_set_below_body_size`). Measured on the four corpus PDFs
+    (2026-11-13): refuses none of the 22 084 body merges there."""
+    return (
+        opens_with_note_number(current_text)
+        and _is_set_below_body_size(_span_font_size(previous), layout_profile)
+        and not _is_set_below_body_size(_span_font_size(current), layout_profile)
+    )
 
 
 def _is_set_below_body_size(size: float | None, layout_profile: _PdfHeadingLayoutProfile) -> bool:
