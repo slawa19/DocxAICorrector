@@ -210,7 +210,11 @@ wsl.exe -d Debian --cd "D:\Work\Projects\DocxAICorrector" -- bash -lc "<кома
 ### Прочее по runtime
 
 - Canonical setup нового WSL runtime: `bash scripts/setup-wsl.sh` или task `Setup Project`. Python-зависимости — `requirements.txt`, системные — `system-requirements.apt`.
-- PDF import требует LibreOffice (`soffice`/`libreoffice`) внутри WSL (фильтр `--infilter=writer_pdf_import`); не называйте env готовым для PDF без проверки его наличия.
+- PDF импортируется по текстовому слою через pdfminer (`processing/processing_runtime.py`, `_convert_pdf_text_layer_to_docx`),
+  OCR — по `DOCXAI_PDF_OCR_IMPORT_ENABLED` (нужны `ocrmypdf` и Tesseract). LibreOffice (`soffice`) внутри WSL нужен для
+  старого `.doc` и для PDF текста озвучки; не называйте env готовым для них без проверки его наличия. До 2026-11-12 здесь
+  стояло «PDF import требует LibreOffice (`--infilter=writer_pdf_import`)»: функция `_convert_pdf_to_docx` осталась в коде, но
+  не вызывается.
 - Structural preparation snapshot: `bash scripts/run-structural-preparation-diagnostic.sh <profile_id> [--run-profile-id <id>]` или task `Run Structural Preparation Diagnostic` — preferred entrypoint поверх ad-hoc `python -c` с JSON-печатью. Для persisted snapshot перенаправляйте stdout в файл (`.run/first20_structural_snapshot.json`), а не в одноразовый one-liner.
 
 ## Line Ending Contract
