@@ -84,3 +84,6 @@ artifacts/**/*.tts.txt
 artifacts/**/*.docx
 artifacts/**/*_ru_literary_edit.md
 artifacts/**/validator_review_data.json
+
+# Spec 075: durable folder of finished results (DOCX_AI_RESULTS_DIR)
+translations/

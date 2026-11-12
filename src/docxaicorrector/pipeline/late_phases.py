@@ -50,6 +50,7 @@ from docxaicorrector.pipeline.narration_postprocess import (  # noqa: F401
 from docxaicorrector.pipeline.narration_book import NarrationBookProducer, NarrationBookSource
 from docxaicorrector.pipeline.narration_exports import NarrationBookInputs, NarrationExports, build_narration_exports
 from docxaicorrector.runtime.build_info import resolve_git_head
+from docxaicorrector.runtime import results_folder as results_folder_module
 from docxaicorrector.reader_cleanup_mvp import write_reader_cleanup_diagnostics
 from docxaicorrector.pipeline.contracts import LatePhaseStopped
 
@@ -613,6 +614,64 @@ def _log_post_delivery_secondary_failure(*, dependencies: Any, filename: str, ex
         )
     except Exception:  # pragma: no cover - logging itself must never break delivery
         pass
+
+
+def _publish_results_folder(
+    *,
+    dependencies: Any,
+    emitters: Any,
+    context: Any,
+    result_artifact_paths: Mapping[str, str],
+) -> None:
+    """Spec 075 FR-002: copy the user-visible result files into the durable results folder.
+
+    Runs only on the delivered (not blocked) path, right after ``ui_result_artifacts_saved``. A
+    SECONDARY write by the Round-12 F1 rule: any exception is logged as
+    ``ui_results_publish_failed`` and swallowed, so a full disk or a locked folder never hides the
+    delivered result. The published folder travels to the result screen as ``latest_results_folder``.
+    """
+    filename = context.uploaded_filename
+    try:
+        results_dir = results_folder_module.resolve_results_dir(getattr(context, "app_config", None))
+        outcome = results_folder_module.publish_result_files(
+            source_name=filename,
+            artifact_paths=result_artifact_paths,
+            results_dir=results_dir,
+        )
+        if outcome.failed:
+            dependencies.log_event(
+                logging.WARNING,
+                "ui_results_publish_failed",
+                "Часть файлов не скопирована в папку результатов; итоговый результат доставлен.",
+                filename=filename,
+                folder=str(outcome.folder) if outcome.folder is not None else None,
+                failed_files=[{"file": name, "error": error} for name, error in outcome.failed],
+            )
+        if outcome.folder is None:
+            return
+        dependencies.log_event(
+            logging.INFO,
+            "ui_results_published",
+            "Результат скопирован в папку результатов.",
+            filename=filename,
+            folder=str(outcome.folder),
+            paths=list(outcome.paths),
+            unchanged_count=len(outcome.unchanged),
+            renamed_count=len(outcome.renamed),
+        )
+        emitters.emit_state(context.runtime, latest_results_folder=str(outcome.folder))
+    except Exception as exc:
+        try:
+            dependencies.log_event(
+                logging.WARNING,
+                "ui_results_publish_failed",
+                "Не удалось скопировать результат в папку результатов; итоговый результат доставлен.",
+                filename=filename,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+        except Exception:  # pragma: no cover - logging itself must never break delivery
+            pass
 
 
 def _narration_book_inputs(
@@ -1546,6 +1605,14 @@ def finalize_processing_success(
         # log calls themselves. ``LatePhaseStopped`` derives from ``BaseException`` by
         # design, so cooperative cancellation still propagates through all of these handlers.
         try:
+            # Spec 075 FR-002: the durable copy of the files the screen offers for download. It
+            # catches its own failures; the outer guard is only the backstop.
+            _publish_results_folder(
+                dependencies=dependencies,
+                emitters=emitters,
+                context=context,
+                result_artifact_paths=result_artifact_paths,
+            )
             # F12: reader-cleanup diagnostics are a SECONDARY artifact. A save failure
             # here must NOT claim the delivered result was not saved — it logs its own
             # WARNING and the primary result stays reported as persisted.

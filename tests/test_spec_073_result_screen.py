@@ -51,6 +51,11 @@ class _Column:
     def download_button(self, *args, **kwargs) -> None:
         self._recorder.events.append(("button", kwargs))
 
+    def button(self, *args, **kwargs) -> bool:
+        # Spec 075: the "Open in studio" button shares the narration row; it is not a download.
+        self._recorder.events.append(("action_button", kwargs))
+        return False
+
 
 @pytest.fixture
 def recorder(monkeypatch, make_session_state) -> Recorder:
@@ -97,7 +102,8 @@ def _names(buttons: list[dict]) -> list[str]:
 def test_audiobook_all_formats_book_file_is_last_in_the_narration_row(recorder):
     _render(_exports())
 
-    assert recorder.column_counts == [4, 2]
+    # Spec 075 FR-004: the narration row gained "Open in studio" (a fifth, non-download cell).
+    assert recorder.column_counts == [5, 2]
     assert _names(recorder.buttons) == [
         "My Book.tts.docx",
         "My Book.tts.pdf",

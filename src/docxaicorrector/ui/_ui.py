@@ -11,6 +11,7 @@ import streamlit as st
 from docxaicorrector.ui.application_flow import flatten_normalization_metrics
 from docxaicorrector.core.config import (
     describe_provider_availability,
+    load_app_config,
     get_image_model_choice,
     get_image_model_role_overrides,
     get_text_model_default,
@@ -28,6 +29,17 @@ from docxaicorrector.ui.review_presentation import (
     build_review_presentation,
 )
 from docxaicorrector.runtime.artifacts import _build_formatting_review_text
+from docxaicorrector.runtime.results_folder import (
+    open_in_file_manager,
+    resolve_project_path,
+    windows_display_path,
+)
+from docxaicorrector.runtime.studio_handoff import (
+    DEFAULT_STUDIO_DIR,
+    DEFAULT_STUDIO_URL,
+    StudioHandoffOutcome,
+    send_book_to_studio,
+)
 from docxaicorrector.runtime.state import (
     get_image_assets,
     get_image_processing_summary,
@@ -1112,6 +1124,114 @@ def _render_formatting_review_block(
         st.caption(t("result.review_accepted_note"))
 
 
+_STUDIO_HANDOFF_STATE_KEY = "studio_handoff_result"
+# Literal keys, so the catalog guard sees every one; an unknown code degrades to ``bad_response``.
+_STUDIO_ERROR_KEYS = {
+    "studio_dir_missing": "result.studio_error.studio_dir_missing",
+    "start_failed": "result.studio_error.start_failed",
+    "unreachable": "result.studio_error.unreachable",
+    "rejected": "result.studio_error.rejected",
+    "bad_response": "result.studio_error.bad_response",
+}
+
+
+def _studio_settings() -> tuple[str, Path]:
+    """The studio address and folder from the app config; defaults when the config cannot be read."""
+    try:
+        config = load_app_config()
+        studio_url = str(config["studio_url"] or DEFAULT_STUDIO_URL)
+        studio_dir_setting = config["studio_dir"]
+    except Exception:
+        studio_url, studio_dir_setting = DEFAULT_STUDIO_URL, DEFAULT_STUDIO_DIR
+    return studio_url, resolve_project_path(studio_dir_setting, default=DEFAULT_STUDIO_DIR)
+
+
+def _book_token(book_json: str) -> str:
+    return hashlib.sha1(book_json.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+
+def _handle_studio_handoff_click(book_json: str) -> None:
+    """Post the book file to the studio (starting it when it is down) and remember the outcome.
+
+    The outcome is keyed by the book's own hash, so it is shown under the book it belongs to and
+    never under the next run's file.
+    """
+    studio_url, studio_dir = _studio_settings()
+    with st.spinner(t("result.studio_sending_spinner")):
+        outcome = send_book_to_studio(
+            book_json.encode("utf-8"), studio_url=studio_url, studio_dir=studio_dir
+        )
+    _log_studio_handoff(outcome, studio_url=studio_url)
+    st.session_state[_STUDIO_HANDOFF_STATE_KEY] = {
+        "token": _book_token(book_json),
+        "ok": outcome.ok,
+        "link": outcome.link,
+        "error_code": outcome.error_code,
+        "error_detail": outcome.error_detail,
+        "http_status": outcome.http_status,
+        "studio_url": studio_url,
+        "studio_dir": str(studio_dir),
+    }
+
+
+def _log_studio_handoff(outcome: StudioHandoffOutcome, *, studio_url: str) -> None:
+    if outcome.ok:
+        log_event(
+            logging.INFO,
+            "studio_handoff_succeeded",
+            "Файл книги отправлен в студию озвучки.",
+            book_id=outcome.book_id,
+            studio_url=studio_url,
+            started_studio=outcome.started_studio,
+        )
+        return
+    log_event(
+        logging.WARNING,
+        "studio_handoff_failed",
+        "Не удалось отправить файл книги в студию озвучки.",
+        reason=outcome.error_code,
+        detail=outcome.error_detail,
+        http_status=outcome.http_status,
+        studio_url=studio_url,
+        started_studio=outcome.started_studio,
+    )
+
+
+def _render_studio_handoff_result(book_json: str) -> None:
+    state = st.session_state.get(_STUDIO_HANDOFF_STATE_KEY)
+    if not isinstance(state, Mapping) or state.get("token") != _book_token(book_json):
+        return
+    if state.get("ok") and state.get("link"):
+        st.success(t("result.studio_handoff_sent"))
+        st.link_button(t("result.studio_open_book_link"), str(state["link"]))
+        return
+    error_code = str(state.get("error_code") or "bad_response")
+    message_key = _STUDIO_ERROR_KEYS.get(error_code, _STUDIO_ERROR_KEYS["bad_response"])
+    # A missing studio folder names the folder that was looked at (the outcome's detail).
+    path = str(state.get("error_detail") if error_code == "studio_dir_missing" else state.get("studio_dir") or "")
+    st.error(
+        t(
+            message_key,
+            path=path,
+            detail=str(state.get("error_detail") or ""),
+            status=state.get("http_status") or "",
+            url=str(state.get("studio_url") or ""),
+        )
+    )
+
+
+def _render_results_folder_line(results_folder: str | None) -> None:
+    """Spec 075 FR-003: where the durable copy of this result lives, and a button to open it."""
+    folder = str(results_folder or "").strip()
+    if not folder:
+        return
+    st.markdown(t("result.results_folder_line", path=windows_display_path(folder)))
+    if st.button(t("result.open_results_folder"), key="open_results_folder_button", width="content"):
+        error = open_in_file_manager(folder)
+        if error is not None:
+            st.error(t("result.open_results_folder_failed", error=error))
+
+
 def _render_audiobook_downloads(
     *,
     docx_bytes: bytes | None,
@@ -1175,9 +1295,19 @@ def _render_audiobook_downloads(
             }
         )
 
+    # Spec 075 FR-004: "Open in studio" sits next to the book file's download, only when the book
+    # file exists and the result is not blocked (a blocked file is a diagnostic, not a result).
+    studio_book_json = book_json if isinstance(book_json, str) and book_json and not blocked else None
     st.caption(t("result.narration_section_title"))
-    for column, button in zip(st.columns(len(narration_buttons)), narration_buttons):
+    row_columns = st.columns(len(narration_buttons) + (1 if studio_book_json else 0))
+    for column, button in zip(row_columns, narration_buttons):
         column.download_button(on_click="ignore", width="stretch", **cast(dict[str, Any], button))
+    if studio_book_json:
+        if row_columns[-1].button(
+            t("result.studio_open_button"), key="studio_handoff_button", width="stretch"
+        ):
+            _handle_studio_handoff_click(studio_book_json)
+        _render_studio_handoff_result(studio_book_json)
     if docx_reason is not None:
         st.caption(t("result.narration_docx_unavailable"))
     if pdf_reason is not None:
@@ -1227,10 +1357,13 @@ def render_result_bundle(
     cost_estimate_snapshot: Mapping[str, object] | None = None,
     cost_actual: Mapping[str, object] | None = None,
     narration_exports: Mapping[str, object] | None = None,
+    results_folder: str | None = None,
 ) -> None:
     delivery_status = str((delivery_disposition or {}).get("status", "accepted") or "accepted")
     blocked = delivery_status == "blocked"
     if blocked:
+        # A blocked result is diagnostics, not a result: it was never copied to the results folder.
+        results_folder = None
         message_key = str((delivery_disposition or {}).get("message_key", "") or "")
         explanation = str((delivery_disposition or {}).get("explanation", "") or "").strip()
         st.error(t(message_key) if message_key else explanation or t("result.blocked_delivery_notice"))
@@ -1343,6 +1476,7 @@ def render_result_bundle(
             original_filename=original_filename,
             quality_warning=quality_warning,
         )
+        _render_results_folder_line(results_folder)
         return
     if narration_text is not None:
         col_docx, col_md, col_tts = st.columns(3)
@@ -1378,6 +1512,7 @@ def render_result_bundle(
             original_filename=original_filename,
             quality_warning=quality_warning,
         )
+        _render_results_folder_line(results_folder)
         return
 
     col_docx, col_md = st.columns(2)
@@ -1404,6 +1539,7 @@ def render_result_bundle(
         original_filename=original_filename,
         quality_warning=quality_warning,
     )
+    _render_results_folder_line(results_folder)
 
 
 def render_partial_result() -> None:

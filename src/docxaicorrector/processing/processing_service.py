@@ -378,6 +378,7 @@ class ProcessingService:
                         "latest_docx_bytes": None,
                         "latest_narration_text": None,
                         "latest_narration_exports": None,
+                        "latest_results_folder": None,
                         "latest_delivery_disposition": None,
                     }
                 )

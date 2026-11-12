@@ -180,6 +180,8 @@ _ALLOWED_SET_STATE_EVENT_KEYS = {
     "latest_narration_text",
     # Spec 072 FR-008: the DOCX/PDF narration exports, written once next to the narration text.
     "latest_narration_exports",
+    # Spec 075 FR-002: the folder the finished result was copied into, shown on the result screen.
+    "latest_results_folder",
     "latest_marker_diagnostics_artifact",
     "latest_quality_warning",
     "latest_result_notice",
@@ -1615,6 +1617,7 @@ def build_result_bundle(
     cost_estimate_snapshot: Mapping[str, object] | None = None,
     cost_actual: Mapping[str, object] | None = None,
     narration_exports: Mapping[str, object] | None = None,
+    results_folder: str | None = None,
 ) -> dict[str, object]:
     resolved_notices =[dict(notice) for notice in result_notices or ()]
     if delivery_disposition is None:
@@ -1651,6 +1654,9 @@ def build_result_bundle(
         # spec 072 FR-008: the DOCX/PDF narration exports of the same run; None for an older
         # bundle or any run that did not build them -- the screen then shows the TXT button only.
         "narration_exports": _normalize_narration_exports(narration_exports),
+        # spec 075 FR-003: the durable folder this result was copied into; None when nothing was
+        # published (a blocked result, a failed copy, an older session) -- the screen shows no line.
+        "results_folder": str(results_folder) if results_folder else None,
     }
 
 
@@ -1765,6 +1771,7 @@ def get_current_result_bundle() -> dict[str, object] | None:
                 if latest_narration_text is not None
                 else None
             ),
+            results_folder=cast(str | None, st.session_state.get("latest_results_folder")),
             processing_operation=processing_operation,
             quality_warning=cast(Mapping[str, object] | None, st.session_state.get("latest_quality_warning")),
             delivery_disposition=disposition,

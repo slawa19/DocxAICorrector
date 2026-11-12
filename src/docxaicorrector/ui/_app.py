@@ -920,6 +920,8 @@ def _render_completed_result_view(result: Mapping[str, object]) -> None:
         cost_actual=cast(Mapping[str, object] | None, result.get("cost_actual")),
         # Spec 072 FR-008: absent on a bundle from an older session -> None -> the TXT alone.
         narration_exports=cast(Mapping[str, object] | None, result.get("narration_exports")),
+        # Spec 075 FR-003: the durable folder of this result, absent when nothing was published.
+        results_folder=cast(str | None, result.get("results_folder")),
     )
 
 

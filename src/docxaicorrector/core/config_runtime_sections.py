@@ -550,6 +550,16 @@ def resolve_text_runtime_defaults(
             raise RuntimeError(f"Некорректное поле {glossary_key} в {config_path}")
         glossary_int_settings[glossary_key] = glossary_value
 
+    # Spec 075: the durable results folder and the narration studio the book file is handed to.
+    # Paths may be relative: the consumer (``runtime/results_folder.py``) resolves them against
+    # the project root, so the defaults below follow the checkout wherever it lives.
+    results_dir = parse_config_str_fn(config_data, "results_dir", "translations").strip()
+    studio_url = parse_config_str_fn(config_data, "studio_url", "http://127.0.0.1:8601").strip()
+    studio_dir = parse_config_str_fn(config_data, "studio_dir", "../AudiobookStudio").strip()
+    results_dir = parse_optional_str_env_fn("DOCX_AI_RESULTS_DIR") or results_dir
+    studio_url = parse_optional_str_env_fn("DOCX_AI_STUDIO_URL") or studio_url
+    studio_dir = parse_optional_str_env_fn("DOCX_AI_STUDIO_DIR") or studio_dir
+
     chunk_size = parse_int_env_fn("DOCX_AI_CHUNK_SIZE", chunk_size)
     max_retries = parse_int_env_fn("DOCX_AI_MAX_RETRIES", max_retries)
     processing_operation_default = parse_choice_env_fn(
@@ -604,7 +614,9 @@ def resolve_text_runtime_defaults(
         ),
         "glossary_candidate_limit": clamp_int_fn(
             glossary_int_settings["glossary_candidate_limit"], minimum=20, maximum=1000
-        ),
+        ),        "results_dir": results_dir,
+        "studio_url": studio_url,
+        "studio_dir": studio_dir,
     }
 
 

@@ -47,6 +47,12 @@ glossary_candidate_limit = 400
 # Spec 069: the translate mode the UI starts on and a run profile without `translation_mode`
 # resolves to. "standard" | "quality"; the modes themselves are the [translation_modes.*] tables.
 translation_mode_default = "standard"
+# Spec 075: the durable folder finished results are copied into (<results_dir>/<source name>/) and
+# the narration studio ("Open in studio" posts the book file to it). Relative paths are read from
+# the project root. Env: DOCX_AI_RESULTS_DIR, DOCX_AI_STUDIO_URL, DOCX_AI_STUDIO_DIR.
+results_dir = "translations"
+studio_url = "http://127.0.0.1:8601"
+studio_dir = "../AudiobookStudio"
 image_mode_default = "no_change"
 semantic_validation_policy = "advisory"
 keep_all_image_variants = false

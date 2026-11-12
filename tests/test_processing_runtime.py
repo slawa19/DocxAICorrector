@@ -1006,6 +1006,7 @@ def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(m
         "cost_actual": None,
         # Spec 072 FR-008: no narration exports for this result (old bundle shape / not an audiobook run).
         "narration_exports": None,
+        "results_folder": None,
     }
 
 
@@ -1031,6 +1032,7 @@ def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
         "cost_estimate_snapshot": None,
         "cost_actual": None,
         "narration_exports": None,
+        "results_folder": None,
     }
 
 

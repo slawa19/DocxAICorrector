@@ -81,6 +81,21 @@ def isolate_repo_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def isolate_results_folder(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Spec 075 Anti-regression: no test may write into ``<project root>/translations``.
+
+    The results folder (and the studio folder) default to RELATIVE paths read from
+    ``runtime.results_folder.PROJECT_ROOT``; pointing that at a throwaway directory sends every
+    default-configured publication there, so a finished pipeline run in a test cannot litter the
+    owner's folder. A test that sets an absolute ``results_dir`` chooses its own place on purpose."""
+    from docxaicorrector.runtime import results_folder
+
+    isolated_root = tmp_path_factory.mktemp("isolated_project_root")
+    monkeypatch.setattr(results_folder, "PROJECT_ROOT", isolated_root)
+    return isolated_root
+
+
+@pytest.fixture(autouse=True)
 def no_real_libreoffice_in_unit_tests(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Spec 072: the audiobook late phase exports the narration PDF through a real LibreOffice
     (about 7 s per book). A test not marked ``system_deps`` gets the converter answering

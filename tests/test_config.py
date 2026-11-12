@@ -2430,7 +2430,9 @@ def _config_digest_without_translation_fields(app_config) -> str:
     items = sorted(
         (name, repr(value))
         for name, value in app_config.to_dict().items()
-        if not name.startswith("translation_")
+        # Spec 075 added three settings (results folder, studio address and folder); like the
+        # ``translation_*`` fields they are new keys, and the pinned digest proves no OLD value moved.
+        if not name.startswith("translation_") and name not in {"results_dir", "studio_url", "studio_dir"}
     )
     return hashlib.sha256(repr(items).encode("utf-8")).hexdigest()
 

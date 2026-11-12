@@ -369,6 +369,11 @@ class AppConfig(Mapping[str, Any]):
     # hand carries no modes; the resolver then refuses a configured mode instead of guessing.
     translation_mode_default: str = "standard"
     translation_modes: Mapping[str, TranslationModeSpec] = field(default_factory=dict)
+    # Spec 075: where finished results are kept for good, and the narration studio the book file
+    # is handed to. Relative paths are read from the project root (``runtime/results_folder.py``).
+    results_dir: str = "translations"
+    studio_url: str = "http://127.0.0.1:8601"
+    studio_dir: str = "../AudiobookStudio"
 
     def __getitem__(self, key: str) -> object:
         try:

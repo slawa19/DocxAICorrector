@@ -1212,6 +1212,15 @@ _PROFILES_ADDED_BY_SPEC_069 = (
 _PRE_TRANSLATION_MODES_RESOLUTION_DIGEST = "c139afd72d9729dbba54e68fa4d21b9aff23106672bceaa299f0c64691af6cb8"
 
 
+# Spec 075 added three app-config settings (results folder, studio address and folder): new keys, so
+# like the ``translation_*`` ones they are left out and the pinned digest still proves no old key moved.
+_SPEC_075_NEW_KEYS = frozenset({"results_dir", "studio_url", "studio_dir"})
+
+
+def _is_pre_existing_key(key: str) -> bool:
+    return not key.startswith("translation_") and key not in _SPEC_075_NEW_KEYS
+
+
 def _resolution_digest_without_translation_keys() -> str:
     import hashlib
 
@@ -1225,10 +1234,10 @@ def _resolution_digest_without_translation_keys() -> str:
         rows.append(
             (
                 profile.id,
-                sorted((k, repr(v)) for k, v in resolution.effective.to_dict().items() if not k.startswith("translation_")),
-                sorted((k, repr(v)) for k, v in resolution.overrides.items() if not k.startswith("translation_")),
-                sorted((k, repr(v)) for k, v in resolution.app_config_overrides.items() if not k.startswith("translation_")),
-                sorted((k, repr(v)) for k, v in applied.items() if not k.startswith("translation_")),
+                sorted((k, repr(v)) for k, v in resolution.effective.to_dict().items() if _is_pre_existing_key(k)),
+                sorted((k, repr(v)) for k, v in resolution.overrides.items() if _is_pre_existing_key(k)),
+                sorted((k, repr(v)) for k, v in resolution.app_config_overrides.items() if _is_pre_existing_key(k)),
+                sorted((k, repr(v)) for k, v in applied.items() if _is_pre_existing_key(k)),
             )
         )
     return hashlib.sha256(repr(rows).encode("utf-8")).hexdigest()
