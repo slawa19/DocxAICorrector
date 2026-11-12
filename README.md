@@ -1,502 +1,122 @@
 # DocxAICorrector
 
-DocxAICorrector — это Streamlit-приложение для литературного редактирования `.docx`, legacy `.doc` и import-`PDF` через OpenAI с промежуточным Markdown и обратной сборкой в `.docx` через Pandoc.
+Локальное Streamlit-приложение для работы с длинными документами через LLM: литературное редактирование, перевод книг и подготовка текста к озвучке. На вход — `.docx`, legacy `.doc` или `PDF` (с текстовым слоем); на выходе — отредактированный или переведённый `.docx` (сборка Markdown → DOCX через Pandoc) и, для аудиокниги, текст для озвучки.
 
-Проект ориентирован на длинные документы, где редактирование по одному абзацу дает слабый результат. Вместо этого приложение собирает смысловые блоки, добавляет соседний контекст только для понимания смысла и возвращает итоговый отредактированный документ.
+Проект — инструмент одного пользователя, а не сервис: у приложения нет аутентификации, по умолчанию оно слушает только `127.0.0.1`.
 
-## Возможности
+Минимальной единицей обработки служит не абзац, а смысловой блок: модель получает целевой текст и соседний контекст «только для понимания» и возвращает только исправленный целевой текст.
 
-- Загрузка `.docx`, legacy `.doc` и `PDF` через веб-интерфейс Streamlit.
-- Автоопределение legacy `.doc` и `PDF` с автоконвертацией в рабочий `.docx` на этапе подготовки документа.
-- Извлечение текста из документа с сохранением ключевой семантики структуры.
-- Детерминированная importer-first разметка ролей абзацев, heading levels, epigraph/attribution и TOC-подобных регионов до сборки semantic blocks (отдельная AI structure-recognition стадия удалена 2026-06-22).
-- Сборка смысловых блоков вместо наивной обработки по одному абзацу.
-- Сохранение заголовков и подзаголовков через explicit DOCX styles и детерминированную role-разметку.
-- Сохранение нумерованных и маркированных списков, включая вложенность.
-- Поддержка таблиц как самостоятельных структурных блоков с передачей в Pandoc через HTML table markup.
-- Выделение подписей к изображениям и таблицам как отдельных semantic caption-блоков.
-- Сохранение локального контекста через `context_before` и `context_after`.
-- Последовательная обработка блоков через OpenAI Responses API.
-- Retry для временных API-сбоев.
-- Отдельный режим `audiobook` для подготовки текста под ElevenLabs Audiobooks.
-- Живой статус обработки и журнал по блокам (`run_log`) в UI. Отдельной ленты активности больше нет: её не читал ни один экран, и весь канал за ней удалён 2026-08-08.
-- Сохранение промежуточного Markdown при частичном сбое.
-- Placeholder-based pipeline для inline-изображений в `.docx`.
-- Сохранение полезного inline-formatting: hyperlinks, tabs, bold, italic, underline, sup/sub.
-- Safe-mode для изображений и semantic-redraw ветка с обязательным Level 1 post-check.
-- Режим ручной проверки изображений: итоговый DOCX может сохранять `safe`, `candidate1` и `candidate2` для визуального сравнения.
-- Compare-all режим: генерация safe, creative и conservative вариантов изображения с немедленной вставкой всех вариантов в итоговый DOCX.
-- Обратная сборка Markdown в `.docx` через Pandoc с dynamic reference DOCX baseline.
-- Минимальное пост-форматирование итогового DOCX: центрирование image-placeholder paragraphs, caption style/alignment и базовый table style без broad source-XML replay.
-- Файловое логирование с `event_id`, контекстом и stack trace.
+## Что делает
 
-## Автономная разработка через KiloCode + Copilot CLI
+Режим выбирается в боковой панели («Режим обработки текста»):
 
-В репозитории есть toolkit для автономного edit-loop без bridge-плагина:
+| Режим | Что происходит | Результат |
+| --- | --- | --- |
+| Литературное редактирование | Правка уже готового текста на его языке; «Глубина редактирования»: осторожно (минимальные правки) или литературно | Отредактированный DOCX и Markdown |
+| Перевод | Перевод на целевой язык (русский, English, Deutsch, Français, Español, Italiano, Polski, 中文, 日本語); язык оригинала — «Авто» или явный. «Режим перевода»: **Стандарт** или **Качество** | Переведённый DOCX и Markdown |
+| Подготовка аудиокниги (ElevenLabs) | Технический проход по уже готовому тексту: без пары языков; числа и знаки словами, эмодзи и HTML снимаются, неозвучиваемое (оглавление, указатель, аппарат, примечания, таблицы, подписи, картинки) не озвучивается | Текст для озвучки TXT / DOCX / PDF и файл книги `.narration.json` для студии |
 
-- `tools/copilot-cli/README.md`
-- `docs/COPILOT_CLI_LOOP_USAGE.md`
-- слэш-команда `copilot-loop` для KiloCode (устанавливается локально в `.kilo/`, не хранится в репозитории)
+Режимы перевода (`[translation_modes.*]` в `src/docxaicorrector/resources/config.toml`; модели — результат замеров, а не ручная настройка):
 
-Быстрая smoke-проверка runtime:
+- **Стандарт** (по умолчанию) — `openrouter:google/gemini-3.1-flash-lite-preview`, затем второй проход «литературная шлифовка» моделью `openrouter:anthropic/claude-haiku-5.5` с откатом абзаца, если шлифовка его ухудшила. По замерам — около 0,9 $ на книгу.
+- **Качество** — `openrouter:google/gemini-3.7-flash` с рассуждением `low` и сдержанной интенсивностью. По замерам — около 1,7–1,8 $ на книгу.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\smoke-copilot-edit.ps1
-```
+Цена каждого режима показывается рядом с его названием после загрузки документа — это оценка только текстовых стадий, без картинок. Оценка заведомо с запасом (обычно выше факта); на экране результата она стоит рядом с фактом.
 
-Запуск из KiloCode UI:
+В режимах перевода и редактуры есть обработка изображений (по умолчанию «Без изменения»): «Просто улучшить», «Креативная AI-перерисовка», «Структурная AI-перерисовка», «До 3 вариантов для сравнения». В блоке «Дополнительно» выбираются «Модель разбора изображений» и «Модель рисования»; для каждого режима предвыбрана измеренная пара. В аудиокниге картинки не обрабатываются вовсе.
 
-```text
-/copilot-loop <описание задачи>
-```
+Что ещё делает конвейер:
 
-## Архитектура
+- детерминированная разметка ролей абзацев и уровней заголовков по сигналам исходника (отдельной AI-стадии распознавания структуры нет);
+- сохранение заголовков, списков (с вложенностью), таблиц (атомарные блоки), подписей, inline-изображений и inline-форматирования (ссылки, жирный, курсив, подчёркивание, индексы);
+- на переводе — глоссарий книги: один запрос перед прогоном фиксирует передачу терминов и имён, и она уходит в каждый блок;
+- приёмочная проверка результата и честный статус доставки (см. «Как проходит прогон»);
+- при частичном сбое сохраняется промежуточный Markdown; временные сбои API повторяются.
 
-После декомпозиции приложение разделено на модули (связанные направленным графом зависимостей; известное исключение — цикл `processing ↔ ui`, который будет разорван отдельной задачей S5):
+## Как проходит прогон
 
-```text
-app.py         orchestration и main()
-constants.py   пути и дефолтные значения
-models.py      ParagraphUnit и DocumentBlock
-logger.py      логирование и user-facing ошибки
-config.py      конфигурация и OpenAI client
-document.py    чтение DOCX, auto-converted legacy DOC/PDF, ordered block traversal, tables/captions/headings и semantic extraction
-generation.py  вызовы OpenAI и сборка DOCX через Pandoc/dynamic reference-doc
-image_analysis.py   анализ image-assets и выбор стратегии
-image_generation.py генерация candidate image и safe fallback
-image_validation.py Level 1 post-check и accept/fallback decision
-preparation.py   кеш подготовки документа и сборки jobs
-application_flow.py orchestration idle/restart/preparation между UI и runtime
-processing_service.py facade для worker/pipeline и dependency wiring обработки
-workflow_state.py enum и helper-функции state-machine для UI
-state.py       session_state и live status
-ui.py          Streamlit-компоненты и рендеринг
-tests/         регрессионные тесты ключевых контрактов
+1. **Загрузка.** Файл `.docx`, `.doc` или `PDF` до 25 МБ. Legacy `.doc` конвертируется в рабочий `.docx` (LibreOffice, запасной путь — `antiword` + Pandoc); PDF разбирается по текстовому слою (pdfminer) в тот же `.docx`; OCR отсканированных PDF по умолчанию выключен (`DOCXAI_PDF_OCR_IMPORT_ENABLED=1` включает его, нужны `ocrmypdf` и Tesseract из `system-requirements.apt`). Дальше конвейер видит только нормализованный DOCX.
+2. **Настройки и цена.** В боковой панели — режим, языки, режим перевода (с оценкой цены), в «Дополнительно» — модель и обработка изображений. Документ готовится в фоне, затем становится доступна кнопка запуска.
+3. **Обработка.** Блоки идут по одному; на экране — статус и журнал по блокам, можно остановить.
+4. **Экран результата.** Вердикт приёмки: принят / принят с замечаниями (перечислены) / не прошёл — тогда файлы выдаются только для диагностики, с названием проваленных проверок. Блок «Для проверки» (Markdown и DOCX для инспекции, отчёт об оформлении). Если в документ попал непереведённый исходный текст, экран говорит сколько и где (фрагменты для поиска по тексту DOCX). Рядом с оценкой цены при старте показан фактический расход.
+5. **Папка результатов.** Файлы результата (кроме заблокированных) копируются навсегда в `<папка результатов>/<имя исходника>/` под именами кнопок скачивания; на экране виден путь и есть кнопка «Открыть папку». Папка — `DOCX_AI_RESULTS_DIR`, по умолчанию `translations/` в корне проекта (в `.gitignore`). Повторный прогон той же книги заменяет файлы; файл, занятый другой программой, сохраняется рядом как `<имя> (новая)`. `.run/ui_results/` — самоочищающийся кэш (7 суток / 80 групп), а не место хранения.
+6. **Студия.** Для аудиокниги в ряду «Текст для озвучки» есть «Файл книги для озвучки (.json)» и кнопка «Открыть в студии» — см. ниже.
 
-Singleton service accessor: UI должен получать processing facade через `get_processing_service()`, а не собирать dependency graph вручную.
+Перед повторным запуском или сменой настройки, которая требует заново разобрать документ, приложение предупреждает, что готовый результат будет стёрт.
 
-Новые архитектурные опоры поверх базовой декомпозиции:
+## Аудиокнига и студия озвучки
 
-- `processing_runtime.py` теперь является единым normalization boundary для upload payload: он определяет реальный формат входного файла, при необходимости конвертирует legacy `.doc` и `PDF` в рабочий `.docx`, но для legacy `.doc` и `PDF` сохраняет token identity по исходным source bytes, а downstream-слоям отдаёт уже normalized payload.
-- `application_flow.py`, `document.py`, `real_document_validation_structural.py` и full-tier validator используют один и тот же normalized DOCX contract вместо локальных DOCX-only assumptions.
-- `preparation.py` выполняет детерминированную importer-first подготовку: extraction и normalization извлекают explicit DOCX semantics, после чего роли абзацев и уровни заголовков размечаются детерминированными правилами. Отдельная AI structure-recognition стадия удалена (2026-06-22); см. `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`.
-- Real-document validation больше не является hard-coded Lietaer-only harness: registry в `corpus_registry.toml` разделяет document profiles и run profiles, а deterministic `extraction` и `structural` tiers дополняют full-tier replay path.
-```
+Режим аудиокниги готовит текст «для уха» и ничего не озвучивает сам. Рядом с `.result.md` и `.result.docx` в `.run/ui_results/` появляются:
 
-Единый актуальный source of truth по runtime workflow и image modes лежит в `docs/WORKFLOW_AND_IMAGE_MODES.md`.
+- `<stem>.result.tts.txt`, `.result.tts.docx`, `.result.tts.pdf` — для ElevenLabs Studio (он не принимает `.txt`; главой считается каждый заголовок Word, поэтому `Heading 1` получают только главы). PDF делает LibreOffice; без него остаются DOCX и TXT, причина показана на экране и в логе;
+- `<stem>.result.narration.json` — файл книги для отдельного проекта [AudiobookStudio](https://github.com/slawa19/AudiobookStudio): главы, сегменты с готовым текстом (ударения в омографах, транслитерация латиницы, числа словами, адреса сайтов доменом), паузы между главами, заголовками и сценами и словарь чтения сокращений. Схема — `specs/073-narration-for-the-ear/contracts/narration-book.md`.
 
-Канонический source of truth по startup performance и anti-regression правилам лежит в `docs/STARTUP_PERFORMANCE_CONTRACT.md`.
+Абзацы, которые стоит проверить, помечаются (`needs_review`); исключённое из озвучки публикуется с адресами в сообщении на экране. Подробности — `docs/WORKFLOW_AND_IMAGE_MODES.md`.
 
-Архивный раздел с historical specs, superseded design docs и review snapshots лежит в `docs/ARCHIVE_INDEX.md`.
-
-Исторические документы по decomposition, image mode deep-dives и state/preparation refactor больше не считаются каноническими и читаются только через архивный индекс.
-
-Спецификация hardening-а форматирования DOCX, включая headings, tables, captions и target-style baseline, архивирована в `docs/archive/specs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md`.
-
-Universal real-document validation architecture и её implementation status архивированы в `docs/archive/specs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md`.
-
-## Как работает обработка
-
-Минимальной единицей редактирования является не абзац, а смысловой блок:
-
-- `target_text` — текст, который реально отправляется на редактирование.
-- `context_before` — предыдущий соседний контекст только для понимания смысла.
-- `context_after` — следующий соседний контекст только для понимания смысла.
-
-Перед сборкой блоков preparation теперь проходит в два логических этапа:
-
-- extraction и normalization извлекают абзацы, списки, таблицы, captions и базовую explicit DOCX semantics;
-- детерминированная importer-first разметка присваивает paragraph roles и heading levels до semantic-block assembly (отдельная AI structure-recognition стадия удалена 2026-06-22).
-
-Текущие правила сборки блоков:
-
-- заголовок начинает новый блок, рендерится как markdown-heading и приклеивается хотя бы к следующему абзацу;
-- последовательные элементы списка группируются вместе;
-- таблица является атомарным блоком и не разваливается на обычные абзацы;
-- подпись старается оставаться рядом с соседним изображением или таблицей;
-- обычные абзацы объединяются до рабочего лимита `chunk_size`;
-- слишком длинный абзац не режется внутри себя и уходит отдельным блоком;
-- размер соседнего контекста вычисляется автоматически от `chunk_size`.
-
-Это дает модели локальный контекст без потери управляемости: на выходе она должна вернуть только исправленный `target_text`.
-
-Перед этим этапом upload проходит единый normalization path:
-
-- zip-based `.docx` проходит без конвертации;
-- legacy OLE `.doc` определяется автоматически и конвертируется в временный рабочий `.docx`;
-- `PDF` импортируется через LibreOffice-конвертацию в временный рабочий `.docx` без отдельного PDF pipeline;
-- identity/token semantics для legacy `.doc` и `PDF` остаются привязаны к исходным source bytes, а не к bytes сконвертированного рабочего `.docx`;
-- downstream preparation, extraction, validation и assembly работают только с normalized DOCX bytes, чтобы UI, background runtime и validator не drift-или по input contract.
-
-На этапе обратной сборки итоговый DOCX опирается на два уровня поведения:
-
-- Pandoc + dynamic reference DOCX задают основной visual baseline для headings, body text и lists;
-- минимальный post-Pandoc pass форматирует captions, image-placeholder paragraphs и table baseline, а также восстанавливает прямой paragraph alignment для корректно сопоставленных абзацев без возврата к broad source paragraph XML replay.
-
-`preserve_source_paragraph_properties()` — mainline formatter entry point (в `src/docxaicorrector/generation/formatting_transfer.py`, реэкспортирует restoration из `src/docxaicorrector/generation/formatting_restoration.py`). Прежний временный compatibility no-op `normalize_semantic_output_docx()` удалён.
+**Кнопка «Открыть в студии»** отправляет файл книги в запущенную студию (`POST` на `DOCX_AI_STUDIO_URL`, по умолчанию `http://127.0.0.1:8601`) и даёт ссылку на открытие книги. Если студия не запущена, приложение запускает её скриптом `studio.sh start` из папки `DOCX_AI_STUDIO_DIR` (по умолчанию `../AudiobookStudio` рядом с проектом). Студия, в свою очередь, на экране «Откройте книгу» показывает книги из папки результатов.
 
 ## Требования
 
-- WSL2 с Linux-дистрибутивом, в котором создаётся и используется текущее `.venv`
-- Python 3.12+ for the canonical WSL runtime and editable-install/package verification. Нижняя граница — `requires-python = ">=3.12"` в `pyproject.toml`; на ней же идут CI (`.github/workflows/ci.yml`, `python-version: '3.12'`) и pyright (`pyrightconfig.json`, `pythonVersion` 3.12 — анализ против поддерживаемого минимума, спека 028). Каноническая WSL `.venv` сейчас создана на Python 3.13.5, и суита зелёная на ней тоже (замер 2026-11-06; тогда же pyright с `pythonVersion` 3.13 дал то же число ошибок, что с 3.12)
-- System packages из `system-requirements.apt`: `pandoc`, `libreoffice`, `antiword`
-- Для legacy `.doc`: предпочтительно LibreOffice (`soffice`), fallback-связка `antiword` + `pandoc`
-- Для `PDF`: LibreOffice (`soffice` или `libreoffice`) внутри WSL обязателен
-- API-ключ провайдера дефолтной текстовой модели (`[models.text].default`); для packaged default это `OPENROUTER_API_KEY`
-- Windows PowerShell только как thin wrapper для штатных start/stop-скриптов
+- Windows + WSL2 с дистрибутивом Debian; проект живёт на Windows-диске и запускается внутри WSL (`/mnt/d/Work/Projects/DocxAICorrector`). Каноническая среда — WSL `.venv`; `.venv-win` — только для редактора и статического анализа.
+- Python 3.12+ (`requires-python` в `pyproject.toml`; CI идёт на 3.12).
+- Системные пакеты из `system-requirements.apt`: `pandoc`, `libreoffice`, `antiword`, `ocrmypdf`, `tesseract-ocr` (+ `eng`, `rus`), `fonts-liberation`. LibreOffice нужен для legacy `.doc` и для PDF с текстом озвучки.
+- Ключ `OPENROUTER_API_KEY` (дефолтные модели идут через OpenRouter). `OPENAI_API_KEY` нужен для обработки изображений и OpenAI-моделей, `ANTHROPIC_API_KEY` — только для селекторов `anthropic:<модель>` напрямую.
+- Windows PowerShell — только как тонкая обёртка для скриптов запуска и остановки.
 
 ## Быстрый старт
 
-Проект использует WSL-first workflow. Для штатного runtime, Streamlit, shell-driven validation и финальной проверки источником истины считается project runtime внутри WSL. Но агентам и automation нельзя предполагать layout `.venv` заранее: сначала нужно фактологически проверить, это Linux layout (`.venv/bin/activate`) или Windows layout (`.venv\Scripts\python.exe`). PowerShell-скрипты в `scripts/` являются thin wrapper entry points для штатного запуска в WSL.
-
-Project runtime source of truth для разработки, проверок, тестов и live-валидации — путь `/mnt/d/Work/Projects/DocxAICorrector` внутри WSL вместе с проектной `.venv`, если она реально имеет WSL/Linux layout. Не делайте выводы о зависимостях, доступности Pandoc, import health или runtime-состоянии по случайному `python`, `py`, Windows virtualenv или иному системному интерпретатору, пока не проверен project runtime. Если системный интерпретатор и project runtime расходятся, источником истины считается project runtime.
-
-Если для вспомогательных Windows-only сценариев нужен отдельный virtualenv, используйте каталог `.venv-win/`. Это окружение допустимо для editor tooling и статического анализа вроде Pyright, но не для штатного runtime проекта. Через WSL dispatcher должны работать только lifecycle и diagnostic wrappers: `scripts/start-project.ps1`, `scripts/stop-project.ps1`, `scripts/status-project.ps1` и `scripts/tail-streamlit-log.ps1`.
-
-Критическое различие для automation и агентов:
-
-- `bash scripts/test.sh ...`, `bash scripts/run-real-document-validation.sh`, `bash scripts/run-real-document-quality-gate.sh` и соответствующие VS Code tasks являются **canonical contract path**.
-- Прямой `pytest` через `python -m pytest` считается только **debug path** и не заменяет shell-bound contract.
-- Если в текущем workspace `.venv` фактически имеет Windows layout и `.venv\Scripts\python.exe -m pytest ...` реально работает, этот путь допустим только для локального debugging обычных pytest selector-ов.
-- Для `real`, `spec`, `ui-parity`, `validation`, `quality-gate` и любых shell-driven сценариев debug path не является эквивалентом requested verification.
-
-Workflow contract tests теперь разделены на два слоя:
-
-- `tests/test_script_contract_static.py` для CI-safe static workflow, task, doc и shell syntax checks;
-- `tests/test_script_workflow_smoke.py` для env-sensitive subprocess/PowerShell/WSL smoke.
-
-Для быстрой диагностики состояния окружения используйте `Terminal -> Run Task -> Project Status`. Эта команда одним проходом проверяет и печатает итоговый статус без ложного failed-state для обычной диагностики:
-
-- запущен ли проект и отвечает ли health endpoint;
-- есть ли WSL-окружение `.venv`;
-- установлены ли Python-зависимости;
-- доступен ли Pandoc для `pypandoc`;
-- доступен ли LibreOffice (`soffice`/`libreoffice`) для PDF import и preferred legacy DOC conversion;
-- настроен ли API-ключ провайдера дефолтной текстовой модели: имя переменной берётся из `[models.text].default` (с учётом `.env` и `DOCX_AI_MODELS_TEXT_DEFAULT`); для packaged default это `OPENROUTER_API_KEY`.
-
-`Project Status` — именно диагностическая команда. Она показывает итоговый статус `READY`, `RUNNING`, `DEGRADED` или `CONFLICT`, но не должна считаться ошибкой только потому, что приложение сейчас не запущено.
-
-### 1. Установить зависимости проекта
-
-На новом WSL/server runtime используйте единый setup entry point:
+Из WSL:
 
 ```bash
-bash scripts/setup-wsl.sh
-```
-
-Из VS Code можно запустить `Terminal -> Run Task -> Setup Project`. Этот task вызывает `scripts/setup-project.ps1`, который делегирует установку в WSL.
-
-`scripts/setup-wsl.sh` выполняет полный bootstrap:
-
-- устанавливает apt-пакеты из `system-requirements.apt` с bounded timeout `DOCXAI_APT_TIMEOUT_SECONDS`;
-- создает `.venv`, если его нет;
-- выполняет `pip install -r requirements.txt`;
-- проверяет Python imports, `pandoc` и LibreOffice (`soffice`/`libreoffice`).
-
-Package/install contract после architecture migration опирается на `pyproject.toml`, где указано `requires-python = ">=3.12"`. Если текущая WSL `.venv` была создана под Python 3.11, её нужно пересоздать под Python 3.12+ перед editable-install verification. `venv` не меняет версию интерпретатора inplace.
-
-Если в WSL доступен `python3.12`, предпочтительный repo-aligned путь:
-
-```bash
-rm -rf .venv
-DOCXAI_PYTHON_BIN=python3.12 bash scripts/setup-wsl.sh
-```
-
-Для unattended/server setup пользователь должен иметь root-доступ или passwordless `sudo`, иначе системные apt-пакеты не будут установлены автоматически.
-
-### 1a. Ручной fallback: создать виртуальное окружение
-
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-```
-
-### 2. Ручной fallback: установить Python-зависимости
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Ручной fallback: установить system dependencies
-
-```bash
-sudo apt-get update
-sudo apt-get install -y pandoc libreoffice antiword
-pandoc --version
-soffice --headless --version
-```
-
-Если в runtime недоступен ни один backend, загрузка legacy `.doc` завершается явной ошибкой конфигурации вместо неявного сбоя на глубоком DOCX-only слое.
-
-Если в runtime недоступен `soffice`, загрузка `PDF` завершается явной ошибкой конфигурации. PDF поддерживается только через import в DOCX; для scanned PDF OCR в MVP не выполняется.
-
-### 4. Настроить `.env`
-
-```bash
-cp .env.example .env
-```
-
-Дефолт packaged config — `openrouter:google/gemini-3.1-flash-lite-preview` (см. `src/docxaicorrector/resources/config.toml`), поэтому для дефолтного запуска нужен `OPENROUTER_API_KEY`. `OPENAI_API_KEY` нужен, если выбраны OpenAI-модели (напр. `gpt-5.4-mini`) или для image-обработки:
-
-```env
-OPENROUTER_API_KEY=sk-or-...
-OPENAI_API_KEY=sk-...
-```
-
-Поддерживаемые переменные `.env`:
-
-- `OPENROUTER_API_KEY` — API-ключ OpenRouter для selectors вида `openrouter:<model_id>`; обязателен для packaged default текстовой модели.
-- `OPENAI_API_KEY` — API-ключ OpenAI: нужен, только если выбраны OpenAI-модели (selector без префикса или `openai:<model_id>`) или включена image-обработка (её service-модели по умолчанию — OpenAI). Обязательным его делает только выбор такой модели дефолтной.
-- `ANTHROPIC_API_KEY` — API-ключ Anthropic: нужен, только если selector указывает на `anthropic:<model_id>` напрямую.
-- `DOCX_AI_BIND_HOST` — интерфейс, который слушает Streamlit. По умолчанию `127.0.0.1` (только локально). У приложения нет встроенной аутентификации, поэтому удалённый режим — явный opt-in: задайте `DOCX_AI_BIND_HOST=0.0.0.0` только за reverse proxy с аутентификацией. Приоритет секретов и настроек: `environment > .env > config defaults`.
-- `DOCX_AI_MODELS_TEXT_DEFAULT` — модель редактирования текста по умолчанию.
-- `DOCX_AI_MODELS_TEXT_OPTIONS` — список моделей для sidebar через запятую.
-- `DOCX_AI_PROVIDERS_OPENAI_ENABLED` — включает или выключает provider `openai`.
-- `DOCX_AI_PROVIDERS_OPENROUTER_ENABLED` — включает или выключает provider `openrouter`.
-- `DOCX_AI_PROVIDERS_OPENROUTER_BASE_URL` — override base URL для OpenRouter-compatible Responses API.
-- `DOCX_AI_PROVIDERS_OPENROUTER_REFERER` — значение заголовка `HTTP-Referer` для OpenRouter.
-- `DOCX_AI_PROVIDERS_OPENROUTER_TITLE` — значение заголовка `X-OpenRouter-Title` для OpenRouter.
-- `DOCX_AI_CHUNK_SIZE` — размер целевого блока документа.
-- `DOCX_AI_MAX_RETRIES` — число retry для текстовых вызовов.
-- `DOCX_AI_EDITORIAL_INTENSITY_DEFAULT` — дефолтная стилистическая интенсивность для текстовой обработки: `literary` или `conservative`. В текущем Slice 1 влияет только на prompt contract и не меняет `temperature`.
-- `DOCX_AI_LOG_LEVEL` — уровень логирования приложения: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; по умолчанию `INFO`, некорректное значение безопасно откатывается к `INFO` с warning-записью в лог.
-- `DOCX_AI_RUN_DIR` — корень всех runtime-артефактов (`app.log`, `app.ready`, `ui_results/`, `quality_reports/` и остальные семейства `.run/<family>/`); по умолчанию `<корень проекта>/.run`. Одно имя и одно правило читают Python-сторона, `scripts/project-control-wsl.sh`, `scripts/clean-stale-run-artifacts.sh`, `scripts/_run_cleanup_now.py` и `scripts/_shared.ps1`: пробелы по краям обрезаются, пустое значение означает умолчание. Если переменная задана на стороне Windows (для PowerShell-обёрток `start-project.ps1`, `status-project.ps1` и т. п.), это должен быть Windows-путь: обёртка перед каждым вызовом `wsl.exe` добавляет `DOCX_AI_RUN_DIR/p` в `WSLENV`, и WSL-скрипты и приложение получают тот же каталог в виде `/mnt/...`. **Исключение из этого списка: через `.env` её задать нельзя.** Python читает её из окружения процесса при импорте, раньше, чем подгружается `.env`, поэтому переменную нужно экспортировать в окружение запуска. Тестовая суита так и делает: `tests/conftest.py` направляет её во временный каталог, чтобы прогон не писал в `.run` оператора.
-- `DOCX_AI_IMAGE_MODE_DEFAULT` — режим изображений по умолчанию: `no_change`, `safe`, `semantic_redraw_direct`, `semantic_redraw_structured`, `compare_all`.
-- `DOCX_AI_SEMANTIC_VALIDATION_POLICY` — политика post-check: `advisory` или `strict`.
-- `DOCX_AI_KEEP_ALL_IMAGE_VARIANTS` — сохраняет в итоговом DOCX `safe`, `candidate1` и `candidate2` для ручной проверки.
-- `DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT` — optional override для model role `boundary_review`, которой пользуется только `paragraph_boundary_ai_review` (по умолчанию выключен). Если не задан, роль использует `DOCX_AI_MODELS_TEXT_DEFAULT`. До спеки 066 роль называлась `structure_recognition`; старые имена (`DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT`, `DOCX_AI_STRUCTURE_RECOGNITION_MODEL`, секции `[structure_recognition]` / `[models.structure_recognition]`) не читаются.
-- `DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT` — service-level модель для pipeline image analysis.
-- `DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT` — service-level модель для image validator.
-- `DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT` — service-level модель для deterministic image reconstruction.
-- `DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT` — service-level модель для `Images.generate`.
-- `DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT` — service-level модель для `Images.edit`.
-- `DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT` — service-level vision model для generation-time image inspection.
-
-Пример полного `.env`:
-
-```env
-OPENROUTER_API_KEY=sk-or-...
-OPENAI_API_KEY=sk-...
-DOCX_AI_PROVIDERS_OPENAI_ENABLED=true
-DOCX_AI_PROVIDERS_OPENROUTER_ENABLED=true
-DOCX_AI_MODELS_TEXT_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
-DOCX_AI_MODELS_TEXT_OPTIONS=openrouter:google/gemini-3.1-flash-lite-preview,openrouter:google/gemini-3.7-flash
-DOCX_AI_CHUNK_SIZE=6000
-DOCX_AI_MAX_RETRIES=3
-DOCX_AI_EDITORIAL_INTENSITY_DEFAULT=literary
-# Optional override for the paragraph-boundary AI review role. When omitted, it inherits DOCX_AI_MODELS_TEXT_DEFAULT.
-# DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
-DOCX_AI_STRUCTURE_VALIDATION_MIN_PARAGRAPHS_FOR_AUTO_GATE=40
-DOCX_AI_STRUCTURE_VALIDATION_MIN_EXPLICIT_HEADING_DENSITY=0.003
-DOCX_AI_STRUCTURE_VALIDATION_MAX_SUSPICIOUS_SHORT_BODY_RATIO_WITHOUT_ESCALATION=0.05
-DOCX_AI_STRUCTURE_VALIDATION_MAX_ALL_CAPS_OR_CENTERED_BODY_RATIO_WITHOUT_ESCALATION=0.03
-DOCX_AI_STRUCTURE_VALIDATION_TOC_LIKE_SEQUENCE_MIN_LENGTH=4
-DOCX_AI_STRUCTURE_VALIDATION_FORBID_HEADING_ONLY_COLLAPSE=true
-DOCX_AI_LOG_LEVEL=INFO
-DOCX_AI_IMAGE_MODE_DEFAULT=no_change
-DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
-DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
-# Pin the pair for every image mode (switches the per-mode defaults of config.toml off):
-# DOCX_AI_IMAGE_VISION_MODEL=gpt-6.1-terra
-# DOCX_AI_IMAGE_DRAW_MODEL=gpt-image-2.5-flare
-# Per-role pins outrank both selectors; set one only to pin that role:
-# DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-2.5-flare-2026-09-08
-```
-
-Для текущего canonical baseline нужен `OPENROUTER_API_KEY`, потому что `models.text.default` по умолчанию уже указывает на provider-qualified OpenRouter selector.
-
-### 5. Запустить приложение
-
-Двойной клик в проводнике: `scripts\start-project.cmd` / `stop-project.cmd` / `restart-project.cmd` / `status-project.cmd`.
-Эти `.cmd` запускают одноимённый `.ps1` через `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`, поэтому работают при политике выполнения по умолчанию; саму политику машины они не меняют. Окно остаётся открытым до нажатия клавиши, чтобы можно было прочитать результат (`DOCX_AI_NO_PAUSE=1` отключает паузу); код выхода — код скрипта. Из консоли `cmd` или PowerShell их можно вызывать так же: `scripts\start-project.cmd`.
-
-Сами `.ps1` двойным кликом не запускаются. На Windows политика выполнения по умолчанию (`Undefined`, то есть `Restricted`) запрещает скрипты: «Run with PowerShell» в проводнике и `.\scripts\start-project.ps1` в консоли Windows PowerShell отвечают `cannot be loaded because running scripts is disabled on this system`, а окно проводника закрывается раньше, чем это можно прочитать (обычный двойной клик по `.ps1` вообще открывает его в редакторе). Из PowerShell-терминала `.ps1` запускаются так:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-project.ps1
-```
-
-либо после однократного `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` — это решение владельца машины, скрипты проекта его не выполняют. Если политика пропускает «Run with PowerShell», обёртка сама перезапускается с `-ExecutionPolicy Bypass` и ждёт клавишу перед закрытием окна.
-
-`start-project` ждёт, пока приложение отрисует первый кадр (маркер `.run/app.ready`); открытая вкладка браузера для этого не нужна — скрипт сам открывает одну сессию Streamlit и закрывает её после отрисовки.
-
-Вариант напрямую из WSL:
-
-```bash
+bash scripts/setup-wsl.sh      # apt-пакеты, .venv, зависимости, проверка pandoc и LibreOffice
+cp .env.example .env           # впишите OPENROUTER_API_KEY (и OPENAI_API_KEY для картинок)
 streamlit run app.py
 ```
 
-Вариант через VS Code task:
+Из Windows — двойным щелчком `scripts\start-project.cmd` / `stop-project.cmd` / `restart-project.cmd` / `status-project.cmd` (запускают одноимённые `.ps1` с `-ExecutionPolicy Bypass`; окно ждёт клавишу, `DOCX_AI_NO_PAUSE=1` отключает паузу). Те же действия — задачи VS Code: `Setup Project`, `Project Status`, `Start Project`, `Stop Project`, `Restart Project`, `Tail Streamlit Log`. `Project Status` — диагностика (`READY` / `RUNNING` / `DEGRADED` / `CONFLICT`); он проверяет окружение, Pandoc, LibreOffice и ключ провайдера дефолтной модели. `start-project` ждёт, пока приложение отрисует первый кадр (маркер `.run/app.ready`).
 
-1. `Terminal -> Run Task`
-2. При необходимости сначала выберите `Project Status`
-3. Выберите `Start Project`
-
-Для остановки используйте `Stop Project`.
+Для автоматизации и агентов действует WSL-first контракт (источник правды — `AGENTS.md`): проверять shell и layout `.venv` фактически, не подменять `bash scripts/test.sh` и `scripts/run-real-document-*.sh` прямым `pytest`/Python. `scripts/*.ps1` не запускаются двойным щелчком: политика выполнения Windows по умолчанию это запрещает, используйте `.cmd` или `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-project.ps1`.
 
 ## Конфигурация
 
-Каноническая role-based спецификация моделей архивирована в `docs/archive/specs/MODEL_ROLE_AND_CONFIGURATION_SPEC_2026-04-18.md`.
+Порядок приоритета: окружение процесса > `.env` > значения по умолчанию в `src/docxaicorrector/resources/config.toml`. Почти каждая настройка `DOCX_AI_*` имеет умолчание в `config.toml`; в `.env` стоит писать только то, что переопределяется. Образец — `.env.example`. `.env` в git не попадает и не переезжает вместе с каталогом проекта.
 
-Архитектурная спецификация миграции на centralized registry реализована и сохранена как историческая запись в `docs/archive/specs/CENTRALIZED_MODEL_REGISTRY_REFACTOR_SPEC_2026-04-18.md`.
+| Переменная | Что делает |
+| --- | --- |
+| `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | Ключи провайдеров (имя переменной задаёт `api_key_env` секции `[providers.*]`) |
+| `DOCX_AI_MODELS_TEXT_DEFAULT`, `DOCX_AI_MODELS_TEXT_OPTIONS` | Модель текста по умолчанию и список для боковой панели (только измеренные две; любая другая — через «Пользовательская модель») |
+| `DOCX_AI_TRANSLATION_MODE_DEFAULT`, `DOCX_AI_TRANSLATION_MODES_<РЕЖИМ>_<ПОЛЕ>` | Режим перевода по умолчанию и поля режимов (`model`, `editorial_intensity`, `polish_model`, `reasoning_effort`) |
+| `DOCX_AI_EDITORIAL_INTENSITY_DEFAULT` | `literary` или `conservative` для режима редактуры |
+| `DOCX_AI_CHUNK_SIZE`, `DOCX_AI_MAX_RETRIES` | Размер целевого блока (6000) и число повторов |
+| `DOCX_AI_RESULTS_DIR` | Папка результатов (`translations`; относительный путь — от корня проекта) |
+| `DOCX_AI_STUDIO_URL`, `DOCX_AI_STUDIO_DIR` | Адрес студии и её каталог (`http://127.0.0.1:8601`, `../AudiobookStudio`) |
+| `DOCX_AI_IMAGE_MODE_DEFAULT`, `DOCX_AI_SEMANTIC_VALIDATION_POLICY`, `DOCX_AI_KEEP_ALL_IMAGE_VARIANTS` | Режим картинок, политика пост-проверки (`advisory`/`strict`), сохранение всех вариантов |
+| `DOCX_AI_IMAGE_VISION_MODEL`, `DOCX_AI_IMAGE_DRAW_MODEL` | Закрепляют пару моделей картинок для всех режимов; точечно — `DOCX_AI_MODELS_IMAGE_<РОЛЬ>_DEFAULT` |
+| `DOCX_AI_GLOSSARY_*` | Глоссарий прогона перевода (`PASS_ENABLED`, `MAX_TERMS`, `PROMPT_MAX_CHARS`, `CANDIDATE_LIMIT`) |
+| `DOCX_AI_READER_CLEANUP_ENABLED` | Читательская вычитка после сборки; по умолчанию выключена |
+| `DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT` | Модель роли `boundary_review` (по умолчанию выключена, наследует текстовую модель) |
+| `DOCX_AI_LOG_LEVEL` | `DEBUG`…`CRITICAL`, по умолчанию `INFO` |
+| `DOCX_AI_BIND_HOST` | Интерфейс Streamlit; по умолчанию `127.0.0.1`. `0.0.0.0` — только за reverse proxy с аутентификацией |
+| `DOCX_AI_RUN_DIR` | Корень runtime-артефактов (`.run`); читается из окружения процесса до `.env`, поэтому через `.env` не задаётся |
+| `DOCX_AI_PROVIDERS_<ПРОВАЙДЕР>_ENABLED`, `…_OPENROUTER_BASE_URL/REFERER/TITLE` | Включение провайдеров и параметры OpenRouter |
+| `DOCXAI_APT_TIMEOUT_SECONDS`, `DOCXAI_PYTHON_BIN` | Параметры `scripts/setup-wsl.sh` |
 
-Краткая текущая матрица ролей:
+Полный список переменных, секции `[models.*]`, `[providers.*]`, `[translation_modes.*]`, `[structure_validation]` и их комментарии — в `src/docxaicorrector/resources/config.toml`. Устаревшие ключи (`default_model`, `model_options`, `DOCX_AI_DEFAULT_MODEL`, секции `[structure_recognition]`) не читаются; загрузчик пишет предупреждение `legacy_model_config_key_detected` или `config_key_ignored`. Системный промпт — `src/docxaicorrector/resources/prompts/system_prompt.txt`, промпты изображений — там же (`image_prompt_registry.toml`, `image_profiles/`).
 
-| Роль | Текущая модель | Статус | Примечание |
-| --- | --- | --- | --- |
-| Main premium text transform | `openrouter:google/gemini-3.7-flash` | `recommended_high_quality` | Измеренная модель режима «Качество» перевода (spec 069); любая другая модель — через «Пользовательская модель» в sidebar. |
-| Main default text transform policy | `openrouter:google/gemini-3.1-flash-lite-preview` | `recommended_default` | Canonical repository default для text runtime через OpenRouter. |
-| Structure recognition | `openrouter:google/gemini-3.1-flash-lite-preview` | `default_inherits_text` | По умолчанию использует тот же provider-qualified selector, что и основной text runtime; отдельный role override остаётся optional. |
-| Pipeline image analysis | `gpt-6.1-terra` в режимах перерисовки | `measured_best` | «Модель разбора изображений»; по режимам — `[models.image_vision.mode_defaults]`; в UI также `gpt-5.4-mini`, `gpt-6.1-sol`. |
-| Image validation | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений». |
-| Image reconstruction | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений» (scene-graph для реконструкции). |
-| Image generation/edit | `gpt-image-2.5-flare` (structured, compare_all), `gpt-image-2.5-sunburst` (direct) | `measured_best` | «Модель рисования»; по режимам — `[models.image_draw.mode_defaults]`. Прежняя модель отключается OpenAI 2026-12-01 (spec 062). |
-| Generation-time image vision | `gpt-5.4-mini` | `balanced_cost_quality` | Та же «модель разбора изображений» (бриф перед генерацией). |
+## Логи и артефакты
 
-Важно:
+Всё, что пишет приложение в рабочем режиме, лежит в `.run/` (исключён из git, подпадает под retention):
 
-- balanced refresh убирает `gpt-4.1-mini` из канонического sidebar shortlist; legacy compatibility может сохраняться только как временный migration input, но не как рекомендуемый новый baseline.
-- analysis, validation, reconstruction и generation-time vision теперь разведены по отдельным role keys даже если часть значений совпадает.
-- canonical baseline в `config.toml` использует только `models.*`.
-- legacy model keys **удалены**: loader больше не читает top-level `default_model`, `model_options`, `validation_model`, `reconstruction_model` и env aliases `DOCX_AI_DEFAULT_MODEL`, `DOCX_AI_MODEL_OPTIONS`, `DOCX_AI_VALIDATION_MODEL`, `DOCX_AI_RECONSTRUCTION_MODEL`. Значения из них игнорируются; если такой key всё ещё лежит в `config.toml`, loader пишет warning-событие `legacy_model_config_key_detected`, но использует canonical registry или migration default.
-- в частности, `DOCX_AI_VALIDATION_MODEL` / `validation_model` больше не транслируются в `models.image_analysis.default` и `models.image_validation.default`; эти роли задаются только своими canonical keys.
-- legacy model sources больше нет: спека 066 (C-9) переименовала роль `structure_recognition` в `boundary_review` и удалила её legacy-источники `[structure_recognition].model` и `DOCX_AI_STRUCTURE_RECOGNITION_MODEL` без алиаса. Секции `[structure_recognition]` и `[models.structure_recognition]`, если они ещё лежат в `config.toml`, не читаются и называются в общем WARNING `config_key_ignored` (как любой ключ, который не прочитал ни один резолвер); env `DOCX_AI_STRUCTURE_RECOGNITION_MODEL` / `DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT` просто не читаются.
+- `app.log` — лог приложения, обработки блоков и ошибок провайдеров. Ошибка в интерфейсе с `log: ...` ищется по этому идентификатору;
+- `project.log`, `streamlit.log` — логи скриптов запуска и Streamlit (с ротацией);
+- `ui_results/` — группа файлов каждого прогона из интерфейса; канонический сигнал — событие `ui_result_artifacts_saved`, для аудиокниги — `ui_audiobook_artifact_saved`; публикация в папку результатов — `ui_results_published`;
+- `app.ready` — внутренний маркер живости, его содержимое не контракт.
 
-Базовые значения лежат в `config.toml`:
-
-```toml
-[models.text]
-default = "openrouter:google/gemini-3.1-flash-lite-preview"
-options = ["openrouter:google/gemini-3.1-flash-lite-preview", "openrouter:google/gemini-3.7-flash"]
-
-[providers.openai]
-enabled = true
-api_key_env = "OPENAI_API_KEY"
-
-[providers.openrouter]
-enabled = true
-api_key_env = "OPENROUTER_API_KEY"
-base_url = "https://openrouter.ai/api/v1"
-referer = "DocxAICorrector"
-title = "DocxAICorrector"
-
-# Optional override for the paragraph-boundary AI review role.
-# When omitted, it inherits [models.text].default.
-# [models.boundary_review]
-# default = "openrouter:google/gemini-3.1-flash-lite-preview"
-
-# Spec 062: two choices drive the six image roles; the UI shows both next to the image
-# mode. Per role: DOCX_AI_MODELS_IMAGE_<ROLE>_DEFAULT > [models.image_<role>].default >
-# UI / run profile choice > DOCX_AI_IMAGE_VISION_MODEL / DOCX_AI_IMAGE_DRAW_MODEL > default.
-[models.image_vision]   # image_analysis, image_validation, image_reconstruction, image_generation_vision
-default = "gpt-5.4-mini"
-options = ["gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-terra"]
-
-[models.image_draw]     # image_generation, image_edit
-default = "gpt-image-2.5-flare"
-options = ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]
-
-chunk_size = 6000
-max_retries = 3
-image_mode_default = "no_change"
-semantic_validation_policy = "advisory"
-keep_all_image_variants = false
-enable_vision_image_analysis = true
-enable_vision_image_validation = true
-semantic_redraw_max_attempts = 2
-semantic_redraw_max_model_calls_per_image = 9
-
-[structure_validation]
-min_paragraphs_for_auto_gate = 40
-min_explicit_heading_density = 0.003
-max_suspicious_short_body_ratio_without_escalation = 0.05
-max_all_caps_or_centered_body_ratio_without_escalation = 0.03
-toc_like_sequence_min_length = 4
-forbid_heading_only_collapse = true
-```
-
-Локальные override можно задавать через `.env`:
-
-```env
-DOCX_AI_MODELS_TEXT_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
-DOCX_AI_MODELS_TEXT_OPTIONS=openrouter:google/gemini-3.1-flash-lite-preview,openrouter:google/gemini-3.7-flash
-DOCX_AI_PROVIDERS_OPENAI_ENABLED=true
-DOCX_AI_PROVIDERS_OPENROUTER_ENABLED=true
-DOCX_AI_CHUNK_SIZE=6000
-DOCX_AI_MAX_RETRIES=3
-# Optional override for the paragraph-boundary AI review role. When omitted, it inherits DOCX_AI_MODELS_TEXT_DEFAULT.
-# DOCX_AI_MODELS_BOUNDARY_REVIEW_DEFAULT=openrouter:google/gemini-3.1-flash-lite-preview
-DOCX_AI_STRUCTURE_VALIDATION_MIN_PARAGRAPHS_FOR_AUTO_GATE=40
-DOCX_AI_STRUCTURE_VALIDATION_MIN_EXPLICIT_HEADING_DENSITY=0.003
-DOCX_AI_STRUCTURE_VALIDATION_MAX_SUSPICIOUS_SHORT_BODY_RATIO_WITHOUT_ESCALATION=0.05
-DOCX_AI_STRUCTURE_VALIDATION_MAX_ALL_CAPS_OR_CENTERED_BODY_RATIO_WITHOUT_ESCALATION=0.03
-DOCX_AI_STRUCTURE_VALIDATION_TOC_LIKE_SEQUENCE_MIN_LENGTH=4
-DOCX_AI_STRUCTURE_VALIDATION_FORBID_HEADING_ONLY_COLLAPSE=true
-DOCX_AI_LOG_LEVEL=INFO
-DOCX_AI_IMAGE_MODE_DEFAULT=no_change
-DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
-DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
-# Pin the pair for every image mode (switches the per-mode defaults of config.toml off):
-# DOCX_AI_IMAGE_VISION_MODEL=gpt-6.1-terra
-# DOCX_AI_IMAGE_DRAW_MODEL=gpt-image-2.5-flare
-# Per-role pins outrank both selectors; set one only to pin that role:
-# DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-2.5-flare-2026-09-08
-DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS=true
-DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION=true
-DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS=2
-DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE=9
-```
-
-Секция `[structure_recognition]` (`mode`, `max_window_paragraphs`, `overlap_paragraphs`, `timeout_seconds`, `min_confidence`, `cache_enabled`, `save_debug_artifacts`) и env-семейство `DOCX_AI_STRUCTURE_RECOGNITION_*` (включая `DOCX_AI_STRUCTURE_RECOGNITION_MODE` и `DOCX_AI_STRUCTURE_RECOGNITION_ENABLED`) **больше не читаются кодом**: отдельная AI-стадия structure recognition удалена 2026-06-22. Модель для `paragraph_boundary_ai_review` задаёт роль `boundary_review` (`[models.boundary_review]`); прежние `DOCX_AI_STRUCTURE_RECOGNITION_MODEL` / `[structure_recognition].model` с 066 тоже не читаются (см. раздел про legacy model keys выше).
-
-Системный промпт хранится в `src/docxaicorrector/resources/prompts/system_prompt.txt`.
-Prompt registry для изображений хранится в `src/docxaicorrector/resources/prompts/image_prompt_registry.toml`, а profile-файлы — в `src/docxaicorrector/resources/prompts/image_profiles/`.
-
-## Логи
-
-Основные runtime-артефакты и логи живут в `.run/`. Эта директория считается production-like local runtime area и подпадает под runtime cleanup/retention. Артефакты под `tests/artifacts/...` относятся к validation/dev workflow и не очищаются runtime retention-механикой.
-
-Проект пишет три основных файла логов:
-
-- `.run/app.log` — лог приложения, обработки блоков и ошибок OpenAI.
-- `tests/artifacts/real_document_pipeline/runs/<run_id>/app.log` — лог одного прогона real-document раннера: с 2026-11-08 (спека 067 FR-013) раннер пишет его в каталог прогона вместо общего `.run/app.log`, чтобы параллельные прогоны не делили файл; путь продублирован в отчёте (`output_artifacts.app_log`) и в summary (`app_log=`).
-- `.run/project.log` — лог PowerShell-скриптов запуска, остановки и status-проверок; теперь это rotating log с ограниченным числом backup-файлов, текущая реализация по умолчанию использует порог `256 KiB` и `5` backup-ов.
-- `.run/streamlit.log` — stdout/stderr Streamlit runtime; файл по-прежнему очищается на старте процесса, а во время долгого uptime дополнительно ограничивается WSL control script через периодическую size-check ротацию, текущие дефолты `256 KiB`, `5` backup-ов и проверка каждые `30` секунд, при этом активный путь остаётся `.run/streamlit.log`.
-
-Дополнительно в `.run/` действуют связанные runtime-retention правила:
-
-- `.run/app.log` сохраняет прежнюю ротацию через `RotatingFileHandler`.
-- `.run/app.ready` остаётся internal liveness marker для control flow, но steady-state перезаписывается примерно раз в `15` секунд, а не на каждом UI-цикле; содержимое файла не является стабильным внешним data contract.
-- `.run/formatting_diagnostics/` теперь имеет централизованную ограниченную retention-политику: хранение до `7` дней, максимум `100` артефактов, pruning по самым старым файлам во время записи.
-
-Если в UI отображается ошибка с `log: ...`, соответствующую техническую запись можно найти по этому идентификатору в `.run/app.log`.
-
-Для временной отладки с повышенной детализацией запускайте приложение с `DOCX_AI_LOG_LEVEL=DEBUG`; после диагностики возвращайте `INFO`, чтобы не раздувать `.run/app.log` без необходимости.
-
-Полный контракт по логированию, таксономия events и правила добавления новых log-event'ов для ИИ-агента зафиксированы в `docs/LOGGING_AND_ARTIFACT_RETENTION.md`. Там же каталогизированы все runtime-артефакты `.run/` и их retention-политики, включая выявленные гэпы (`paragraph_boundary_reports/`, `relation_normalization_reports/`, `paragraph_boundary_ai_review/`, `structure_maps/`, `structure_validation/`).
+Артефакты real-document прогонов лежат в `tests/artifacts/real_document_pipeline/` и очисткой `.run/` не трогаются. Для отладки запускайте с `DOCX_AI_LOG_LEVEL=DEBUG`. Полный контракт логирования, каталог событий и сроки хранения — `docs/LOGGING_AND_ARTIFACT_RETENTION.md`.
 
 ## Тесты
 
-В проекте есть регрессионные тесты на ключевые контракты:
-
-- конфигурация и env-overrides;
-- сборка смысловых блоков и соседнего контекста;
-- extraction headings/tables/captions и DOCX semantic hardening;
-- retry и обработка ошибок генерации;
-- session state и логика статусов;
-- одноразовое логирование старта приложения.
-- image prompt registry, image validator и placeholder-based image pipeline.
-
-Основной способ запуска тестов:
-
-Через VS Code tasks:
-
-- `Tasks: Run Task -> Run Full Pytest`
-- `Tasks: Run Task -> Run Docker CI Parity Pytest`
-- `Tasks: Run Task -> Run Current Test File`
-- `Tasks: Run Task -> Run Current Test Node`
-
-Через WSL shell:
+Канонический путь — WSL и `scripts/test.sh` (селектор идёт до опций pytest):
 
 ```bash
 bash scripts/test.sh tests/ -q
@@ -504,122 +124,63 @@ bash scripts/test.sh tests/test_config.py -vv
 bash scripts/test.sh tests/test_config.py::test_name -vv -x
 ```
 
-## ElevenLabs Audiobook Mode
+Из VS Code — задачи `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Run Docker CI Parity Pytest` (повтор CI в чистом контейнере Python 3.12). `scripts/test.sh` из Git Bash под Windows подхватывает системный Python и даёт ложные падения — всегда через `wsl.exe -d Debian`. Pyright работает как храповик (`tests/test_typecheck.py`): падает и при росте, и при снижении числа ошибок. Карта тестовых ярусов — `docs/testing/README.md`.
 
-- Режим `Литературное редактирование` показывает `Отредактированный DOCX` и `Отредактированный Markdown`.
-- Режим `Перевод` показывает `Переведённый DOCX` и `Переведённый Markdown`.
-- Режим `Подготовка аудиокниги (ElevenLabs)` делает narration artifact основным результатом. В UI две строки кнопок: «Текст для озвучки» — `DOCX для ElevenLabs Studio`, `PDF` и `Текст для ElevenLabs (.txt)`; «Для проверки» — `DOCX (для инспекции)` и `Markdown (для инспекции)`. DOCX и PDF собираются из тех же абзацев, что и `.txt`; PDF делает LibreOffice, и без него остаётся DOCX и TXT (причина — на экране и в логе).
-- Narration artifact сохраняется как `.run/ui_results/<timestamp>_<stem>.result.tts.txt` (и `.result.tts.docx`, `.result.tts.pdf`, когда собраны) рядом со стандартными `.result.md` и `.result.docx`.
-- Для инструмента поэтапной озвучки рядом лежит файл книги `<stem>.result.narration.json` (кнопка «Файл книги для озвучки (.json)» в строке «Текст для озвучки»): сегменты с текстом озвучки, паузы между главами, заголовками и сценами, словарь чтения сокращений. Схема — `specs/073-narration-for-the-ear/contracts/narration-book.md`.
-- В standalone audiobook effective `image_mode` всегда принудительно становится `no_change` на runtime-уровне.
-- Аудиокнига — технический проход над готовым текстом: без пары языков и интенсивности редактуры, без тегов озвучки, числа и сокращения словами. Исключения (изображения, таблицы, подписи, оглавление, указатель, примечания, обрывки) решаются по абзацам и публикуются с адресами; абзацы, требующие проверки, помечаются `needs_review`. Подробности — в `docs/WORKFLOW_AND_IMAGE_MODES.md`.
+## Проверка на реальных книгах
 
-## Real Document Validation
-
-Канонический registry для universal real-document validation хранится в `corpus_registry.toml` и содержит реальные полные книги в `tests/sources/book/` и (спека 070) переведённые документы для проверки аудиокниги в `tests/sources/translated/`.
-Lietaer harness остаётся штатным entrypoint и по умолчанию запускается как document profile `lietaer-pdf-full-benchmark` с run profile `ui-parity-default`.
-Corpus покрывает четыре полнокнижных PDF-профиля: `lietaer-pdf-full-benchmark`, `mazzucato-pdf-full-benchmark`, `creatingwealth-pdf-full-benchmark` и held-out `money-sustainability-pdf-full-heldout`.
-Для stochastic full-tier прогонов доступен soak run profile `ui-parity-soak-3x` с `repeat_count = 3` и aggregate reporting по повторам.
-
-Обычный regression workflow теперь разделён на три tier-а:
-
-- `extraction` — быстрые corpus checks на extractability и coarse structure;
-- `structural` — deterministic passthrough через Pandoc + formatting restore без API-вызовов;
-- `full` — model-backed UI-parity validation и exceptional quality gate.
-
-Предпочтительный пользовательский путь в VS Code:
-
-- `Tasks: Run Task -> Run Lietaer Real Validation`
-- `Tasks: Run Task -> Run Real Document Validation Profile`
-- `Tasks: Run Task -> Run Real Document Quality Gate`
-
-Канонический WSL CLI-путь:
+`corpus_registry.toml` описывает документы и профили прогона: четыре полнокнижных PDF (три книги Lietaer, одна из них held-out, и Mazzucato) и переведённые документы для проверки аудиокниги; исходники — `tests/sources/book/` и `tests/sources/translated/`. Ярусы: `extraction` и `structural` — без вызовов модели; `full` — платный прогон по тому же пути, что и интерфейс (`ui-parity-*`).
 
 ```bash
-bash scripts/run-real-document-validation.sh
+bash scripts/run-real-document-validation.sh        # профиль по умолчанию: lietaer-pdf-full-benchmark
+bash scripts/run-real-document-quality-gate.sh      # канонический гейт реальных документов, ~15 минут
 ```
 
-Exceptional automated pytest gate:
-
-```bash
-bash scripts/run-real-document-quality-gate.sh
-```
-
-Не запускайте validator через Windows Python из WSL. Штатный runtime для real-document validation — WSL `.venv` с `PYTHONPATH=.` от корня репозитория.
-
-Каждый прогон теперь пишет run-scoped артефакты в `tests/artifacts/real_document_pipeline/runs/<run_id>/`, а latest aliases обновляет в `tests/artifacts/real_document_pipeline/`.
-Latest manifest теперь является стабильным контрактом в течение всего прогона и также фиксирует `document_profile_id`, `run_profile_id`, `validation_tier`, `status`, `acceptance_passed`, run-scoped artifact paths, latest alias paths и явные runtime override-ы относительно UI defaults.
-
-Чтобы не гадать, к какому прогону относятся файлы, используйте manifest:
-
-```text
-tests/artifacts/real_document_pipeline/lietaer_validation_latest.json
-```
-
-Для live-наблюдения за текущим прогоном используйте progress snapshot:
-
-```text
-tests/artifacts/real_document_pipeline/lietaer_validation_progress.json
-```
-
-`Run Real Document Quality Gate` запускает только exceptional pytest gate для real-document harness и автоматически валидирует manifest/report. Этот путь намеренно не входит в обычный `Run Full Pytest`.
-
-Подробности workflow и структуры артефактов: `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`.
-
-Низкоуровневый fallback для ручной диагностики:
-
-```bash
-source .venv/bin/activate
-pytest tests -q
-```
-
-Прямой запуск из WSL shell по-прежнему допустим для ручной диагностики:
-
-```bash
-bash -lc 'cd /mnt/d/Work/Projects/DocxAICorrector && . .venv/bin/activate && pytest tests -q'
-```
-
-До интерпретации любого test/debug результата сначала проверяйте project runtime в WSL. Вывод случайного системного `python`, `py` или Windows-интерпретатора не считается источником истины, пока не подтверждено поведение проектной `.venv` внутри WSL.
-
-Если нужен живой прогресс по каждому тесту, используйте `pytest tests -vv`.
-
-Для просмотра журнала приложения используйте `Tasks: Run Task -> Tail Streamlit Log` или `./scripts/tail-streamlit-log.ps1`.
-
-Локальная конфигурация pytest хранится в `pyproject.toml`.
+То же — задачами `Run Lietaer Real Validation`, `Run Real Document Validation Profile`, `Run Real Document Quality Gate`. Каждый прогон пишет артефакты в `tests/artifacts/real_document_pipeline/runs/<run_id>/` и обновляет манифест `lietaer_validation_latest.json` и снимок прогресса `lietaer_validation_progress.json` рядом. Гейт намеренно не входит в обычный полный прогон тестов. Подробности — `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`; пошаговый runbook с известными ловушками — `docs/RUNNING_THE_PIPELINE.md`. Полный прогон книги — веха, а не цикл отладки.
 
 ## Структура репозитория
 
 ```text
 .
-├── app.py
-├── config.py
-├── constants.py
-├── document.py
-├── generation.py
-├── logger.py
-├── models.py
-├── state.py
-├── ui.py
-├── src/docxaicorrector/  (код пакета + resources/{prompts, config.toml})
-├── requirements.txt
-├── scripts/
-├── docs/
-├── tests/
-└── .github/
+├── app.py                     точка входа Streamlit (тонкая обёртка над docxaicorrector.ui)
+├── src/docxaicorrector/       код пакета
+│   ├── core/                  конфиг, модели, режимы перевода, константы
+│   ├── ui/                    Streamlit-экраны, каталоги строк (locales/ru.json, en.json)
+│   ├── processing/            загрузка, нормализация DOCX/DOC/PDF, подготовка документа
+│   ├── document/, structure/  извлечение, роли абзацев, сборка смысловых блоков
+│   ├── pdf_import/            импорт PDF по текстовому слою
+│   ├── pipeline/              обработка блоков, глоссарий, приёмка, аудиокнига и файл книги
+│   ├── generation/            вызовы моделей, сборка DOCX через Pandoc, DOCX/PDF озвучки
+│   ├── image/, real_image/    обработка изображений
+│   ├── runtime/               состояние, артефакты, папка результатов, передача в студию
+│   ├── validation/, reader_cleanup_mvp/, chapter_workflow/, text/
+│   └── resources/             config.toml, промпты, коэффициенты оценки цены
+├── specs/                     спеки работ (Spec Kit), по одному каталогу на работу
+├── docs/                      контракты, runbook'и, ревью, архив
+├── tests/                     тесты и артефакты прогонов
+├── scripts/                   запуск, тесты, валидация, измерения — см. scripts/README.md
+├── tools/                     вспомогательные инструменты (сравнение PDF-импорта и др.)
+├── corpus_registry.toml       реестр real-document корпуса
+└── .specify/, .github/        Spec Kit и CI
 ```
 
-Что лежит в `scripts/`, кто на какой скрипт опирается и когда что запускать — [`scripts/README.md`](scripts/README.md).
+Что лежит в `scripts/` и когда что запускать — [`scripts/README.md`](scripts/README.md). Где проект находится сейчас и как это проверить — `docs/WHERE_WE_ARE.md`.
+
+## Как идёт разработка
+
+- **Источник правды — код и история git**; markdown отстаёт от них. Начинайте с `docs/WHERE_WE_ARE.md` и `AGENTS.md`, а не с датированных документов.
+- **Spec Kit.** Новая работа уровня фичи или контракта начинается со спеки `spec.md` в `specs/<NNN>-<slug>/` (обязательны разделы `## Non-goals` и `## Anti-regression`); полный цикл `plan.md`/`tasks.md` нужен только для новых модулей и контрактов. Правила — `.specify/memory/constitution.md` (обязательна к прочтению), порядок работы — `docs/SPECKIT_WORKFLOW.md`.
+- **Измерять, а не предполагать.** Решения и правила выводятся из прогонов на реальных книгах и записываются числами; никаких правил под конкретную книгу в коде.
+- **Независимое ревью.** После крупной работы все затронутые модули отдаются на ревью Codex; находки проверяются по коду и приземляются в тест, Changelog спеки или записанный отказ. Рецепт — `docs/CODEX_INDEPENDENT_REVIEW.md`, отчёты — `docs/reviews/`.
+- Локальная работа и чек-лист PR — `CONTRIBUTING.md`; изменения пользовательского поведения — в `CHANGELOG.md`.
+
+Единый источник правды по runtime workflow и режимам изображений — `docs/WORKFLOW_AND_IMAGE_MODES.md`; по startup performance — `docs/STARTUP_PERFORMANCE_CONTRACT.md`; исторические и заменённые документы — `docs/ARCHIVE_INDEX.md`.
 
 ## Ограничения
 
-- Поддерживаются только inline-изображения в основном потоке документа; floating shapes, SmartArt, OLE и сложная Word-верстка по-прежнему не гарантируются.
-- Таблицы и сноски обрабатываются ограниченно.
-- Контекст ограничен соседними блоками, а не всей книгой целиком.
-- Большие документы обрабатываются заметно дольше.
-- `restart_source` используется только как metadata/predicate для stop/failed-сценария; байты поднимаются из `.run/` только при реальном восстановлении файла, чтобы не перечитывать DOCX во время вычисления idle UI-состояния.
-- Кеш подготовки документа теперь session-scoped и keyed по lightweight `uploaded_file_token:chunk_size`; он держит не более двух последних документов на сессию вместо process-wide `lru_cache`.
-- `completed_source` хранится только для успешного rerun UX, но ограничен по размеру и очищается, как только тот же исходник реально пошёл в новый запуск.
-
-## Разработка
-
-Для локальной работы см. `CONTRIBUTING.md`.
+- Изображения поддерживаются только inline в основном потоке документа; плавающие объекты, SmartArt, OLE и сложная Word-вёрстка не гарантируются.
+- Таблицы и сноски обрабатываются ограниченно; сноски в PDF-источниках зависят от того, как они лежат в текстовом слое.
+- PDF — только с текстовым слоем; двухколоночные PDF не проверялись (корпус одноколоночный); OCR по умолчанию выключен.
+- Контекст ограничен соседними блоками, а не всей книгой; единообразие терминов на переводе держит глоссарий прогона.
+- Большие документы обрабатываются долго; размер загрузки ограничен 25 МБ, PDF — 2000 страниц.
+- Озвучку приложение не делает: оно готовит текст и файл книги, голос — дело ElevenLabs Studio или AudiobookStudio.
+- Готовый результат живёт в сессии Streamlit и в `.run/ui_results/` (кэш); долговременно сохраняется только то, что скопировано в папку результатов.

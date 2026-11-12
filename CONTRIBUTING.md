@@ -46,7 +46,7 @@ python -m venv .venv-win
 pip install -r requirements.txt
 ```
 
-4. Ручной fallback: установите system dependencies и проверьте `OPENAI_API_KEY` в `.env`:
+4. Ручной fallback: установите system dependencies (полный список — `system-requirements.apt`) и впишите в `.env` ключ `OPENROUTER_API_KEY` (дефолтные модели идут через OpenRouter; `OPENAI_API_KEY` нужен для обработки изображений):
 
 ```bash
 sudo apt-get update
@@ -164,7 +164,7 @@ command -v antiword
 pandoc --version
 ```
 
-PDF import использует LibreOffice Writer PDF import filter (`--infilter=writer_pdf_import`) и не выполняет OCR для scanned PDF.
+PDF импортируется по текстовому слою (pdfminer, `src/docxaicorrector/pdf_import/`); OCR для scanned PDF по умолчанию выключен (`DOCXAI_PDF_OCR_IMPORT_ENABLED`, нужны `ocrmypdf` и Tesseract). LibreOffice нужен для legacy `.doc` и для PDF-версии текста озвучки.
 
 Если clean Python 3.12 container и локальная WSL `.venv` расходятся по результату, приоритет для отладки CI имеет clean parity run.
 
@@ -267,68 +267,33 @@ Heading styles уже есть `w:asciiTheme="majorHAnsi"`, а Word даёт the
 Именно комбинация прямого style override для body-стилей и theme patch для
 heading-стилей даёт корректный результат.
 
-## UI-стили и HTML
+## UI
 
-Для UI в этом проекте действует жёсткий порядок выбора решения:
+Интерфейс — `src/docxaicorrector/ui/` (точка входа `ui/_app.py`, экраны `ui/_ui.py`). Порядок выбора решения:
 
-1. Сначала использовать native Streamlit-компоненты (`st.info`, `st.warning`, `st.caption`, `st.metric`, `st.progress`, `st.columns`, `st.expander`).
-2. Если нужен client-side state без server rerun и приходится использовать `components.html(...)`, оформлять это как один централизованный component-contract с единым theme/layout helper.
-3. Только в последнюю очередь использовать локальный HTML/CSS workaround.
+1. Нативные компоненты Streamlit (`st.columns`, `st.container`, `st.sidebar`, `st.expander`, `st.metric`, `st.progress`, `width=`).
+2. Только если нативных не хватает — один централизованный helper, а не inline-CSS по разным функциям. `unsafe_allow_html=True` допустим на узких, явно ограниченных поверхностях.
+3. `use_container_width` в новом коде не писать (deprecated): `True` → `width="stretch"`, `False` → `width="content"`.
 
-Практические правила:
+Все пользовательские строки живут в каталоге `src/docxaicorrector/ui/locales/ru.json` (`en.json` — инструмент проверки «строка не в каталоге»), а не в коде. Ни одна ветка логики не должна смотреть на отображаемый текст.
 
-- не рассчитывайте, что iframe из `components.html(...)` унаследует стили основного приложения;
-- не добавляйте `font-family` override без отдельной задачи на типографику;
-- не размазывайте inline CSS по разным UI-функциям — либо native Streamlit, либо один helper/contract на компонент;
-- `unsafe_allow_html=True` допустим только для узких, явно ограниченных поверхностей, где native Streamlit не покрывает нужный UX-контракт.
+В `.streamlit/config.toml` выставлены `fileWatcherType = "none"` и `runOnSave = false`: правка Python-файла не попадает в уже работающий процесс — перезапустите приложение (`scripts\restart-project.cmd` или задача `Restart Project`). Для проверки экрана используйте браузер (встроенный браузер VS Code); после CSS- и layout-правок полный pytest не нужен, достаточно браузерной проверки и точечных тестов, если затронута Python-логика.
 
-### Как проверять правки визуала без полного pytest-прогона
+## Как устроена работа над изменениями
 
-Для быстрых UI-итераций не нужно каждый раз ждать полный тестовый прогон или повторный полный processing run документа.
-
-Короткий цикл проверки для `markdown preview`:
-
-1. Откройте приложение в integrated browser VS Code.
-2. Запустите реальную обработку документа или дождитесь, когда появится `Текущий Markdown` / `Предпросмотр Markdown`.
-3. Откройте preview прямо во время обработки: partial preview обновляется по мере готовности блоков.
-4. Для быстрой визуальной отладки правьте CSS прямо в DOM iframe через browser tools и сразу смотрите результат на текущей странице.
-5. Только после того как визуально найден правильный вариант, переносите его в `ui.py` в централизованный helper `_MARKDOWN_PREVIEW_THEME_CSS`.
-
-Важно:
-
-- DOM/CSS-правки в браузере временные и исчезают после rerun/reload;
-- финальная постоянная правка всё равно должна жить в коде, а не в ручной browser-инъекции;
-- для окончательной проверки поведения используйте обычный test path, но быстрый visual tuning допустимо делать без полного pytest между каждой CSS-итерацией.
-
-### Почему Streamlit-стили не попадают в markdown preview автоматически
-
-`render_markdown_preview(...)` использует `streamlit.components.v1.components.html(...)`, а значит preview рендерится как отдельный `about:srcdoc` iframe со своим DOM и своим `<style>`.
-
-Следствия:
-
-- CSS и theme основного Streamlit-приложения не наследуются внутрь iframe;
-- `secondaryBackgroundColor`, `textColor` и другие theme-значения из `.streamlit/config.toml` не применяются автоматически внутри preview;
-- чтобы iframe выглядел согласованно со Streamlit, ему нужен собственный централизованный theme shell, который вручную повторяет нужные цвета/контраст/spacing.
-
-Канонический паттерн для этого проекта:
-
-- считайте markdown preview отдельным документом, а не частью Streamlit DOM;
-- не пытайтесь «починить наследование» между родительским приложением и iframe, потому что этого наследования нет;
-- постоянное решение для preview — во время рендера синхронизировать внутри iframe реальные computed styles родительского Streamlit DOM: цвет текста, фон controls, border, radius, типографику и другие визуальные токены;
-- если preview снова начнёт выглядеть как browser-default control set, это означает, что синхронизация parent styles сломалась или не выполнилась, а не то, что Streamlit theme внезапно перестал наследоваться.
-
-Дополнительный operational нюанс этого репозитория:
-
-- в `.streamlit/config.toml` выставлены `fileWatcherType = "none"` и `runOnSave = false`;
-- поэтому изменение `ui.py` на диске не обязано мгновенно попадать в уже работающий runtime;
-- quick visual tuning делается через browser DOM, а постоянный кодовый результат подтверждается уже после нового исполнения обновлённого Python-кода.
+- **Источник правды — код и история git.** Начинайте с `docs/WHERE_WE_ARE.md`; датированные документы вроде `docs/specs/GLOBAL_PLAN_2026-06-16.md` — история, а не план.
+- **Конституция** `.specify/memory/constitution.md` обязательна. Принципы VII (универсальные правила, никаких литералов под конкретную книгу) и VIII (доказательство должно быть свежее правки) действуют для любого изменения.
+- **Спеки.** Работа уровня фичи, контракта, пайплайна валидации или real-document обработки начинается со спеки `specs/NNN-slug/spec.md` с разделами `## Non-goals` и `## Anti-regression`. Мелкие баги с очевидным ожидаемым поведением, форматирование и обновление ожиданий тестов спеки не требуют. `plan.md` и `tasks.md` — только для новых модулей и контрактов; порядок — `docs/SPECKIT_WORKFLOW.md`, правила маршрутизации — `AGENTS.md`.
+- **Тема коммита не называет номер спеки, если коммит не является работой по ней** — гард `tests/test_spec_status_consistency.py` читает тему как заявку.
+- **Независимое ревью Codex** после крупной работы по затронутым модулям целиком (рецепт — `docs/CODEX_INDEPENDENT_REVIEW.md`); каждую находку проверьте по коду сами, затем приземлите её: тест, запись в Changelog спеки или записанный отказ в её Non-goals. Отчёты — `docs/reviews/`.
+- **Перед «всё зелёное»** проверьте `git status --porcelain`: на грязном дереве локальный прогон не доказывает CI. После переноса ветки на свежий `main` полный прогон повторяется.
 
 ## Правила изменений
 
 - Держите изменения узкими и без побочных рефакторингов.
 - Не меняйте поведение системного промпта без явной задачи на качество модели.
 - Для регрессий сначала фиксируйте контракт тестом, затем кодом.
-- При изменении структуры модулей синхронизируйте `README.md`, а historical decomposition docs обновляйте только если это действительно нужно для архивного контекста.
+- При изменении структуры модулей или пользовательского поведения синхронизируйте `README.md`; историю изменений ведите в `CHANGELOG.md`, а historical decomposition docs обновляйте только если это действительно нужно для архивного контекста.
 
 ## Pull request checklist
 
