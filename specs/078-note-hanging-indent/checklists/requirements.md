@@ -19,14 +19,14 @@
 - [x] Requirements are testable offline (synthetic spans; corpus measurements by the production code on cached
       pdfminer spans and full preparations, no LLM, no network)
 - [x] Rejected alternatives recorded in Non-goals (R1, the "head is open" and "hangs" conditions, alignment with
-      the text after the number, "smaller than the body")
+      the text after the number); "smaller than the body", first rejected, adopted in Codex review round 1 (P1)
 - [x] No paid run is needed
 
 ## Feature Readiness
 
-- [x] All functional requirements have clear acceptance criteria (SC-001…SC-005)
-- [x] Constitution VII: the rule reads geometry (indent, line fill, size) and the spec 068 note-number form; no
+- [x] All functional requirements have clear acceptance criteria (SC-001…SC-006)
+- [x] Constitution VII: the rule reads geometry (indent, line fill, size against the body size) and the spec 068 note-number form; no
       word list, no number taken from one book — the indent step and the full-line share are the importer's
-      existing quantities
+      existing quantities; test texts are invented, none taken from a corpus book (Codex review round 1, P2)
 - [x] Constitution VIII: every code claim checked on `main` @ `e6a411c` on 2026-11-12; the two docstrings that
       quote corpus measurements touched by this change were re-measured the same day

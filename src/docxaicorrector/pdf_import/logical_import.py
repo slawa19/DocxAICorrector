@@ -3163,11 +3163,16 @@ def _continues_hanging_numbered_line(
         1-3 digit token without a full stop, whitespace, then a capital or an entry opener);
       * `current` does not -- an indented line that opens with a number is the next entry;
       * both lines are set in one size (`_font_sizes_match`);
+      * both lines are set SMALLER than the body (`_is_set_below_body_size`): positive
+        evidence that they are not running text. Joined, body text set like a numbered
+        instruction ("1 Disconnect ...", an indented paragraph, "2 Verify ...") read as a run
+        of notes and left the narration (spec 078, Codex review round 1, P1). Notes set at the
+        body size keep the old split: a missed join, never body text excluded;
       * `previous` is a FULL line: it reaches `_FULL_LINE_FILL_RATIO` of the body column, the
         share the body and list merges already read as a line that did not end short. A line
-        wraps only when it is full, so a numbered line that ends short -- a numbered heading
-        ("3 Results"), a one-line list item, a one-line note -- is never continued by the
-        indented line under it, which stays the first line of the next paragraph.
+        wraps only when it is full, so a numbered line that ends short -- a one-line list item,
+        a one-line note -- is never continued by the indented line under it, which stays the
+        first line of the next paragraph.
     The step itself is the one the branch above measured (at least 0.45 of the body leading);
     the vertical-gap limit of `_can_merge_body_span` still applies after this. Only lines are
     joined: no text is dropped or rewritten.
@@ -3176,14 +3181,30 @@ def _continues_hanging_numbered_line(
     Sustainability's chapter-end notes (number at x0 5.0, wrapped lines at 27.3, one at 33.8;
     10.8 pt against a 14.5 pt body), every one the second line of the note above it; the
     numbered lines fill 0.867-1.0 of the column, nine of them end a sentence. Not one line of
-    Rethinking Money, The Value of Everything or Creating Wealth has this form."""
+    Rethinking Money, The Value of Everything or Creating Wealth has this form, at any size."""
     previous_text = _normalize_text(previous.text)
     current_text = _normalize_text(current.text)
     if not opens_with_note_number(previous_text) or opens_with_note_number(current_text):
         return False
-    if not _font_sizes_match(_span_font_size(previous), _span_font_size(current)):
+    previous_size, current_size = _span_font_size(previous), _span_font_size(current)
+    if not _font_sizes_match(previous_size, current_size):
+        return False
+    if not (
+        _is_set_below_body_size(previous_size, layout_profile)
+        and _is_set_below_body_size(current_size, layout_profile)
+    ):
         return False
     return _span_line_fill_ratio(previous, layout_profile) >= _FULL_LINE_FILL_RATIO
+
+
+def _is_set_below_body_size(size: float | None, layout_profile: _PdfHeadingLayoutProfile) -> bool:
+    """Spec 078: the size is known, the body size is known, and the size is smaller than the
+    body by more than the importer's size tolerance (`_font_sizes_match`) -- the test the
+    spec 068 notes-run page join already makes (`_halves_continue_an_in_body_notes_run`)."""
+    body_font_size = layout_profile.body_font_size
+    if size is None or body_font_size is None:
+        return False
+    return size < body_font_size and not _font_sizes_match(size, body_font_size)
 
 
 def _starts_like_new_body_sentence(text: str) -> bool:
