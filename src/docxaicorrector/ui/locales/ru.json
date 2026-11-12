@@ -133,6 +133,7 @@
   "result.studio_error.unreachable": "Студия не отвечает по адресу {url}: {detail}. Адрес задаёт настройка DOCX_AI_STUDIO_URL.",
   "result.studio_error.rejected": "Студия не приняла файл книги (HTTP {status}): {detail}",
   "result.studio_error.bad_response": "Студия ответила неожиданно (HTTP {status}): {detail}",
+  "result.studio_error.failed": "Не удалось отправить книгу в студию: {detail}",
   "result.audiobook_studio_limits_exceeded": "Текст озвучки превышает лимиты ElevenLabs Studio: {limits}. Файл не изменён — проверьте его перед импортом.",
   "result.success_document_processed": "Документ обработан.",
   "result.blocked_delivery_notice": "Результат заблокирован итоговой проверкой качества. Файлы ниже доступны только для диагностики.",

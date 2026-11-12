@@ -275,7 +275,11 @@ def _start_background_processing(
         document_context_prompt=document_context_prompt,
     ) -> None:
         from docxaicorrector.processing.processing_service import get_processing_service
+        from docxaicorrector.runtime.results_folder import PUBLISH_FLAG_KEY
 
+        # Spec 075: a run started from this screen keeps its result in the results folder; runs of the
+        # console validator never carry this flag.
+        app_config = {**app_config, PUBLISH_FLAG_KEY: True}
         get_processing_service().run_processing_worker(
             runtime=runtime,
             uploaded_filename=uploaded_filename,

@@ -1132,6 +1132,7 @@ _STUDIO_ERROR_KEYS = {
     "unreachable": "result.studio_error.unreachable",
     "rejected": "result.studio_error.rejected",
     "bad_response": "result.studio_error.bad_response",
+    "failed": "result.studio_error.failed",
 }
 
 
@@ -1156,12 +1157,22 @@ def _handle_studio_handoff_click(book_json: str) -> None:
     The outcome is keyed by the book's own hash, so it is shown under the book it belongs to and
     never under the next run's file.
     """
-    studio_url, studio_dir = _studio_settings()
-    with st.spinner(t("result.studio_sending_spinner")):
-        outcome = send_book_to_studio(
-            book_json.encode("utf-8"), studio_url=studio_url, studio_dir=studio_dir
+    # Safety boundary: the click runs in the middle of rendering the result screen, and an exception
+    # here would abort everything below the row (the review downloads, the folder line). Whatever goes
+    # wrong becomes an error outcome the screen shows with its cause.
+    studio_url = ""
+    studio_dir = ""
+    try:
+        studio_url, resolved_studio_dir = _studio_settings()
+        studio_dir = str(resolved_studio_dir)
+        with st.spinner(t("result.studio_sending_spinner")):
+            outcome = send_book_to_studio(
+                book_json.encode("utf-8"), studio_url=studio_url, studio_dir=resolved_studio_dir
+            )
+    except Exception as exc:
+        outcome = StudioHandoffOutcome(
+            ok=False, error_code="failed", error_detail=f"{type(exc).__name__}: {exc}"
         )
-    _log_studio_handoff(outcome, studio_url=studio_url)
     st.session_state[_STUDIO_HANDOFF_STATE_KEY] = {
         "token": _book_token(book_json),
         "ok": outcome.ok,
@@ -1170,8 +1181,12 @@ def _handle_studio_handoff_click(book_json: str) -> None:
         "error_detail": outcome.error_detail,
         "http_status": outcome.http_status,
         "studio_url": studio_url,
-        "studio_dir": str(studio_dir),
+        "studio_dir": studio_dir,
     }
+    try:
+        _log_studio_handoff(outcome, studio_url=studio_url)
+    except Exception:  # a failing logger must not hide the outcome or the rest of the screen
+        pass
 
 
 def _log_studio_handoff(outcome: StudioHandoffOutcome, *, studio_url: str) -> None:

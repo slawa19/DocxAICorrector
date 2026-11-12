@@ -80,6 +80,32 @@ def isolate_repo_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(env_name, raising=False)
 
 
+def results_folder_fingerprint(path: Path) -> tuple[bool, int, int, int] | None:
+    """What a session-level guard compares: existence, the folder's mtime, the number of entries below
+    it and the newest mtime among them. ``None`` when the folder does not exist. The owner may well
+    have a real ``translations/`` of their own, so the guard compares before/after, never absence."""
+    if not path.exists():
+        return None
+    entries = list(path.rglob("*"))
+    newest = max((entry.stat().st_mtime_ns for entry in entries), default=0)
+    return (True, path.stat().st_mtime_ns, len(entries), newest)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def guard_project_translations_folder() -> Any:
+    """Spec 075 Anti-regression, session level: after the whole run ``<project root>/translations`` is
+    exactly as it was before (not created, not changed). The per-test fixture below redirects the root;
+    this proves nothing slipped past it."""
+    real_folder = _constants.BASE_DIR / "translations"
+    before = results_folder_fingerprint(real_folder)
+    yield before
+    after = results_folder_fingerprint(real_folder)
+    assert after == before, (
+        f"the test session changed {real_folder}: before={before}, after={after}. "
+        "Something published to the real results folder instead of the isolated project root."
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolate_results_folder(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Spec 075 Anti-regression: no test may write into ``<project root>/translations``.

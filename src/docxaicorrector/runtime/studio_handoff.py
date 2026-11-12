@@ -11,11 +11,13 @@ screen turns them into localized text and logs the event, so nothing here talks 
 
 from __future__ import annotations
 
+import http.client
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -73,23 +75,44 @@ StartStudio = Callable[[Path], StartResult]
 
 def post_json_bytes(url: str, body: bytes, timeout: float) -> HttpReply:
     """``POST`` the raw bytes; an HTTP error status is an answer, not an exception."""
-    request = urllib.request.Request(
-        url, data=body, method="POST", headers={"Content-Type": "application/json"}
-    )
     try:
+        request = urllib.request.Request(
+            url, data=body, method="POST", headers={"Content-Type": "application/json"}
+        )
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - http(s) studio URL from settings
             return HttpReply(status=int(response.status), body=response.read())
     except urllib.error.HTTPError as exc:
         try:
-            return HttpReply(status=int(exc.code), body=exc.read())
+            body = exc.read()
+        except (OSError, http.client.HTTPException):
+            body = b""  # the status is the answer; a torn error body only loses the detail
         finally:
             exc.close()
+        return HttpReply(status=int(exc.code), body=body)
     except urllib.error.URLError as exc:
         raise StudioConnectionError(
             str(exc.reason), refused=isinstance(exc.reason, ConnectionRefusedError)
         ) from exc
-    except (OSError, ValueError) as exc:  # timeout, reset, a malformed URL
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        # timeout, reset, a malformed URL, a torn or non-HTTP answer (IncompleteRead, BadStatusLine)
         raise StudioConnectionError(f"{type(exc).__name__}: {exc}", refused=False) from exc
+
+
+# The studio reads its own ``.env``, but its settings loader gives the PROCESS environment priority over
+# that file, so whatever DocxAICorrector's environment carries (STUDIO_PORT, GEMINI_API_KEY, PYTHONPATH of
+# this project...) would silently override the studio's own configuration. It is started with only what
+# a shell tool needs, plus the WSL interop variables that let it reach Windows.
+_START_ENV_EXACT = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TERM", "WSL_DISTRO_NAME", "WSL_INTEROP", "WSLENV")
+_START_ENV_PREFIXES = ("LC_",)
+
+
+def minimal_start_environment(source: Mapping[str, str] | None = None) -> dict[str, str]:
+    environment = os.environ if source is None else source
+    return {
+        name: value
+        for name, value in environment.items()
+        if name in _START_ENV_EXACT or name.startswith(_START_ENV_PREFIXES)
+    }
 
 
 def run_studio_start_script(studio_dir: Path) -> StartResult:
@@ -102,6 +125,7 @@ def run_studio_start_script(studio_dir: Path) -> StartResult:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=minimal_start_environment(),
             timeout=START_TIMEOUT_SECONDS,
             check=False,
         )
@@ -176,6 +200,24 @@ def send_book_to_studio(
     start_studio: StartStudio = run_studio_start_script,
 ) -> StudioHandoffOutcome:
     """Post the book file; when the studio is down start it and try once more. Never raises."""
+    try:
+        return _send_book_to_studio(
+            book_bytes, studio_url=studio_url, studio_dir=studio_dir, post=post, start_studio=start_studio
+        )
+    except Exception as exc:  # the button handler must always get an outcome to show
+        return StudioHandoffOutcome(
+            ok=False, error_code="unreachable", error_detail=f"{type(exc).__name__}: {exc}"
+        )
+
+
+def _send_book_to_studio(
+    book_bytes: bytes,
+    *,
+    studio_url: str,
+    studio_dir: Path,
+    post: HttpPost,
+    start_studio: StartStudio,
+) -> StudioHandoffOutcome:
     endpoint = studio_url.rstrip("/") + "/api/books"
     started_studio = False
     try:

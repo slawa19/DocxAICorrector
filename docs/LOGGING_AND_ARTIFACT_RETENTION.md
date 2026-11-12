@@ -364,10 +364,10 @@ Notice экрана результата: `result.audiobook_studio_limits_exceed
 нет (§1.5).
 
 - `ui_results_published` — `src/docxaicorrector/pipeline/late_phases.py` (`_publish_results_folder`), INFO, сразу после
-  `ui_result_artifacts_saved`, только для доставленного (не заблокированного) результата и только когда хотя бы один файл лёг
-  в папку. Context: `{filename, folder, paths, unchanged_count, renamed_count}`; `paths` — итоговые пути файлов в папке,
+  `ui_result_artifacts_saved`, только для прогона, запущенного из интерфейса (ключ `publish_results_folder` в app config прогона ставит стартовый путь `src/docxaicorrector/ui/_app.py`; консольный валидатор его не ставит и не публикует), только для доставленного (не заблокированного) результата и только когда хотя бы один файл лёг
+  в папку. Context: `{filename, folder, paths, unchanged_count, renamed_count, removed_paths, stale_remove_failed}`; `paths` — итоговые пути файлов в папке,
   `unchanged_count` — файлы с тем же содержимым (не переписаны), `renamed_count` — файлы, записанные как `<имя> (новая).<ext>`,
-  потому что оригинал занят (открыт в Word или проигрывателе).
+  потому что оригинал занят (открыт в Word или проигрывателе); `removed_paths` — файлы прежнего прогона того же источника (пять имён скачивания и их варианты `(новая)`), убранные, потому что этот прогон их не построил; `stale_remove_failed` — `[{file, error}]` для тех, что убрать не удалось (заняты). Посторонние файлы в папке книги не трогаются.
 - `ui_results_publish_failed` — там же, WARNING: папку не удалось создать или записать (Context: `{filename, error_type,
   error_message}`), либо часть файлов не удалось положить даже под именем `(новая)` (Context: `{filename, folder,
   failed_files: [{file, error}]}`). Остальные файлы при этом доставляются. Ключ состояния `latest_results_folder` в этом случае
@@ -376,7 +376,7 @@ Notice экрана результата: `result.audiobook_studio_limits_exceed
   Context: `{book_id, studio_url, started_studio}`; `started_studio` — студия была не запущена, её запустил
   `scripts/studio.sh start`.
 - `studio_handoff_failed` — там же, WARNING: отправка не удалась. Context: `{reason, detail, http_status, studio_url,
-  started_studio}`; `reason` ∈ `studio_dir_missing` (нет `<DOCX_AI_STUDIO_DIR>/scripts/studio.sh`), `start_failed` (скрипт
+  started_studio}`; `reason` ∈ `failed` (неожиданное исключение в обработчике кнопки; `detail` — тип и текст), `studio_dir_missing` (нет `<DOCX_AI_STUDIO_DIR>/scripts/studio.sh`), `start_failed` (скрипт
   запуска завершился с ошибкой; `detail` — его вывод, хвост ≤ 1500), `unreachable` (нет ответа, в том числе после запуска),
   `rejected` (студия ответила 4xx/5xx; `detail` — её `detail`), `bad_response` (успех без `book_id`). Это ошибки
   конфигурации, показываются на экране текстом с причиной.

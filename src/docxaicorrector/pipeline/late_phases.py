@@ -625,12 +625,17 @@ def _publish_results_folder(
 ) -> None:
     """Spec 075 FR-002: copy the user-visible result files into the durable results folder.
 
-    Runs only on the delivered (not blocked) path, right after ``ui_result_artifacts_saved``. A
+    Runs only for UI-launched runs (``publish_results_folder`` in the run's app config) and only on
+    the delivered (not blocked) path, right after ``ui_result_artifacts_saved``. A
     SECONDARY write by the Round-12 F1 rule: any exception is logged as
     ``ui_results_publish_failed`` and swallowed, so a full disk or a locked folder never hides the
     delivered result. The published folder travels to the result screen as ``latest_results_folder``.
     """
     filename = context.uploaded_filename
+    # Only a run launched from the UI publishes (the flag is set by ``ui/_app.py``'s start path). The
+    # console validator reaches this same function and must not fill the owner's results folder.
+    if not results_folder_module.publishing_enabled(getattr(context, "app_config", None)):
+        return
     try:
         results_dir = results_folder_module.resolve_results_dir(getattr(context, "app_config", None))
         outcome = results_folder_module.publish_result_files(
@@ -658,6 +663,8 @@ def _publish_results_folder(
             paths=list(outcome.paths),
             unchanged_count=len(outcome.unchanged),
             renamed_count=len(outcome.renamed),
+            removed_paths=list(outcome.removed),
+            stale_remove_failed=[{"file": name, "error": error} for name, error in outcome.stale_remove_failed],
         )
         emitters.emit_state(context.runtime, latest_results_folder=str(outcome.folder))
     except Exception as exc:

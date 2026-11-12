@@ -40,6 +40,11 @@ PUBLISHED_FILE_SUFFIXES: tuple[tuple[str, str], ...] = (
     ("narration_book_path", ".narration.json"),
 )
 
+# Only a run LAUNCHED FROM THE UI publishes (spec 075 Non-goal: the console validator has its own
+# run directories). The UI start path sets this key in the run's app config; every other caller of the
+# pipeline (the validation runner, tests) leaves it absent, which means OFF.
+PUBLISH_FLAG_KEY = "publish_results_folder"
+
 _WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 _WSL_DRIVE_PATH = re.compile(r"^/mnt/([A-Za-z])(?:/(.*))?$")
 _INVALID_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -55,6 +60,10 @@ class PublishOutcome:
     written: tuple[str, ...] = ()
     unchanged: tuple[str, ...] = ()
     renamed: tuple[str, ...] = ()
+    # Managed files of an earlier run that this publication did not rebuild, removed so the folder
+    # holds one coherent result; and those that could not be removed (``(name, error)``).
+    removed: tuple[str, ...] = ()
+    stale_remove_failed: tuple[tuple[str, str], ...] = ()
     # ``(file name, error text)`` for files that could not be placed even under the new name.
     failed: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
@@ -79,6 +88,10 @@ def resolve_project_path(raw_value: object, *, default: str) -> Path:
     return Path(os.path.normpath(path))
 
 
+def publishing_enabled(app_config: object) -> bool:
+    return _config_value(app_config, PUBLISH_FLAG_KEY) is True
+
+
 def resolve_results_dir(app_config: object) -> Path:
     return resolve_project_path(_config_value(app_config, "results_dir"), default=DEFAULT_RESULTS_DIR)
 
@@ -94,8 +107,20 @@ def windows_display_path(path: str | Path) -> str:
 
 
 def _safe_name_part(value: str) -> str:
+    """The BOOK FOLDER name: Windows-forbidden characters replaced, edge spaces and dots trimmed."""
     cleaned = _INVALID_NAME_CHARS.sub("_", value).strip().rstrip(".")
     return cleaned or "result"
+
+
+def _file_name(stem: str, suffix: str) -> str:
+    """The download button's name for the file, with ONLY Windows-forbidden characters replaced (no
+    trimming): the published file name is the name the person's browser would have saved."""
+    return _INVALID_NAME_CHARS.sub("_", f"{stem}{suffix}")
+
+
+def _renamed_variant(name: str) -> str:
+    path = Path(name)
+    return f"{path.stem}{NEW_FILE_MARKER}{path.suffix}"
 
 
 def _same_content(path: Path, data: bytes) -> bool:
@@ -127,7 +152,7 @@ def _place_file(target: Path, data: bytes) -> tuple[Path, str]:
         return target, "written"
     except OSError:
         # Locked (open in Word / a player) or otherwise unwritable: keep the new result next to it.
-        alternative = target.with_name(f"{target.stem}{NEW_FILE_MARKER}{target.suffix}")
+        alternative = target.with_name(_renamed_variant(target.name))
         if _same_content(alternative, data):
             return alternative, "unchanged"
         _write_atomic(alternative, data)
@@ -146,19 +171,21 @@ def publish_result_files(
     be placed is reported in ``failed`` and the others still go; only the folder itself failing
     to open raises, and the caller treats that as ``ui_results_publish_failed``.
     """
-    stem = _safe_name_part(Path(source_name).stem)
-    folder = results_dir / stem
+    source_stem = Path(source_name).stem
+    folder = results_dir / _safe_name_part(source_stem)
     folder.mkdir(parents=True, exist_ok=True)
     paths: list[str] = []
     written: list[str] = []
     unchanged: list[str] = []
     renamed: list[str] = []
     failed: list[tuple[str, str]] = []
+    # Names whose replacement was refused this run (the old file is open somewhere): never removed.
+    refused_names: set[str] = set()
     for artifact_key, suffix in PUBLISHED_FILE_SUFFIXES:
         source_path = artifact_paths.get(artifact_key)
         if not source_path:
             continue
-        file_name = f"{stem}{suffix}"
+        file_name = _file_name(source_stem, suffix)
         try:
             data = Path(source_path).read_bytes()
             final_path, status = _place_file(folder / file_name, data)
@@ -167,6 +194,18 @@ def publish_result_files(
             continue
         paths.append(str(final_path))
         {"written": written, "unchanged": unchanged, "renamed": renamed}[status].append(str(final_path))
+        if status == "renamed":
+            refused_names.add(file_name)
+    removed: list[str] = []
+    stale_remove_failed: list[tuple[str, str]] = []
+    if paths and not failed:
+        _remove_stale_managed_files(
+            folder=folder,
+            source_stem=source_stem,
+            keep={Path(path).name for path in paths} | refused_names,
+            removed=removed,
+            failed=stale_remove_failed,
+        )
     return PublishOutcome(
         folder=folder if paths else None,
         paths=tuple(paths),
@@ -174,7 +213,40 @@ def publish_result_files(
         unchanged=tuple(unchanged),
         renamed=tuple(renamed),
         failed=tuple(failed),
+        removed=tuple(removed),
+        stale_remove_failed=tuple(stale_remove_failed),
     )
+
+
+def _remove_stale_managed_files(
+    *,
+    folder: Path,
+    source_stem: str,
+    keep: set[str],
+    removed: list[str],
+    failed: list[tuple[str, str]],
+) -> None:
+    """Remove what an earlier run published here and this one did not.
+
+    The managed set is exactly the five download names of this source and their ``(новая)`` variants;
+    nothing else in the folder is touched. Without this, an audiobook run followed by a plain edit of
+    the same source would leave the old narration files (and the old book file, which "Open in studio"
+    would hand over) next to the new DOCX. A file that cannot be removed (open somewhere) is reported,
+    never raised.
+    """
+    for _key, suffix in PUBLISHED_FILE_SUFFIXES:
+        main_name = _file_name(source_stem, suffix)
+        for name in (main_name, _renamed_variant(main_name)):
+            if name in keep:
+                continue
+            candidate = folder / name
+            try:
+                if not candidate.is_file():
+                    continue
+                candidate.unlink()
+                removed.append(str(candidate))
+            except OSError as exc:
+                failed.append((name, f"{type(exc).__name__}: {exc}"))
 
 
 def open_in_file_manager(folder: str | Path) -> str | None:

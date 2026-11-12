@@ -38,11 +38,32 @@ from tests.test_spec_072_late_phase_exports import (
     _docx_phase,
     _install_stubs,
     _record,
-    _run,
+    _install_stubs as _install_072_stubs,
 )
 
+_PUBLISH_FLAG = results_folder.PUBLISH_FLAG_KEY
 _BOOK_JSON = '{"schema": "invented-form", "items": []}'
 _MARKDOWN = "Итоговый текст для проверки."
+
+
+def _run(monkeypatch, tmp_path, *, operation, state, publish: bool = True):
+    """The 072 harness run, as a UI-launched run (the UI start path sets the publish flag in the run's
+    app config) unless ``publish`` is False -- which is what the console validator's run looks like."""
+    _install_072_stubs(monkeypatch, markdown=_MARKDOWN)
+    dependencies = _Dependencies(tmp_path / "ui_results")
+    emitters = _Emitters()
+    context = _context(operation)
+    context.app_config = {_PUBLISH_FLAG: True} if publish else {}
+    result = late_phases.finalize_processing_success(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        docx_phase=_docx_phase(_MARKDOWN),
+        job_count=1,
+        current_markdown_fn=lambda chunks: "",
+    )
+    return result, emitters, dependencies
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -390,9 +411,11 @@ def test_a_blocked_result_is_not_published(monkeypatch, tmp_path, isolate_result
     monkeypatch.setattr(late_phases, "_format_translation_quality_gate_failure_message", lambda reasons: "blocked")
     dependencies = _Dependencies(tmp_path / "ui_results")
     emitters = _Emitters()
+    ui_context = _context("edit")
+    ui_context.app_config = {_PUBLISH_FLAG: True}
 
     late_phases.finalize_processing_success(
-        context=_context("edit"),
+        context=ui_context,
         dependencies=dependencies,
         emitters=emitters,
         state=ProcessingState(processed_chunks=["текст"]),
@@ -410,8 +433,9 @@ def test_a_blocked_result_is_not_published(monkeypatch, tmp_path, isolate_result
     assert not any("latest_results_folder" in call for call in emitters.state_calls)
 
 
-def test_the_suite_does_not_create_the_project_translations_folder_by_default():
-    # The autouse fixture replaced the root; the real default would be BASE_DIR/translations.
+def test_the_project_root_is_replaced_for_every_test():
+    # The autouse fixture replaced the root; the real default would be BASE_DIR/translations. The
+    # session-level proof that nothing was written there is ``test_zz_the_session_did_not_touch_...``.
     assert results_folder.PROJECT_ROOT != results_folder.BASE_DIR
 
 
