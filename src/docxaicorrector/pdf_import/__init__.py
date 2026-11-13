@@ -12,11 +12,15 @@ from docxaicorrector.pdf_import.logical_import import (
     build_paragraph_units_from_text_spans,
 )
 from docxaicorrector.pdf_import.images import (
+    PdfDiscoveredImage,
+    PdfImageExtraction,
     PdfImageObject,
-    extract_pdf_images_with_pdfminer,
+    extract_pdf_images_and_inventory,
 )
 
 __all__ = [
+    "PdfDiscoveredImage",
+    "PdfImageExtraction",
     "PdfImageObject",
     "PdfTextSpan",
     "PdfSourceImportReport",
@@ -24,6 +28,6 @@ __all__ = [
     "TextLayerQualityReport",
     "build_paragraph_units_from_text_spans",
     "build_text_layer_quality_report",
-    "extract_pdf_images_with_pdfminer",
+    "extract_pdf_images_and_inventory",
     "unsupported_quality_report",
 ]

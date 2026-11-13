@@ -20,9 +20,12 @@ dev = [
 ]
 # PDF image-extraction backend (lazy-imported in pdf_import/images.py; a missing
 # install raises optional_dependency_missing:pdfminer.six). pdfplumber was removed
-# in spec 025 — nothing imported it.
+# in spec 025 — nothing imported it. pypdfium2 renders the page frame of an image whose
+# stored bytes are not what the page shows (spec 082, lazy-imported in pdf_import/page_render.py);
+# pinned because the rendered pixels are part of the import's output.
 pdf-import = [
   "pdfminer.six>=20231228",
+  "pypdfium2==5.15.2",
 ]
 
 [tool.setuptools.packages.find]

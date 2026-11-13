@@ -67,7 +67,7 @@ verify_runtime() {
     python - <<'PY'
 import importlib
 
-for module_name in ("openai", "streamlit", "docx", "pypandoc", "dotenv"):
+for module_name in ("openai", "streamlit", "docx", "pypandoc", "dotenv", "pdfminer", "pypdfium2"):
     importlib.import_module(module_name)
 PY
     pandoc --version >/dev/null

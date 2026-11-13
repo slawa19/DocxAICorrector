@@ -40,6 +40,8 @@ TARGETS = [
     "src/docxaicorrector/pipeline/reader_cleanup_rebuild.py",
     "src/docxaicorrector/pipeline/setup.py",
     "src/docxaicorrector/pipeline/terminal_results.py",
+    "src/docxaicorrector/pdf_import/images.py",
+    "src/docxaicorrector/pdf_import/image_frames.py",
     "src/docxaicorrector/processing/preparation.py",
     "src/docxaicorrector/processing/processing_runtime.py",
     "src/docxaicorrector/processing/processing_service.py",

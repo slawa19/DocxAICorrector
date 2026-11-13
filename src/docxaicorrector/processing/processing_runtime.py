@@ -526,7 +526,7 @@ def _run_pdf_parse_stages(
     either in-process (test seam) or in a spawned child process (production).
     """
 
-    from docxaicorrector.pdf_import.images import extract_pdf_images_with_pdfminer
+    from docxaicorrector.pdf_import.images import extract_pdf_images_and_inventory
     from docxaicorrector.pdf_import.text_layer_quality import (
         build_text_layer_quality_report,
         extract_pdf_text_spans_with_pdfminer,
@@ -578,7 +578,7 @@ def _run_pdf_parse_stages(
             )
 
     try:
-        image_objects = list(extract_pdf_images_with_pdfminer(input_path))
+        image_extraction = extract_pdf_images_and_inventory(input_path)
     except Exception as exc:
         log_event(
             logging.WARNING,
@@ -589,6 +589,7 @@ def _run_pdf_parse_stages(
         )
         image_objects = []
     else:
+        image_objects = _replace_pdf_images_by_page_frames(input_path, image_extraction, spans)
         _enforce_pdf_image_count_cap(image_objects, filename=filename, max_image_count=max_image_count)
 
     return _PdfParseStagesResult(
@@ -599,6 +600,45 @@ def _run_pdf_parse_stages(
         body_text_ratio=float(getattr(quality_report, "body_text_ratio", 0.0) or 0.0),
         ocr_used=ocr_used,
     )
+
+
+def _replace_pdf_images_by_page_frames(input_path: Path, image_extraction, spans) -> list:
+    """Spec 082 slice A: swap the bytes of emitted images that are not what the page shows for a render of
+    their page frame, then write the one outcome event of image extraction.
+
+    Text is not touched: ``spans`` are only read (a frame with text over it is declined). A failure of the
+    step as a whole -- not of one render, which ``apply_frame_replacements`` already contains -- keeps the
+    images exactly as the extractor emitted them; the book never loses its images to this step.
+    """
+
+    from docxaicorrector.pdf_import.image_frames import apply_frame_replacements, plan_frame_replacements
+    from docxaicorrector.pdf_import.images import log_pdf_image_extraction_outcome
+
+    try:
+        plan = plan_frame_replacements(image_extraction, spans)
+        outcome = apply_frame_replacements(input_path, image_extraction, plan)
+    except Exception as exc:  # noqa: BLE001 - the emitted images stay as they are
+        log_event(
+            logging.ERROR,
+            "pdf_image_frame_render_failed",
+            "Replacing PDF images by renders of their page frames failed; the images keep their emitted bytes.",
+            pdf_path=str(input_path),
+            page_number=None,
+            discovery_index=None,
+            box=None,
+            error_type=exc.__class__.__name__,
+            error_message=str(exc)[:120],
+        )
+        log_pdf_image_extraction_outcome(image_extraction, pdf_path=input_path)
+        return list(image_extraction.images)
+    log_pdf_image_extraction_outcome(
+        image_extraction,
+        pdf_path=input_path,
+        frame_render_replaced=outcome.replaced,
+        frame_render_declined=outcome.declined,
+        frame_render_failed=outcome.failed,
+    )
+    return list(outcome.images)
 
 
 def _enforce_pdf_span_count_cap(spans, *, filename: str, max_span_count: int) -> None:
@@ -926,6 +966,9 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
             image_count=len(image_objects),
             images_emitted=images_emitted,
             images_dropped=images_dropped,
+            images_replaced_by_frame_render=sum(
+                1 for image in image_objects if getattr(image, "original_image_bytes", None) is not None
+            ),
             skipped_page_number_count=import_result.report.skipped_page_number_count,
             skipped_repeated_page_furniture_count=import_result.report.skipped_repeated_page_furniture_count,
             skipped_blank_page_notice_count=import_result.report.skipped_blank_page_notice_count,
@@ -1055,14 +1098,58 @@ def _set_pdf_run_font_size(run, font_size: float | None) -> None:
 
 
 def _append_pdf_image_to_docx(document, image_object) -> bool:
-    image_bytes = getattr(image_object, "image_bytes", None)
+    original_image_bytes = getattr(image_object, "original_image_bytes", None)
+    if isinstance(original_image_bytes, bytes) and original_image_bytes:
+        return _append_replaced_pdf_image_to_docx(document, image_object, original_image_bytes)
+    return _append_extracted_pdf_image_to_docx(
+        document,
+        getattr(image_object, "image_bytes", None),
+        source_index=getattr(image_object, "source_index", None),
+        mime_type=getattr(image_object, "mime_type", None),
+    )
+
+
+def _append_replaced_pdf_image_to_docx(document, image_object, original_image_bytes: bytes) -> bool:
+    """Spec 082 FR-A6, FR-A9: a page-frame render goes in at the size of its rendered frame (python-docx
+    would round the PNG's density to a whole dpi). If it cannot be inserted, the bytes the extractor
+    emitted go in by the ordinary path instead -- the picture is never lost to the replacement."""
+
+    try:
+        _append_image_bytes_to_docx(
+            document,
+            image_object.image_bytes,
+            width_points=getattr(image_object, "display_width_points", None),
+            height_points=getattr(image_object, "display_height_points", None),
+        )
+        return True
+    except Exception as exc:
+        fallback_inserted = _append_extracted_pdf_image_to_docx(
+            document,
+            original_image_bytes,
+            source_index=getattr(image_object, "source_index", None),
+            mime_type=getattr(image_object, "original_mime_type", None),
+        )
+        log_event(
+            logging.ERROR,
+            "pdf_image_replacement_insert_failed",
+            "A page-frame render of a PDF image could not be inserted into the DOCX; the emitted bytes were used.",
+            source_index=getattr(image_object, "source_index", None),
+            page_number=getattr(image_object, "page_number", None),
+            error_type=exc.__class__.__name__,
+            error_message=str(exc)[:120],
+            fallback_inserted=fallback_inserted,
+        )
+        return fallback_inserted
+
+
+def _append_extracted_pdf_image_to_docx(document, image_bytes, *, source_index, mime_type) -> bool:
     if not isinstance(image_bytes, bytes) or not image_bytes:
         log_event(
             logging.WARNING,
             "pdf_text_layer_image_render_dropped",
             "PDF image could not be emitted into DOCX.",
-            source_index=getattr(image_object, "source_index", None),
-            mime_type=getattr(image_object, "mime_type", None),
+            source_index=source_index,
+            mime_type=mime_type,
             reason="empty_image_bytes",
         )
         return False
@@ -1076,8 +1163,8 @@ def _append_pdf_image_to_docx(document, image_object) -> bool:
                 logging.WARNING,
                 "pdf_text_layer_image_render_dropped",
                 "PDF image could not be emitted into DOCX.",
-                source_index=getattr(image_object, "source_index", None),
-                mime_type=getattr(image_object, "mime_type", None),
+                source_index=source_index,
+                mime_type=mime_type,
                 reason="docx_render_failed",
                 error_message=str(primary_exc),
             )
@@ -1090,18 +1177,31 @@ def _append_pdf_image_to_docx(document, image_object) -> bool:
             logging.WARNING,
             "pdf_text_layer_image_render_dropped",
             "PDF image could not be emitted into DOCX.",
-            source_index=getattr(image_object, "source_index", None),
-            mime_type=getattr(image_object, "mime_type", None),
+            source_index=source_index,
+            mime_type=mime_type,
             reason="coerced_docx_render_failed",
             error_message=str(coerced_exc),
         )
         return False
 
 
-def _append_image_bytes_to_docx(document, image_bytes: bytes) -> None:
+def _append_image_bytes_to_docx(
+    document,
+    image_bytes: bytes,
+    *,
+    width_points: float | None = None,
+    height_points: float | None = None,
+) -> None:
+    from docx.shared import Emu
+
+    size: dict[str, object] = {}
+    if width_points and height_points:
+        # 12700 EMU per point (OOXML). Given explicitly so the picture has the size of the page frame it
+        # renders; python-docx would derive it from the PNG density rounded to a whole dpi.
+        size = {"width": Emu(int(round(width_points * 12700))), "height": Emu(int(round(height_points * 12700)))}
     paragraph = document.add_paragraph()
     try:
-        paragraph.add_run().add_picture(BytesIO(image_bytes))
+        paragraph.add_run().add_picture(BytesIO(image_bytes), **size)
     except Exception:
         parent = paragraph._element.getparent()
         if parent is not None:

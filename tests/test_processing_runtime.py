@@ -17,8 +17,14 @@ import docxaicorrector.processing.upload_ports as upload_ports
 import docxaicorrector.runtime.external_process as external_process
 import docxaicorrector.runtime.state as state
 from docxaicorrector.document.extraction import extract_document_content_from_docx, extract_paragraph_units_from_docx
-from docxaicorrector.pdf_import.images import PdfImageObject
+from docxaicorrector.pdf_import.images import PdfImageExtraction, PdfImageObject
 from docxaicorrector.pdf_import.text_layer_quality import PdfTextSpan
+
+
+def _extraction_of(image_objects) -> PdfImageExtraction:
+    """Stand-in for ``extract_pdf_images_and_inventory``: the given images, no inventory entries."""
+
+    return PdfImageExtraction(images=tuple(image_objects), discovered=())
 from docxaicorrector.runtime.events import (
     AppendImageLogEvent,
     AppendLogEvent,
@@ -2121,7 +2127,7 @@ def test_pdf_text_layer_generated_docx_preserves_pdf_images_as_docx_placeholders
         )
     ]
     monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
-    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", lambda path: image_objects)
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_and_inventory", lambda path: _extraction_of(image_objects))
     monkeypatch.setattr(
         text_layer_quality,
         "build_text_layer_quality_report",
@@ -2185,7 +2191,7 @@ def test_pdf_text_layer_generated_docx_counts_unrenderable_images_as_dropped(mon
         )
     ]
     monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
-    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", lambda path: image_objects)
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_and_inventory", lambda path: _extraction_of(image_objects))
     monkeypatch.setattr(
         text_layer_quality,
         "build_text_layer_quality_report",
@@ -2938,7 +2944,7 @@ def test_convert_pdf_normal_document_parses_within_budget(monkeypatch) -> None:
     monkeypatch.setattr(processing_runtime, "_PDF_PARSE_IN_PROCESS", True)
     monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
     monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
-    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", lambda path: [])
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_and_inventory", lambda path: _extraction_of([]))
 
     docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(
         filename="normal.pdf",
@@ -2994,9 +3000,9 @@ def test_convert_pdf_rejects_over_image_count_cap(monkeypatch) -> None:
     monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
 
     def two_images(path):
-        return [SimpleNamespace(source_index=0), SimpleNamespace(source_index=1)]
+        return _extraction_of([SimpleNamespace(source_index=0), SimpleNamespace(source_index=1)])
 
-    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", two_images)
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_and_inventory", two_images)
     monkeypatch.setattr(
         processing_runtime,
         "log_event",
@@ -3359,9 +3365,12 @@ def test_extract_pdf_images_warns_when_discovered_exceeds_emitted(monkeypatch) -
         lambda level, event, message, **context: events.append((level, event, context)),
     )
 
-    result = pdf_images.extract_pdf_images_with_pdfminer("dummy.pdf")
+    extraction = pdf_images.extract_pdf_images_and_inventory("dummy.pdf")
+    pdf_images.log_pdf_image_extraction_outcome(extraction, pdf_path="dummy.pdf")
+    result = list(extraction.images)
 
     assert result == []
+    assert [item.skip_reason for item in extraction.discovered] == [pdf_images.SKIP_NO_IMAGE_BYTES]
     dropped = next(
         context for _level, event, context in events if event == "pdf_image_extraction_dropped_images"
     )
@@ -3390,7 +3399,9 @@ def test_extract_pdf_images_emits_summary_without_dropping_valid_image(monkeypat
         lambda level, event, message, **context: events.append((level, event, context)),
     )
 
-    result = pdf_images.extract_pdf_images_with_pdfminer("dummy.pdf")
+    extraction = pdf_images.extract_pdf_images_and_inventory("dummy.pdf")
+    pdf_images.log_pdf_image_extraction_outcome(extraction, pdf_path="dummy.pdf")
+    result = list(extraction.images)
 
     assert len(result) == 1
     assert result[0].mime_type == "image/png"
@@ -3907,3 +3918,173 @@ def test_drain_processing_events_retains_the_pipelines_cost_actual(monkeypatch):
 
     assert session_state.latest_cost_actual == _ACTUAL
     assert not [call for call in log_calls if call[0][1] == "state_event_unknown_keys"]
+
+
+# --- Spec 082 slice A: an ink-space image becomes a render of its page frame ---------------------------
+#
+# Tiny PDFs built by tests/pdf_synthetic.py go through the real bridge (pdfminer + pypdfium2 + python-docx,
+# in-process seam). The text quality report is stubbed: a one-page synthetic PDF is too short to be judged
+# "promising", and that judgement is not what these tests are about.
+
+
+def _synthetic_bridge(monkeypatch, kind: str):
+    import io as _io
+
+    from docx import Document
+
+    from docxaicorrector.pdf_import import text_layer_quality
+    from pdf_synthetic import SyntheticImage, SyntheticPage, SyntheticText, build_pdf
+
+    monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
+    page = SyntheticPage(
+        images=[SyntheticImage(kind, 60, 300, 260, 400, pixels=(300, 150))],
+        texts=[
+            SyntheticText(40, 520, 11, "An invented sentence above the picture."),
+            SyntheticText(40, 200, 11, "Another invented sentence below the picture."),
+        ],
+    )
+    pdf_bytes = build_pdf([page])
+    docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(filename="synthetic.pdf", source_bytes=pdf_bytes)
+    assert backend == "pdf-text-layer"
+    document = Document(_io.BytesIO(docx_bytes))
+    blobs = [rel.target_part.blob for rel in document.part.rels.values() if "image" in rel.reltype]
+    return pdf_bytes, document, blobs, list(document.inline_shapes)
+
+
+def _jpeg_stream_of(pdf_bytes: bytes) -> bytes:
+    start = pdf_bytes.index(b"\xff\xd8\xff")
+    end = pdf_bytes.index(b"\nendstream", start)
+    return pdf_bytes[start:end]
+
+
+def test_spec082_device_gray_jpeg_passes_the_bridge_byte_for_byte(monkeypatch) -> None:
+    """Characterization (Anti-regression 1, 2): no ink space, nothing changes -- paragraphs and bytes."""
+    pdf_bytes, document, blobs, _shapes = _synthetic_bridge(monkeypatch, "jpeg_gray")
+    texts = [p.text for p in document.paragraphs if p.text]
+    assert texts == ["An invented sentence above the picture.", "Another invented sentence below the picture."]
+    assert blobs == [_jpeg_stream_of(pdf_bytes)]
+
+
+def test_spec082_separation_jpeg_reaches_the_docx_as_the_page_shows_it(monkeypatch) -> None:
+    import io as _io
+
+    from PIL import Image, ImageStat
+
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        processing_runtime, "log_event", lambda level, event, message, **context: events.append((level, event, context))
+    )
+    pdf_bytes, document, blobs, shapes = _synthetic_bridge(monkeypatch, "jpeg_separation")
+    texts = [p.text for p in document.paragraphs if p.text]
+    assert texts == ["An invented sentence above the picture.", "Another invented sentence below the picture."]
+    (blob,) = blobs
+    stored = Image.open(_io.BytesIO(_jpeg_stream_of(pdf_bytes))).convert("L")
+    delivered = Image.open(_io.BytesIO(blob))
+    assert delivered.format == "PNG"
+    # The stored file is the negative of the page: its mean and the delivered mean mirror each other.
+    stored_mean = ImageStat.Stat(stored).mean[0]
+    delivered_mean = ImageStat.Stat(delivered.convert("L")).mean[0]
+    assert abs(delivered_mean - (255 - stored_mean)) < 6
+    # The picture has the size of its rendered frame, given explicitly (FR-A6): 150 source px over the
+    # 100 pt frame height is the denser axis, so the render runs at 1.5 px per pt.
+    (shape,) = shapes
+    width_px, height_px = delivered.size
+    assert shape.width == round(width_px / 1.5 * 12700)
+    assert shape.height == round(height_px / 1.5 * 12700)
+    success = next(context for _level, event, context in events if event == "pdf_text_layer_import_succeeded")
+    assert success["images_replaced_by_frame_render"] == 1
+    assert success["images_emitted"] == 1
+
+
+def test_spec082_parse_stages_return_the_spans_unchanged(monkeypatch, tmp_path) -> None:
+    """FR-A3: slice A reads spans and never filters them."""
+    from docxaicorrector.pdf_import import text_layer_quality
+    from pdf_synthetic import SyntheticImage, SyntheticPage, SyntheticText, write_pdf
+
+    monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
+    path = write_pdf(
+        tmp_path / "spans.pdf",
+        [SyntheticPage(images=[SyntheticImage("jpeg_separation", 60, 300, 260, 400)], texts=[SyntheticText(40, 520, 11, "An invented sentence.")])],
+    )
+    expected = text_layer_quality.extract_pdf_text_spans_with_pdfminer(path)
+    result = processing_runtime._run_pdf_parse_stages(
+        input_path=path,
+        ocr_output_path=tmp_path / "unused.pdf",
+        filename="spans.pdf",
+        ocr_import_enabled=False,
+        max_page_count=10,
+        max_span_count=1000,
+        max_image_count=10,
+    )
+    assert result.spans == expected
+    assert [image.original_image_bytes is not None for image in result.image_objects] == [True]
+
+
+def test_spec082_failed_insertion_of_the_render_falls_back_to_the_emitted_bytes(monkeypatch) -> None:
+    """FR-A9: the render could not be inserted -> the extractor's bytes go in, and an ERROR names it.
+    Mutation: dropping the fallback leaves the DOCX without the picture."""
+    events: list[tuple[int, str, dict[str, object]]] = []
+    real_append = processing_runtime._append_image_bytes_to_docx
+
+    def failing_for_renders(document, image_bytes, *, width_points=None, height_points=None):
+        if width_points is not None:
+            raise ValueError("synthetic insertion failure")
+        return real_append(document, image_bytes)
+
+    monkeypatch.setattr(processing_runtime, "_append_image_bytes_to_docx", failing_for_renders)
+    monkeypatch.setattr(
+        processing_runtime, "log_event", lambda level, event, message, **context: events.append((level, event, context))
+    )
+    pdf_bytes, _document, blobs, _shapes = _synthetic_bridge(monkeypatch, "jpeg_separation")
+    assert blobs == [_jpeg_stream_of(pdf_bytes)]
+    failure = next((level, context) for level, event, context in events if event == "pdf_image_replacement_insert_failed")
+    assert failure[0] == logging.ERROR and failure[1]["fallback_inserted"] is True
+
+
+def test_spec082_failed_frame_step_keeps_every_emitted_image(monkeypatch) -> None:
+    """The step as a whole raised -> images exactly as emitted, ERROR logged, import goes on."""
+    import docxaicorrector.pdf_import.image_frames as image_frames
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("synthetic planning failure")
+
+    monkeypatch.setattr(image_frames, "plan_frame_replacements", boom)
+    events: list[tuple[int, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        processing_runtime, "log_event", lambda level, event, message, **context: events.append((level, event, context))
+    )
+    pdf_bytes, _document, blobs, _shapes = _synthetic_bridge(monkeypatch, "jpeg_separation")
+    assert blobs == [_jpeg_stream_of(pdf_bytes)]
+    assert any(level == logging.ERROR and event == "pdf_image_frame_render_failed" for level, event, _ in events)
+
+
+@pytest.mark.parametrize(("width_points", "height_points"), [(209.6833, 100.0), (123.456, 78.9)])
+def test_spec082_replacement_size_is_explicit_even_at_fractional_density(width_points, height_points) -> None:
+    """Finding 8 of the design review: python-docx rounds the PNG density to a whole dpi, so a render at
+    217.5 dpi would be sized at 218. Mutation: inserting without the explicit size fails this."""
+    import io as _io
+
+    from docx import Document
+    from PIL import Image
+
+    buffer = _io.BytesIO()
+    Image.new("L", (941, 449), 200).save(buffer, format="PNG", dpi=(217.5, 217.5))
+    image = PdfImageObject(
+        page_number=1,
+        x0=0.0,
+        top=0.0,
+        x1=width_points,
+        bottom=height_points,
+        page_height=600.0,
+        image_bytes=buffer.getvalue(),
+        mime_type="image/png",
+        source_index=0,
+        display_width_points=width_points,
+        display_height_points=height_points,
+        original_image_bytes=b"\xff\xd8\xff-original",
+        original_mime_type="image/jpeg",
+    )
+    document = Document()
+    assert processing_runtime._append_pdf_image_to_docx(document, image) is True
+    (shape,) = document.inline_shapes
+    assert (shape.width, shape.height) == (round(width_points * 12700), round(height_points * 12700))
