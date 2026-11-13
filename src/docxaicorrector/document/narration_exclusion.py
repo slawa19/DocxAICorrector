@@ -91,6 +91,42 @@ def ends_as_a_sentence(text: str) -> bool:
     return end > 0 and _is_sentence_terminal(value[end - 1])
 
 
+def quotation_and_signature(text: str) -> tuple[str, str] | None:
+    """Spec 077: ``(quotation, signature)`` when ``text`` -- emphasis markers removed -- has the form
+    of an epigraph with its attribution: a sentence (``ends_as_a_sentence``), then a dash (Unicode
+    category Pd) standing between spaces, then a signature with a letter ("“The tide waits.” –
+    K. L. Tollan"). The LAST such dash splits it, so a dash inside the quotation stays in the
+    quotation, and a hyphen inside a name ("Lee-Tollan") is no dash at all. ``None`` otherwise.
+    Read off the characters only: no list of words, no name (Constitution VII)."""
+    value = str(text or "").replace("*", "").replace("_", "").strip()
+    for index in range(len(value) - 2, 0, -1):
+        if (
+            unicodedata.category(value[index]) == "Pd"
+            and value[index - 1].isspace()
+            and value[index + 1].isspace()
+        ):
+            quotation = value[:index].strip()
+            signature = value[index + 1 :].strip()
+            if ends_as_a_sentence(quotation) and any(character.isalpha() for character in signature):
+                return quotation, signature
+            return None
+    return None
+
+
+def follows_a_sentence_end(text: str, offset: int) -> bool:
+    """Spec 077: ``text[:offset]``, past white space and the closing marks ``_may_follow_a_terminal``
+    allows, ends on a sentence terminal of any script -- where a note number OPENS an entry of a
+    notes run ("... p. 85. 3 J. Smith"). An abbreviation's full stop counts too ("e.g. 10 Units"):
+    there is no list of abbreviations (Constitution VII). Spec 077 narrates a paragraph only when
+    this is False for every note number of its entry, so such a stop can only leave a paragraph
+    excluded as it was before spec 077, never exclude one more."""
+    prefix = str(text or "")[: max(offset, 0)].rstrip()
+    end = len(prefix)
+    while end > 0 and not prefix[end - 1].isspace() and _may_follow_a_terminal(prefix[end - 1]):
+        end -= 1
+    return end > 0 and _is_sentence_terminal(prefix[end - 1])
+
+
 def has_no_letter_or_digit(text: str) -> bool:
     """True when ``text`` has not one letter or digit: empty, white space, or only signs (``***``)."""
     return not any(character.isalnum() for character in str(text or ""))

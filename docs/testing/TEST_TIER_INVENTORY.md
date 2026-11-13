@@ -124,6 +124,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_074_letter_readings.py`
 - `tests/test_spec_075_results_folder.py`
 - `tests/test_spec_075_review_round1.py`
+- `tests/test_spec_077_epigraph_opening_narrated.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`

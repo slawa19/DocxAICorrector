@@ -660,13 +660,40 @@ def has_citation_anchor(text: str) -> bool:
     )
 
 
-def _note_number_chain(text: str) -> list[tuple[int, int, int]]:
-    """``(number, start, end)`` of the longest n, n+1, ... chain of note numbers in ``text``."""
-    numbers = [
+def has_hard_reference_mark(text: str) -> bool:
+    """Spec 077: does ``text`` carry a year in brackets, a page or volume locator, or a web address --
+    the citation anchors above that say WHERE a work is found? An emphasised span, a quoted phrase
+    and the author form are not counted: a signature under an epigraph names a person, and may set
+    the name in italics or as "Surname, I.". Read only by the narration (spec 077);
+    ``has_citation_anchor`` and everything translation reads are unchanged."""
+    body = str(text or "")
+    return any(
+        pattern.search(body) is not None
+        for pattern in (_ANCHOR_BRACKETED_YEAR_PATTERN, _ANCHOR_LOCATOR_PATTERN, _ANCHOR_ADDRESS_PATTERN)
+    )
+
+
+def _note_numbers(text: str) -> list[tuple[int, int, int]]:
+    """``(number, start, end)`` of every NOTE NUMBER of ``text`` by the form above, chained or not."""
+    return [
         (int(match.group(1)), match.start(), match.end())
         for match in _NOTE_NUMBER_PATTERN.finditer(text)
         if text[match.end()].isupper() or text[match.end()] in _NOTE_ENTRY_OPENERS
     ]
+
+
+def note_number_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Spec 077: ``(number, start offset)`` of every NOTE NUMBER of ``text`` by the form above,
+    chained or not, in text order. A chain counts consecutive numbers only, so the entries of a run
+    numbered 1, 3, 5, ... all sit inside the first entry of a chain of one; these spans still see
+    them. Offsets index ``text`` itself."""
+    body = str(text or "")
+    return tuple((number, start) for number, start, _ in _note_numbers(body))
+
+
+def _note_number_chain(text: str) -> list[tuple[int, int, int]]:
+    """``(number, start, end)`` of the longest n, n+1, ... chain of note numbers in ``text``."""
+    numbers = _note_numbers(text)
     best: list[tuple[int, int, int]] = []
     for position, first in enumerate(numbers):
         chain = [first]
