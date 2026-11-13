@@ -1,6 +1,6 @@
 # Data Model: картинки PDF — такими, какими их видит читатель страницы
 
-**Spec**: [spec.md](spec.md) | **Plan**: [plan.md](plan.md) | **Date**: 2026-11-13 (раунд 2)
+**Spec**: [spec.md](spec.md) | **Plan**: [plan.md](plan.md) | **Date**: 2026-11-13 (раунд 2; срез B — редакция по D-6, §5–§7)
 
 Рамки — `(x0, top, x1, bottom)` в pt в пространстве макета `pdfminer` (x от левого края показанного `MediaBox`, y от
 верхнего края), как у `PdfTextSpan` (`pdf_import/text_layer_quality.py:104-120`) и `PdfImageObject`
@@ -166,7 +166,111 @@ class EncodedFrame:
     grayscale: bool
 ```
 
-## Срез B (дизайн раунда 2, не строится)
+## Срез B (дизайн, редакция 2026-11-13 по решению владельца D-6; не строится до ревью)
+
+### §5. Картинка области (`PdfImageObject`, новое поле)
+
+```python
+@dataclass(frozen=True)
+class PdfImageObject:
+    ...                                                     # поля §2 без изменений
+    region_members: tuple["PdfImageObject", ...] = ()       # не пусто — это картинка области: N выданных объектов
+                                                            # (как их выдал срез A), которые она заменяет; откат = они
+```
+
+Картинка области: `page_number`; `x0, top, x1, bottom` = рамка области (пересечённая с `CropBox`; `top` прижат к 0, как
+у картинок); `frame_box` = та же рамка без прижатия; `source_index = max(0, (page_number − 1) · 10000 + round(top))`;
+`image_bytes` = PNG отрисовки; `mime_type = "image/png"`; `display_width_points` / `display_height_points` = рамка
+отрисовки в pt (явный размер в DOCX); `width_points` / `height_points` = рамка области; `discovery_index = None`;
+`original_image_bytes = None` (это не замена одной картинки — откат идёт к членам). Признак — `bool(region_members)`.
+Пиклится: члены — те же frozen-объекты.
+
+### §6. Опись графики страницы (`pdf_import/figure_regions.py`)
+
+```python
+@dataclass(frozen=True)
+class PageGraphic:
+    box: tuple[float, float, float, float]        # (x0, top, x1, bottom) макета pdfminer, НЕ прижата к странице
+    kind: str                                     # "image" | "path"
+    discovery_index: int | None = None            # у картинки — номер LTImage в обходе страницы (как у описи)
+    source_px: tuple[int, int] | None = None      # у картинки — LTImage.srcsize
+
+
+@dataclass(frozen=True)
+class PageGraphics:
+    page_number: int
+    graphics: tuple[PageGraphic, ...]
+
+
+def read_page_graphics(pdf_path, page_numbers: Iterable[int]) -> dict[int, PageGraphics]:
+    """Отдельный pdfminer-проход только по page_numbers; рамка пути — по всем операндам original_path.
+    Никогда не бросает наружу: сбой -> {} (вызывающий пишет ERROR stage="inventory")."""
+```
+
+### §7. Решение и исход (`pdf_import/figure_regions.py`)
+
+```python
+REGION_DECLINE_RUNNING_TEXT = "running_text_inside"       # G1
+REGION_DECLINE_FULL_LINE = "full_line_inside"             # G2
+REGION_DECLINE_INVENTORY_MISMATCH = "inventory_mismatch"  # проход описи и опись картинок расходятся
+REGION_DECLINE_OUTSIDE_CROP_BOX = "outside_crop_box"      # пересечение с CropBox пусто
+# при отрисовке (те же имена, что у среза A): "user_unit", "page_geometry_disagrees", "exceeds_pixel_budget"
+
+
+@dataclass(frozen=True)
+class PdfBodyTypography:                         # публичная функция logical_import (Q-5)
+    body_font_size: float | None
+    body_left_x0: float | None
+    body_right_x1: float | None
+
+
+@dataclass(frozen=True)
+class FigureRegion:
+    page_number: int
+    box: tuple[float, float, float, float]        # окончательная рамка ∩ CropBox
+    member_keys: tuple[tuple[int, int], ...]      # (page_number, discovery_index) выданных картинок внутри
+    seed_count: int                               # непередаваемых картинок внутри
+    image_count: int
+    path_count: int
+    grown_line_count: int                         # строк мельче тела, по которым рамка выросла
+    scale: float                                  # px на pt: взвешенная по площади медиана плотностей картинок
+
+
+@dataclass(frozen=True)
+class RegionDecline:
+    page_number: int
+    box: tuple[float, float, float, float] | None
+    reason: str
+    detail: str = ""                               # начало строки-стража / текст расхождения, <= 120 знаков
+    seed_count: int = 0
+
+
+@dataclass(frozen=True)
+class FigureRegionPlan:
+    seed_pages: tuple[int, ...]
+    regions: tuple[FigureRegion, ...]
+    declines: tuple[RegionDecline, ...]
+
+
+@dataclass(frozen=True)
+class FigureRegionOutcome:
+    images: tuple[PdfImageObject, ...]            # images_A − члены + картинки областей, по (page, top, x0)
+    rendered: int
+    declined: int                                  # отказов (по областям; страница отказывает целиком — FR-B8)
+    failed: int
+    images_absorbed: int                           # выданных картинок, ушедших в области
+    absorbed_frame_renders: int                    # из них — уже заменённых срезом A (не доставляются)
+
+
+def plan_figure_regions(extraction, spans, graphics: dict[int, PageGraphics], typography: PdfBodyTypography,
+                        crop_boxes: dict[int, Box]) -> FigureRegionPlan: ...   # чистая
+def apply_figure_regions(pdf_path, images_a: Sequence[PdfImageObject], plan: FigureRegionPlan) -> FigureRegionOutcome: ...
+```
+
+Счётчики итогового события выводятся из исхода (не хранятся отдельно). Члены области находятся в `images_a` по ключу
+`(page_number, discovery_index)` — у выданной картинки он есть с FR-A10, у замены среза A — тот же.
+
+### Отклонённый проект (раунд 2, удаление подписей, не действует)
 
 Сущности первой редакции (`PdfPageGraphic`, `FigureRegion`, `FigureRegionPlan`) сохраняются по смыслу, с изменениями по
 ревью: у области — `graphics_hull` (оболочка графики) отдельно от `picture_box` (рамка картинки с ростом по строкам);

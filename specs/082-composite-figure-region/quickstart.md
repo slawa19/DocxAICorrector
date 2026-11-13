@@ -1,4 +1,4 @@
-# Quickstart: проверка спеки 082 (срез A)
+# Quickstart: проверка спеки 082 (срез A; срез B — пункт 7)
 
 **Spec**: [spec.md](spec.md) | **Tasks**: [tasks.md](tasks.md)
 
@@ -56,3 +56,33 @@ wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_docum
 wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_spec_status_consistency.py -q
 wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_typecheck.py -q
 ```
+
+## 7. Срез B (после постройки; редакция 2026-11-13 по решению владельца D-6)
+
+Синтетика и правило (CI):
+
+```bash
+wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_pdf_figure_regions.py -q
+wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_pdf_figure_regions_render.py -q
+wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_processing_runtime.py -q
+```
+
+Корпус (`integration_local`): одна область на Rethinking стр. 151 — рамка `[42,2; 68,2; 353,8; 499,5]`, 22 выдаваемых члена,
+261 семя, 2365 путей; других областей нет. Тест среза A (`tests/test_pdf_image_frames_corpus.py`) — те же 32 замены и
+22 отказа на стр. 151.
+
+```bash
+wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_pdf_figure_regions_corpus.py -q
+```
+
+Четыре книги до/после — пункт 4 (тот же скрипт, база — `main` без среза B). Ожидаемо (research R34): Money 1390 / 43,
+Creating 1757 / 62, Value 1945 / 42 — 0 различий; Rethinking 2639 абзацев — 0 различий, картинки 55 → 34 (позиции 18–39
+уходят, одна добавлена на месте 18, остальные 33 — байт в байт). Картинку области открыть глазами
+(`<dir>/branch_side_by_side/`): схема целиком, 12 кружков и восьмиугольник — белые, как на странице.
+
+Подготовка аудиокниги Rethinking, до/после (без модели; образец — `D:\Temp\claude\work-082b\sim_b.py --prep`): 2603
+неизображённых абзаца с теми же текстом, ролью, причиной исключения; строк-картинок 55 → 34.
+
+Лог (`app.log`): `pdf_figure_region_rendered` — 1 (стр. 151, `members_emitted: 22`); итог
+`pdf_image_extraction_dropped_images` с `figure_region_rendered: 1`, `figure_region_images_absorbed: 22` и прежними
+`frame_render_*`; `pdf_text_layer_import_succeeded` с `figure_regions_inserted: 1`, `image_count: 34`.

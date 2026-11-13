@@ -77,3 +77,57 @@ frame_render_checked 32, frame_render_replaced 32, frame_render_declined 23, fra
   подразделом «Спека 082: картинки PDF как на странице»; запись в §7.
 - `scripts/_list_log_events.py`: `TARGETS` += `src/docxaicorrector/pdf_import/images.py`,
   `src/docxaicorrector/pdf_import/image_frames.py`.
+
+## Срез B (ДИЗАЙН, редакция 2026-11-13 по решению владельца D-6; не построено)
+
+Имена проверены на отсутствие в `src/` и в каталоге `docs/LOGGING_AND_ARTIFACT_RETENTION.md` §3 (2026-11-13). Текст
+книги — только начало ≤ 120 знаков.
+
+### `pdf_figure_region_rendered` — INFO, дочерний процесс, одно на картинку области
+
+`pdf_path`, `page_number`, `box` (рамка области, pt, 1 знак), `seed_count`, `image_count`, `path_count`,
+`members_emitted` (выданных картинок внутри), `member_keys` (`[[page, discovery_index], …]`), `absorbed_frame_renders`
+(из членов — уже заменённых срезом A), `grown_line_count`, `scale_dpi`, `width_px`, `height_px`, `bytes`, `grayscale`.
+
+### `pdf_figure_region_declined` — INFO, одно на отказанную область (или страницу целиком)
+
+`pdf_path`, `page_number`, `box` (или `null`), `seed_count`, `reason` ∈ `running_text_inside` (G1), `full_line_inside`
+(G2), `inventory_mismatch`, `outside_crop_box`, `user_unit`, `page_geometry_disagrees`, `exceeds_pixel_budget`,
+`page_atomic` (другая область этой страницы отказала или упала — FR-B8), `detail` (≤ 120: начало строки-стража или
+текст расхождения). INFO: страница остаётся как сегодня.
+
+### `pdf_figure_region_failed` — ERROR, дочерний процесс
+
+`pdf_path`, `page_number` (`null` для стадий уровня документа), `stage` ∈ `inventory`, `typography`, `plan`,
+`page_geometry`, `frame`, `render`, `encode`, `step`, `error_type`, `error_message` (≤ 120). Исход — страница (или все
+страницы для `inventory`, `typography`, `plan`, `step`) как без шага.
+
+### `pdf_figure_region_insert_failed` — ERROR, родитель
+
+`page_number`, `source_index`, `stage` ∈ `probe` (до сборки: область заменена членами на их местах), `insert` (в сборке:
+члены вставлены прежним путём на месте области), `members`, `members_inserted`, `error_type`, `error_message` (≤ 120).
+
+### Итог `pdf_image_extraction_summary` / `pdf_image_extraction_dropped_images` — новые ключи
+
+| Ключ | Смысл |
+|---|---|
+| `figure_region_enabled` | `false` в ветке OCR (FR-B11) |
+| `figure_region_seed_pages` | страниц с непередаваемой картинкой |
+| `figure_region_rendered` | картинок областей в выходе разбора |
+| `figure_region_declined` | отказанных областей |
+| `figure_region_failed` | сбоев (страниц) |
+| `figure_region_images_absorbed` | выданных картинок, ушедших в области |
+
+Прежние ключи и счётчики среза A — без изменений (срез A работает до областей на всех выданных картинках, FR-B9).
+Ожидаемо на корпусе (research R34): Rethinking — `figure_region_seed_pages 1, rendered 1, declined 0, failed 0,
+images_absorbed 22`; `frame_render_*` — как сегодня (32 / 32 / 23 / 0); Money, Creating, Value — все `figure_region_*` 0.
+
+### `pdf_text_layer_import_succeeded` — один новый ключ
+
+`figure_regions_inserted` — картинок областей, реально вставленных в DOCX (откат к членам не считается); `image_count` —
+длина итогового списка (на Rethinking 55 → 34), `images_emitted` — вставленные картинки, как раньше.
+
+### Документы
+
+`docs/LOGGING_AND_ARTIFACT_RETENTION.md` — подраздел «Спека 082, срез B: составная иллюстрация одной картинкой» и
+запись в §7; `scripts/_list_log_events.py` `TARGETS` += `src/docxaicorrector/pdf_import/figure_regions.py`.
