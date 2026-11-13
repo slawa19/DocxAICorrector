@@ -75,6 +75,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_pdf_hanging_indent_note_lines.py`
 - `tests/test_pdf_image_frames.py`
 - `tests/test_pdf_image_frames_review.py`
+- `tests/test_pdf_image_frames_review2.py`
 - `tests/test_pdf_page_render.py`
 - `tests/test_pdf_text_layer_logical_import.py`
 - `tests/test_pdf_text_layer_quality.py`

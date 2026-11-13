@@ -13,6 +13,9 @@
   `discovery_index`; заменена только картинка, антикоррелирующая с отрисовкой своей рамки (FR-A1) и не попавшая под
   отказ (FR-A2, FR-A4, FR-A7): `image_bytes` = PNG отрисовки рамки, `mime_type="image/png"`, явный размер `display_*` и
   исходные байты в `original_*`. В ветке OCR — ни одной замены (FR-A14).
+- Раунд 2 приёмочного ревью: `top`/`bottom` картинки по-прежнему прижаты к странице (ключ порядка и `source_index` не
+  меняются), а её истинная рамка — в новом поле `frame_box`; по нему идут проверки допуска. Новые поля `mask`, `clips`
+  и `PdfImageExtraction.painted` — только для отказов; в DOCX они не попадают.
 - `_enforce_pdf_image_count_cap` (`:619-631`) — как сегодня (число картинок не меняется).
 
 ## Картинка в DOCX
@@ -33,6 +36,10 @@
 
 - `requirements.txt`: `pypdfium2==5.15.2`; `pyproject.toml` `[project.optional-dependencies].pdf-import` — то же.
 - `scripts/setup-wsl.sh` `verify_runtime` (`:65-72`): импорты += `pdfminer`, `pypdfium2`.
-- `scripts/docker-ci-parity.sh` ставит `.[dev]` (без `pdf-import`), как и сегодня для `pdfminer` — расхождение с CI
-  (`ci.yml` ставит `requirements.txt`) существовало до спеки; спека его не меняет.
+- `scripts/docker-ci-parity.sh` ставит `.[dev]`, гоняет на нём pyright-ratchet (как задание `editable-install`
+  в `ci.yml`), затем ставит `requirements.txt` (`:36-40`) и только после этого — статический ярус и основной набор
+  (как задание `tests`). До спеки 082 `requirements.txt` здесь не ставился, и в контейнере паритета не было
+  PDF-зависимостей; спека это исправила (приёмочное ревью среза A, находка 9; порядок проверяет
+  `tests/test_script_contract_static.py`). Прежняя строка этого контракта «спека его не меняет» стала неверной
+  после той правки (приёмочное ревью, раунд 2, находка 5).
 - Системных пакетов не добавляется.

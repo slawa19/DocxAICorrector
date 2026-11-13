@@ -27,6 +27,10 @@ _COLOUR_SPACES = {
     "jpeg_devicen": "[/DeviceN [/Black] /DeviceGray " + _TINT_TO_GRAY + "]",
     "flate_gray": "/DeviceGray",
 }
+_SHADING = (
+    "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 4000 0] /Extend [true true]"
+    " /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+)
 
 
 @dataclass
@@ -48,6 +52,17 @@ class SyntheticImage:
     decode: str | None = None
     # Colourant name of the one-ink spaces (``Black``, ``All``, ``None``).
     colourant: str = "Black"
+    # Spec 082 acceptance round 2 -- what the page does to the image besides placing it:
+    # ``smask``: pattern of an 8-bit soft mask written as the image's /SMask (``left_clear``: the left half
+    # transparent, the right half opaque); ``colour_key``: a /Mask colour-key array written verbatim
+    # (``"[40 90]"``); ``clip``: raw clipping operators run inside the image's ``q`` before its ``cm``
+    # (``"60 300 100 100 re W n"``); ``form_bbox``: draw the image inside a Form XObject with this BBox (form
+    # space = page space); ``gs_smask``: draw it under an ExtGState whose /SMask is a luminosity group.
+    smask: str | None = None
+    colour_key: str | None = None
+    clip: str | None = None
+    form_bbox: tuple[float, float, float, float] | None = None
+    gs_smask: bool = False
 
 
 @dataclass
@@ -73,12 +88,29 @@ class SyntheticPage:
     inherit_mediabox: bool = False
     inherit_rotate: bool = False
     user_unit: float | None = None
+    # Raw operators drawn AFTER the images (over them), e.g. ``"0 g 160 300 100 100 re f"`` or ``"/Sh0 sh"``;
+    # the page carries one axial shading resource ``/Sh0``.
+    overlays: list[str] = field(default_factory=list)
+
+
+def _gray_pattern(pattern: str, w: int, h: int) -> bytes:
+    if pattern == "left_clear":
+        return bytes(0 if x < w // 2 else 255 for _y in range(h) for x in range(w))
+    raise ValueError(pattern)
 
 
 def _pixels(image: SyntheticImage, channels: int) -> bytes:
     w, h = image.pixels
     if image.pattern == "corner":
         gray = bytes(30 if (x < w // 2 and y < h // 2) else 220 for y in range(h) for x in range(w))
+    elif image.pattern == "halves":
+        # Left half 64, right half 192: the two-level picture of the round-2 review's counterexample.
+        gray = bytes(64 if x < w // 2 else 192 for _y in range(h) for x in range(w))
+    elif image.pattern == "halves_ramp":
+        # Left half 64, right half a left-to-right ramp 160..224 (mean 192): the same counterexample, with a
+        # right half that is a picture of its own and not flat.
+        half = w // 2
+        gray = bytes(64 if x < half else 160 + ((x - half) * 64) // max(1, w - half - 1) for _y in range(h) for x in range(w))
     else:
         if image.pattern == "dark":
             row = bytes([40] * w)
@@ -96,11 +128,22 @@ def _colour_space(image: SyntheticImage) -> str:
     return _COLOUR_SPACES[image.kind].replace("/Black", "/" + image.colourant)
 
 
-def _image_stream(image: SyntheticImage) -> bytes:
+def _smask_stream(image: SyntheticImage) -> bytes:
+    w, h = image.pixels
+    data = zlib.compress(_gray_pattern(str(image.smask), w, h))
+    head = "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length %d >>"
+    return (head % (w, h, len(data))).encode() + b"\nstream\n" + data + b"\nendstream"
+
+
+def _image_stream(image: SyntheticImage, smask_ref: int | None = None) -> bytes:
     from PIL import Image
 
     w, h = image.pixels
     decode = (" /Decode %s" % image.decode) if image.decode else ""
+    if smask_ref is not None:
+        decode += " /SMask %d 0 R" % smask_ref
+    if image.colour_key:
+        decode += " /Mask %s" % image.colour_key
     if image.kind == "flate_gray":
         data = zlib.compress(_pixels(image, 1))
         head = "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace %s /BitsPerComponent 8%s /Filter /FlateDecode /Length %d >>"
@@ -134,13 +177,45 @@ def build_pdf(pages: list[SyntheticPage]) -> bytes:
     inherited: list[str] = []
     for page in pages:
         names = []
-        for index, image in enumerate(page.images):
-            names.append(("Im%d" % index, add(_image_stream(image))))
+        gstates: list[tuple[str, int]] = []
         ops: list[str] = []
         ops.extend(page.paths)
-        for (name, _ref), image in zip(names, page.images):
+        for index, image in enumerate(page.images):
+            smask_ref = add(_smask_stream(image)) if image.smask else None
+            image_name, image_ref = "Im%d" % index, add(_image_stream(image, smask_ref))
             matrix = image.matrix or (image.x1 - image.x0, 0.0, 0.0, image.y1 - image.y0, image.x0, image.y0)
-            ops.append("q %.4f %.4f %.4f %.4f %.4f %.4f cm /%s Do Q" % (*matrix, name))
+            clip = (image.clip + " ") if image.clip else ""
+            draw = "q %s%.4f %.4f %.4f %.4f %.4f %.4f cm /%s Do Q" % (clip, *matrix, image_name)
+            if image.form_bbox is not None:
+                body = draw.encode("latin-1")
+                form_ref = add(
+                    (
+                        "<< /Type /XObject /Subtype /Form /BBox [%s] /Resources << /XObject << /%s %d 0 R >> >> /Length %d >>"
+                        % (" ".join("%.3f" % v for v in image.form_bbox), image_name, image_ref, len(body))
+                    ).encode()
+                    + b"\nstream\n" + body + b"\nendstream"
+                )
+                names.append(("Fm%d" % index, form_ref))
+                draw = "/Fm%d Do" % index
+            else:
+                names.append((image_name, image_ref))
+            if image.gs_smask:
+                xm = (image.x0 + image.x1) / 2.0
+                group = ("0 g %.3f %.3f %.3f %.3f re f 1 g %.3f %.3f %.3f %.3f re f" % (
+                    image.x0, image.y0, xm - image.x0, image.y1 - image.y0, xm, image.y0, image.x1 - xm, image.y1 - image.y0)).encode()
+                width, height = (page.mediabox or (0.0, 0.0, page.width, page.height))[2:]
+                group_ref = add(
+                    (
+                        "<< /Type /XObject /Subtype /Form /BBox [0 0 %.3f %.3f] /Group << /S /Transparency /CS /DeviceGray >> /Length %d >>"
+                        % (width, height, len(group))
+                    ).encode()
+                    + b"\nstream\n" + group + b"\nendstream"
+                )
+                gs_ref = add(b"<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G %d 0 R >> >>" % group_ref)
+                gstates.append(("GS%d" % index, gs_ref))
+                draw = "q /GS%d gs %s Q" % (index, draw)
+            ops.append(draw)
+        ops.extend(page.overlays)
         for text in page.texts:
             ops.append("BT /F1 %.2f Tf %.3f %.3f Td (%s) Tj ET" % (text.size, text.x, text.y, _escape(text.text)))
         content = "\n".join(ops).encode("latin-1")
@@ -161,7 +236,9 @@ def build_pdf(pages: list[SyntheticPage]) -> bytes:
         if page.user_unit is not None:
             entries += " /UserUnit %.3f" % page.user_unit
         xobjects = " ".join("/%s %d 0 R" % (name, ref) for name, ref in names)
-        resources = "<< /Font << /F1 %d 0 R >> /XObject << %s >> >>" % (font, xobjects)
+        extgstates = " ".join("/%s %d 0 R" % (name, ref) for name, ref in gstates)
+        resources = "<< /Font << /F1 %d 0 R >> /XObject << %s >> /ExtGState << %s >> /Shading << /Sh0 %s >> >>" % (
+            font, xobjects, extgstates, _SHADING)
         kids.append(add(("<< /Type /Page /Parent %d 0 R %s /Resources %s /Contents %d 0 R >>" % (
             pages_obj, entries, resources, content_ref)).encode()))
     objects[catalog - 1] = b"<< /Type /Catalog /Pages %d 0 R >>" % pages_obj

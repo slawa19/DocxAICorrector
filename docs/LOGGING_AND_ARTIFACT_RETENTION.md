@@ -404,22 +404,26 @@ Notice экрана результата: `result.audiobook_studio_limits_exceed
   skipped_unknown_mime}`. `discovered/emitted/skipped` имеют прежний смысл (до спеки 082 событие эмитил сам извлекатель);
   `frame_render_enabled` — `false` в ветке OCR.
 - `pdf_image_frame_rendered` — `src/docxaicorrector/pdf_import/image_frames.py`, INFO, одно на заменённую картинку.
-  Context: `{pdf_path, page_number, discovery_index, box, colour_space, correlation, source_width_px, source_height_px,
-  width_px, height_px, scale_dpi, bytes, grayscale}`; `correlation` < 0; пикселей отрисовки не меньше, чем у источника.
+  Context: `{pdf_path, page_number, discovery_index, box, colour_space, correlation, compared_box, source_width_px,
+  source_height_px, width_px, height_px, scale_dpi, bytes, grayscale}`; `correlation` < 0; пикселей отрисовки не меньше,
+  чем у источника. `box` — истинная рамка картинки (не прижатая к странице); `compared_box` — часть рамки, которую
+  показывает обтравка и на которой считалась корреляция (`null`, если обтравка рамку не режет).
 - `pdf_image_frame_render_declined` — там же, INFO: картинка не сравнивалась или не заменена по отказу. Context:
   `{pdf_path, page_number, discovery_index, box, colour_space, reason, detail}`; `reason` ∈ `text_over_frame`,
-  `image_over_frame`, `unsupported_placement`, `unreadable_source`, `user_unit`, `outside_crop_box`, `exceeds_pixel_budget`,
-  `page_geometry_disagrees`, `flat_image`. Сравнённая и похожая на страницу картинка события не порождает.
+  `image_over_frame`, `masked_image`, `unsupported_placement`, `unreadable_source`, `paint_over_frame`, `clipped_frame`,
+  `user_unit`, `outside_crop_box`, `exceeds_pixel_budget`, `page_geometry_disagrees`, `flat_image`. Сравнённая и похожая
+  на страницу картинка события не порождает.
 - `pdf_image_frame_render_failed` — там же и `src/docxaicorrector/processing/processing_runtime.py`
   (`_replace_pdf_images_by_page_frames`, сбой шага целиком; тогда `page_number`, `discovery_index`, `box` — `null`), ERROR:
   картинка сохраняет выданные байты. Context: `{pdf_path, page_number, discovery_index, box, error_type, error_message}`.
+  Покрывает и отрисовку, и сравнение, и кодирование PNG одной картинки: остальные картинки обрабатываются дальше.
 - `pdf_image_replacement_insert_failed` — `src/docxaicorrector/processing/processing_runtime.py`
   (`_append_replaced_pdf_image_to_docx`), ERROR: PNG-замену не удалось вставить в DOCX, вставлены выданные байты прежним
   путём. Context: `{source_index, page_number, error_type, error_message, fallback_inserted}`.
 - `pdf_text_layer_import_succeeded` получил ключ `images_replaced_by_frame_render` — отрисовки, реально вставленные в
   DOCX (откат к выданным байтам не считается).
 
-Гарды: `tests/test_pdf_image_frames.py`, `tests/test_pdf_image_frames_review.py`, `tests/test_pdf_page_render.py`, `tests/test_processing_runtime.py`
+Гарды: `tests/test_pdf_image_frames.py`, `tests/test_pdf_image_frames_review.py`, `tests/test_pdf_image_frames_review2.py`, `tests/test_pdf_page_render.py`, `tests/test_processing_runtime.py`
 (`test_spec082_*`), `tests/test_pdf_image_frames_corpus.py`. `scripts/_list_log_events.py` сканирует
 `src/docxaicorrector/pdf_import/images.py` и `src/docxaicorrector/pdf_import/image_frames.py`.
 
@@ -581,6 +585,7 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 
 ## 7. Changelog этого документа
 
+- 2026-11-13: спека 082 срез A, приёмочное ревью, раунд 2 — §3.15: у `pdf_image_frame_render_declined` новые причины `masked_image`, `paint_over_frame`, `clipped_frame`; `box` событий — истинная рамка картинки, не прижатая к странице; у `pdf_image_frame_rendered` новый ключ `compared_box`; `pdf_image_frame_render_failed` покрывает и сбой кодирования PNG.
 - 2026-11-13: спека 082 срез A, приёмочное ревью — §3.15: триггер замены — антикорреляция картинки с отрисовкой рамки (не имя цветового пространства); у `pdf_image_frame_rendered` новый ключ `correlation`; у `pdf_image_frame_render_declined` новые причины `unsupported_placement`, `user_unit`, `page_geometry_disagrees`, `flat_image`; у итога извлечения новые ключи `frame_render_enabled` (`false` в ветке OCR) и `frame_render_checked`; `images_replaced_by_frame_render` считает только отрисовки, реально вставленные в DOCX.
 - 2026-11-13: спека 082 срез A — картинки PDF как на странице. Новый §3.15 описывает `pdf_image_extraction_summary` и `pdf_image_extraction_dropped_images` (из §3.8; теперь эмитятся один раз после шага замен и несут счётчики `frame_render_*`) и регистрирует `pdf_image_frame_rendered`, `pdf_image_frame_render_declined`, `pdf_image_frame_render_failed`, `pdf_image_replacement_insert_failed`; `pdf_text_layer_import_succeeded` получил `images_replaced_by_frame_render`. `scripts/_list_log_events.py` сканирует `src/docxaicorrector/pdf_import/images.py` и `src/docxaicorrector/pdf_import/image_frames.py`. Новых артефактов и каталогов нет.
 - 2026-11-13: спека 077 — §5.5 записывает, что причина `notes_in_body` у озвучки может не покрывать абзац с отметкой спеки 067: начало главы, прочитанное как серия из одной записи, озвучивается. Новых событий и полей нет.

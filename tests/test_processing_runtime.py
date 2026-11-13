@@ -3343,12 +3343,16 @@ class _FakeLTImage:
 
 
 def _patch_pdfminer_image_layout(monkeypatch, pages) -> None:
-    import pdfminer.high_level as high_level
     import pdfminer.layout as layout
+
+    from docxaicorrector.pdf_import import images as pdf_images
+    from docxaicorrector.pdf_import.paint_evidence import PageEvidence
 
     monkeypatch.setattr(layout, "LTImage", _FakeLTImage)
     monkeypatch.setattr(layout, "LTFigure", _FakeLTFigure)
-    monkeypatch.setattr(high_level, "extract_pages", lambda path: pages)
+    monkeypatch.setattr(
+        pdf_images, "iter_pages_with_evidence", lambda path: [(page, PageEvidence(painted=[], images={})) for page in pages]
+    )
 
 
 def test_extract_pdf_images_warns_when_discovered_exceeds_emitted(monkeypatch) -> None:

@@ -91,15 +91,44 @@ def test_an_inherited_mediabox_does_not_shift_the_rendered_frame(tmp_path) -> No
     assert _correlation(_grey(image.image_bytes), _grey(image.original_image_bytes)) < -0.9
 
 
+def _upright_in_layout(rotate: int, mediabox, layout_matrix):
+    """The ``cm`` that makes an image upright in pdfminer's layout space of a page rotated by ``rotate``
+    (pdfminer ``PDFPageInterpreter.process_page``): ``cm x R = layout_matrix``, so ``cm = layout x R^-1``."""
+
+    x0, y0, x1, y1 = mediabox
+    r = {90: (0, -1, 1, 0, -y0, x1), 270: (0, 1, -1, 0, y1, -x0)}[rotate]
+    a, b, c, d, e, f = r
+    det = a * d - b * c
+    inv = (d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det)
+    la, lb, lc, ld, le, lf = layout_matrix
+    ia, ib, ic, idd, ie, iff = inv
+    return (
+        la * ia + lb * ic, la * ib + lb * idd,
+        lc * ia + ld * ic, lc * ib + ld * idd,
+        le * ia + lf * ic + ie, le * ib + lf * idd + iff,
+    )
+
+
 @pytest.mark.parametrize("rotate", [90, 270])
 def test_an_inherited_rotation_does_not_shift_the_rendered_frame(tmp_path, rotate) -> None:
-    page = SyntheticPage(cropbox=(20, 30, 380, 570), rotate=rotate, inherit_rotate=True, images=[_photo()])
+    # Placed so that it is upright in the rotated page's layout space (an image upright in PDF space is
+    # rotated there and declined as an unsupported placement -- round 2 review: the earlier form of this
+    # test always took that decline and checked nothing).
+    matrix = _upright_in_layout(rotate, (0, 0, 400, 600), (200.0, 0.0, 0.0, 100.0, 150.0, 120.0))
+    page = SyntheticPage(cropbox=(20, 30, 380, 570), rotate=rotate, inherit_rotate=True, images=[_photo(matrix=matrix)])
     path = write_pdf(tmp_path / ("rot%d.pdf" % rotate), [page])
     _extraction, _plan, outcome = _run(path)
     (image,) = outcome.images
-    if image.original_image_bytes is None:
-        return  # declined is acceptable; a shifted render is not
-    assert _correlation(_grey(image.image_bytes, (24, 48)), _grey(image.original_image_bytes, (24, 48))) != pytest.approx(0, abs=0.5)
+    # Pinned (round 2 review: the earlier form accepted a decline or a strong correlation of either sign):
+    # the negative is replaced, and the delivered picture IS the page at the image's place.
+    assert image.original_image_bytes is not None
+    from docxaicorrector.pdf_import.page_render import layout_cropbox
+
+    crop = layout_cropbox((0, 0, 400, 600), (20, 30, 380, 570), rotate)  # the render shows the CropBox
+    box = (image.x0 - crop[0], image.top - crop[1], image.x1 - crop[0], image.bottom - crop[1])
+    page = _grey(_page_view(path, 1, box), (24, 48))
+    assert _correlation(_grey(image.image_bytes, (24, 48)), page) > 0.95
+    assert _correlation(_grey(image.original_image_bytes, (24, 48)), page) < -0.9
 
 
 @pytest.mark.parametrize(
@@ -126,21 +155,26 @@ def test_a_page_with_a_user_unit_is_declined(tmp_path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("decode", "colourant"),
-    [("[1 0]", "Black"), (None, "All")],
+    ("decode", "colourant", "stored_is_negative"),
+    [("[1 0]", "Black", False), (None, "All", True)],
 )
-def test_an_ink_space_image_that_already_looks_like_its_page_is_not_replaced(tmp_path, decode, colourant) -> None:
-    """Finding 3: Decode [1 0] cancels the tint inversion; the stored file is already the page's picture.
-    (/All paints every colourant: with the grey alternate the page again shows 1 - tint.)"""
+def test_an_ink_space_image_is_replaced_exactly_when_it_is_a_negative_of_its_page(tmp_path, decode, colourant, stored_is_negative) -> None:
+    """Finding 3: Decode [1 0] cancels the tint inversion; the stored file is already the page's picture and
+    keeps its bytes. /All paints every colourant: with the grey alternate the page shows 1 - tint, so the
+    stored file is a negative and is replaced. Premise and outcome are pinned independently (round 2 review:
+    the earlier form chose the expected outcome from the measured sign)."""
     path = write_pdf(tmp_path / "premise.pdf", [SyntheticPage(images=[_photo(decode=decode, colourant=colourant)])])
     extraction, _plan, outcome = _run(path)
     (image,) = outcome.images
     page = _grey(_page_view(path, 1, (image.x0, image.top, image.x1, image.bottom)))
     stored_correlation = _correlation(_grey(extraction.images[0].image_bytes), page)
-    if stored_correlation > 0:
-        assert image.original_image_bytes is None
+    if stored_is_negative:
+        assert stored_correlation < -0.9
+        assert image.original_image_bytes == extraction.images[0].image_bytes
+        assert _correlation(_grey(image.image_bytes), page) > 0.95
     else:
-        assert image.original_image_bytes is not None
+        assert stored_correlation > 0.9
+        assert image is extraction.images[0] and image.original_image_bytes is None
 
 
 def test_a_flat_image_is_declined(tmp_path) -> None:
