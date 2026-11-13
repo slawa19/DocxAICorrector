@@ -6,7 +6,12 @@ from docxaicorrector.document.structure_authority import (
     normalize_structure_phase,
     phase_uses_advisory_hints,
 )
-from docxaicorrector.document.narration_exclusion import ends_as_a_sentence, resolve_narration_exclusion_reason
+from docxaicorrector.document.narration_exclusion import (
+    ends_as_a_sentence,
+    follows_a_sentence_end,
+    quotation_and_signature,
+    resolve_narration_exclusion_reason,
+)
 from docxaicorrector.document.relations import build_paragraph_relations, resolve_effective_relation_kinds
 from docxaicorrector.core.models import (
     BACK_MATTER_SECTION_INDEX,
@@ -20,7 +25,13 @@ from docxaicorrector.core.models import (
     ParagraphRelation,
     ParagraphUnit,
 )
-from docxaicorrector.pipeline.output_validation import is_notes_run_paragraph
+from docxaicorrector.pipeline.output_validation import (
+    has_hard_reference_mark,
+    is_notes_run_paragraph,
+    note_number_spans,
+    notes_run_parts,
+    notes_run_piece_reads_as_reference,
+)
 from docxaicorrector.text.narration_cleanup import unwrap_markdown_links
 from docxaicorrector.text.narration_residue import shorten_addresses_to_domain
 from docxaicorrector.validation.formatting_coverage import (
@@ -322,6 +333,12 @@ def build_editing_jobs(
     if normalized_operation == "audiobook":
         # The narration reads the same regions, back-matter sections and notes-in-body positions
         # as the job fields every operation carries (spec 071: one detector, no second pass).
+        # Spec 077: minus a chapter's opening the mark reads as a one-entry notes run (an epigraph
+        # with its signature, then prose). For the narration only -- the spec 067 mark itself
+        # (``notes_in_body_paragraph_ids``) is not narrowed.
+        narration_notes_positions = notes_in_body_positions - _resolve_epigraph_led_note_positions(
+            flat_paragraphs, notes_in_body_positions
+        )
         narration_reasons_by_block = []
         position = 0
         for index, block in enumerate(blocks):
@@ -332,7 +349,7 @@ def build_editing_jobs(
                         paragraph_role=paragraph.role,
                         region=paragraph_regions_by_block[index][paragraph_index],
                         back_matter_section=back_matter_sections.get(index),
-                        in_notes_in_body=position + paragraph_index in notes_in_body_positions,
+                        in_notes_in_body=position + paragraph_index in narration_notes_positions,
                         text=_strip_internal_placeholders(paragraph.text),
                     )
                     for paragraph_index, paragraph in enumerate(block.paragraphs)
@@ -1157,6 +1174,53 @@ def _resolve_notes_in_body_positions(
         and _paragraph_structural_kind(paragraph, structure_phase=structure_phase) in _NOTES_IN_BODY_STRUCTURAL_ROLES
         and is_notes_run_paragraph(paragraph.text)
     )
+
+
+def _resolve_epigraph_led_note_positions(
+    paragraphs: list[ParagraphUnit],
+    notes_in_body_positions: frozenset[int],
+) -> frozenset[int]:
+    """Spec 077: paragraphs the spec 067 mark calls a notes run that are a chapter's OPENING -- an
+    epigraph with its attribution, a stray note number, then the author's prose. NARRATION ONLY:
+    the mark itself (``notes_in_body_paragraph_ids``) and what translate and edit read stay as they
+    were; the audiobook narrates these paragraphs.
+
+    A marked paragraph is returned when ALL hold, read off the form (Constitution VII):
+
+    * its notes run has exactly ONE numbered entry (``output_validation.notes_run_parts``), and
+      that entry holds no further ENTRY OPENER -- a note number by the 067 form standing right
+      after a sentence end (``output_validation.note_number_spans``,
+      ``narration_exclusion.follows_a_sentence_end``). A chain counts consecutive numbers only, so
+      the entries of a run numbered 1, 3, 5, ... all hide inside a "chain of one" (Codex
+      acceptance review of spec 077, round 2, finding 3: 100 notes, 17 108 characters, narrated);
+    * that entry does NOT read as a reference by the spec 067 per-piece form
+      (``notes_run_piece_reads_as_reference``) -- it is prose;
+    * its lead is a quotation with a signature (``narration_exclusion.quotation_and_signature``:
+      a sentence, a dash between spaces, a signature with a letter);
+    * the signature carries no hard reference mark (``output_validation.has_hard_reference_mark``:
+      no year in brackets, no locator, no address) -- an attribution names a person, a
+      bibliographic lead names a work and where to find it.
+    """
+    exempt: set[int] = set()
+    for position in sorted(notes_in_body_positions):
+        if position >= len(paragraphs):
+            continue
+        parts = notes_run_parts(_strip_internal_placeholders(paragraphs[position].text))
+        if parts is None:
+            continue
+        lead, entries = parts
+        if len(entries) != 1:
+            continue
+        entry = entries[0]
+        if any(follows_a_sentence_end(entry, start) for _, start in note_number_spans(entry)):
+            continue
+        if notes_run_piece_reads_as_reference(entry):
+            continue
+        split = quotation_and_signature(lead)
+        if split is None or has_hard_reference_mark(split[1]):
+            continue
+        exempt.add(position)
+    return frozenset(exempt)
 
 
 # Spec 067 FR-004 (A-4): a heading that is a bare NAME (a publisher's name) is right when

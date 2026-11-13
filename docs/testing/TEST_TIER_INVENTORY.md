@@ -71,6 +71,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_paragraph_boundary_normalization.py`
 - `tests/test_paragraph_record_and_production_verdict.py`
 - `tests/test_passthrough_unmapped_acceptance.py`
+- `tests/test_pdf_hanging_indent_entry_lines.py`
 - `tests/test_pdf_hanging_indent_note_lines.py`
 - `tests/test_pdf_image_frames.py`
 - `tests/test_pdf_page_render.py`
@@ -126,6 +127,8 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_074_letter_readings.py`
 - `tests/test_spec_075_results_folder.py`
 - `tests/test_spec_075_review_round1.py`
+- `tests/test_spec_077_epigraph_opening_narrated.py`
+- `tests/test_spec_079_notes_run_must_cite.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`
