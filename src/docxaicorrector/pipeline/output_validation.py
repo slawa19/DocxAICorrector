@@ -680,8 +680,9 @@ def has_hard_reference_mark(text: str) -> bool:
     """Spec 077: does ``text`` carry a year in brackets, a page or volume locator, or a web address --
     the citation anchors above that say WHERE a work is found? An emphasised span, a quoted phrase
     and the author form are not counted: a signature under an epigraph names a person, and may set
-    the name in italics or as "Surname, I.". Read only by the narration (spec 077);
-    ``has_citation_anchor`` and everything translation reads are unchanged."""
+    the name in italics or as "Surname, I.". Read by the narration (spec 077) and, since spec 083,
+    by the translation gate's bibliography test (``quality_gate_text_detectors``);
+    ``has_citation_anchor`` and the translation policy are unchanged."""
     body = str(text or "")
     return any(
         pattern.search(body) is not None
