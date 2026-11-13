@@ -118,6 +118,23 @@ Tier: полный цикл (Конституция III). Раунд 2 (посл
   `WORKFLOW_AND_IMAGE_MODES.md`, `AGENTS.md`, инвентарь тестов), Changelog спеки. — **Proof**: `mutations_review.txt`;
   гарды документов.
 
+## Правки по приёмочному ревью среза A, раунд 2 (2026-11-13)
+
+Решения — spec Changelog «приёмочное ревью Codex, срез A, раунд 2», research R28.
+
+- [x] T031 Воспроизвести находки 1–3 синтетикой до правки — `tests/test_pdf_image_frames_review2.py` на `9c4694d`
+  (10 падают, 8 контрольных проходят). — **Proof**: `work-082/review2_repro_before_lines.txt`.
+- [x] T032 [IMG] Наблюдающий проход `pdf_import/paint_evidence.py`; в описи — истинная рамка (`frame_box`), маска,
+  обтравки, закрашенные контуры и заливки. — **Proof**: `test_the_observed_walk_yields_the_layout_pdfminer_yields`.
+- [x] T033 `image_frames.py`: отказы `paint_over_frame`, `masked_image`, `clipped_frame`; сравнение на видимой части
+  прямоугольной обтравки; допуск по истинной рамке; сбой кодирования PNG — сбой одной картинки. — **Proof**: тесты
+  раунда 2, тест корпуса (31 замена).
+- [x] T034 `scripts/measure-pdf-image-frames.py compare`: все поля картинки, добавленные и удалённые хвосты; контракт
+  `import-output.md` о docker parity. — **Proof**: `test_the_compare_command_reports_size_only_changes_and_added_or_removed_tails`.
+- [x] T035 Замер «база `main` | ветка» на четырёх книгах, десять троек глазами, мутации M1–M17 и повтор N1–N19,
+  документы, Changelog спеки. — **Proof**: `work-082/after3/compare.json`, `mutations_round2.txt`,
+  `mutations_review_after_round2.txt`.
+
 ## Срез B
 
 Задачи не пишутся до ревью дизайна раунда 2 (spec FR-B1…FR-B8, research R23–R24, Q-4). Перечень контрпримеров, которые
@@ -125,5 +142,5 @@ Tier: полный цикл (Конституция III). Раунд 2 (посл
 
 ## Сводка
 
-Срез A: 30 задач (Setup 3, Foundational 1, срез A 9, Polish 8, правки ревью 9). **[RT]**: T003, T004, T009–T011, T026.
-**[IMG]**: T004, T023. **[REQ]**: T001. **[DOC]**: T014–T016, T018, T030.
+Срез A: 35 задач (Setup 3, Foundational 1, срез A 9, Polish 8, правки ревью 9, правки ревью раунда 2 — 5). **[RT]**:
+T003, T004, T009–T011, T026. **[IMG]**: T004, T023, T032. **[REQ]**: T001. **[DOC]**: T014–T016, T018, T030, T035.
