@@ -190,3 +190,16 @@ def test_a_failure_at_any_stage_keeps_the_pictures_slice_a_delivered(tmp_path, m
     extraction, outcome = _run(path, monkeypatch, events)
     assert outcome.images == extraction.images and outcome.rendered == 0
     assert [(level, context["stage"]) for level, event, context in events if event == "pdf_figure_region_failed"] == [(logging.ERROR, stage)]
+
+
+def test_a_renderer_that_cannot_open_the_document_keeps_the_pictures(tmp_path, monkeypatch) -> None:
+    path = write_pdf(tmp_path / "open.pdf", [_figure_page()])
+
+    def cannot_open(*args, **kwargs):
+        raise RuntimeError("invented failure opening the document")
+
+    monkeypatch.setattr(page_render, "open_pdf_for_rendering", cannot_open)
+    events: list = []
+    extraction, outcome = _run(path, monkeypatch, events)
+    assert outcome.images == extraction.images and outcome.failed == 1
+    assert [c["stage"] for _l, e, c in events if e == "pdf_figure_region_failed"] == ["render"]

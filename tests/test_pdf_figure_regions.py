@@ -301,3 +301,33 @@ def test_the_body_typography_is_the_importers_own_preparation(monkeypatch) -> No
     logical_import.build_paragraph_units_from_text_spans(spans)
     logical_import.pdf_body_typography(spans)
     assert calls == [len(spans), len(spans)]  # the importer and the step run the one preparation
+
+
+def test_growth_by_lines_does_not_cascade_even_when_the_region_grows_again() -> None:
+    # the edge label pulls in a path that touches it (another pass of growth follows); the next line touches only the
+    # label, never the graphics, and stays outside
+    page = Page().seed((100.0, 100.0, 140.0, 140.0)).body_text()
+    page.line((60.0, 120.0, 110.0, 128.0), 8.0, "Edge label")
+    page.path((62.0, 115.0, 70.0, 120.0))
+    page.line((20.0, 126.0, 61.0, 134.0), 8.0, "Next line")
+    region = only_region(page.plan())
+    assert region.box[0] == 60.0 and region.grown_line_count == 1 and region.path_count == 1
+
+
+def test_two_seeds_joined_only_by_a_label_between_them_become_one_region() -> None:
+    page = Page().seed((100.0, 100.0, 150.0, 150.0)).seed((170.0, 100.0, 220.0, 150.0)).body_text()
+    page.line((140.0, 120.0, 180.0, 128.0), 8.0, "Shared")
+    region = only_region(page.plan())
+    assert region.box == (100.0, 100.0, 220.0, 150.0) and region.seed_count == 2
+
+
+def test_a_drawing_reached_only_through_a_grown_label_is_absorbed() -> None:
+    page = Page().seed((100.0, 100.0, 140.0, 140.0)).emitted((182.0, 110.0, 220.0, 150.0)).body_text()
+    page.line((130.0, 120.0, 182.0, 128.0), 8.0, "Pointer label")
+    region = only_region(page.plan())
+    assert region.member_keys == ((PAGE, 1),) and region.box == (100.0, 100.0, 220.0, 150.0)
+
+
+def test_the_seed_density_is_weighted_by_area_not_the_smallest() -> None:
+    page = Page().seed((100.0, 100.0, 200.0, 200.0), px=(200, 200)).seed((200.0, 100.0, 210.0, 110.0), px=(10, 10)).body_text()
+    assert only_region(page.plan()).seed_density == pytest.approx(2.0)

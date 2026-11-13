@@ -164,20 +164,20 @@ Tier: полный цикл (Конституция III). Раунд 2 (посл
   контракты, задачи; данные `D:\Temp\claude\work-082b\`). Находки — в Changelog до T041. — **Proof**:
   `D:\Temp\claude\076-data\codex_report_082Bdesign.txt` («СТРОИТЬ ПОСЛЕ ПРАВОК ПРОЕКТА»), Changelog «ревью дизайна
   среза B, раунд 2».
-- [ ] T041 [IMG] `PdfImageObject.region_members: tuple[PdfImageObject, ...] | None = None` — `None` обычная картинка,
+- [x] T041 [IMG] `PdfImageObject.region_members: tuple[PdfImageObject, ...] | None = None` — `None` обычная картинка,
   `()` область без выданных членов (N = 0), непустой кортеж — область с членами; пиклится; прочий код не меняется. —
   **Proof**: тест пикла для `None`, `()` и непустого кортежа; `tests/test_processing_runtime.py` зелёный без правок.
-- [ ] T042 [LI] Общая подготовка профиля: `_prepare_spans_for_import(spans)` (нормализация, повторяющиеся колонтитулы,
+- [x] T042 [LI] Общая подготовка профиля: `_prepare_spans_for_import(spans)` (нормализация, повторяющиеся колонтитулы,
   колонтитулы на строке номера, сортировка, профиль — всё, что строки `:152-176` готовят для импортёра) и публичная
   `pdf_body_typography(spans) -> PdfBodyTypography`; `build_paragraph_units_from_text_spans` вызывает ту же подготовку;
   литерал `7` строки тела (`:777`) получает имя `_BODY_LINE_MIN_WORDS`. Правка минимальна и локальна (тот же модуль
   параллельно меняет ветка распознавания заголовков). — **Proof**: `tests/test_pdf_text_layer_logical_import.py` без
   изменений; тест «функция = профиль импортёра» на синтетике с колонтитулом; абзацы четырёх книг — T051.
-- [ ] T043 [FR] `read_page_graphics(pdf_path, pages)` — отдельный pdfminer-проход, `LTImage` (порядок обхода
+- [x] T043 [FR] `read_page_graphics(pdf_path, pages)` — отдельный pdfminer-проход, `LTImage` (порядок обхода
   извлекателя, `srcsize`) и `LTCurve` внутри `LTFigure`, рамка пути по всем операндам `original_path`. — **Proof**:
   синтетика (кривая с опорной точкой вне концов — рамка её содержит; путь во вложенной форме виден; `discovery_index`
   совпадает с описью); мутации «рамка по концам» и «без `LTFigure`» роняют тесты.
-- [ ] T044 [FR] `plan_figure_regions` — чистое правило на рамках (`tests/test_pdf_figure_regions.py`, без PDF): связь при
+- [x] T044 [FR] `plan_figure_regions` — чистое правило на рамках (`tests/test_pdf_figure_regions.py`, без PDF): связь при
   зазоре = допуску / нет при чуть большем; семя только непередаваемое (страница без семени — пустой план); охватывающий
   путь (рамка полосы вокруг большинства строк) — не связывает; охватывающая картинка — отказ `image_encloses_page_text`;
   рост по компоненте, касающейся рамки; рост по строке мельче тела на краю графики и НЕ по следующей строке блока; строка
@@ -188,46 +188,46 @@ Tier: полный цикл (Конституция III). Раунд 2 (посл
   вне `CropBox` с каждой из четырёх сторон → `member_outside_crop_box`; расхождение описи → `inventory_mismatch`; допуск
   без текста — медиана книги; одиночное семя (N = 0) — область с `member_keys = ()`. — **Proof**: тесты; мутация на
   каждое условие.
-- [ ] T045 [FR] Применение: плотность = max(наибольшая плотность выданных членов после среза A, взвешенная медиана
+- [x] T045 [FR] Применение: плотность = max(наибольшая плотность выданных членов после среза A, взвешенная медиана
   семян), N = 0 — медиана семян, нет пикселей — `unknown_density`; `read_page_geometry`/`frame_geometry`/бюджет/
   `render_frame`/`encode_frame_png`; атомарность страницы; события. — **Proof**: `tests/test_pdf_figure_regions_render.py`
   на синтетике: картинка области = отрисовка страницы в рамке (асимметричный маркер на месте); исправный член с мелким
   шаблоном (плотность выше семени) — в картинке области не меньше его пикселей на его рамке; две области, сбой второй →
   ни одной; бюджет → отказ; `/UserUnit` → отказ; N = 0 → одна новая картинка с явным размером.
-- [ ] T046 [RT] `_run_pdf_parse_stages`: лимит на выданном списке до шагов; срез A без изменений; области на его выходе
+- [x] T046 [RT] `_run_pdf_parse_stages`: лимит на выданном списке до шагов; срез A без изменений; области на его выходе
   (`figure_regions.replace_composite_figures`, сдержано); итог сверх лимита → отказ шага B целиком; OCR — не вызывается;
   ОДНО итоговое событие после обоих шагов с прежними ключами, `frame_render_*` и `figure_region_*`. — **Proof**: тест
   лимита до шагов; тест «итог B сверх лимита — выход A»; шпион OCR; тест корпуса среза A и `tests/test_pdf_image_frames*.py`
   — зелёные.
-- [ ] T047 [RT] Сборка DOCX как транзакция: картинка области вставляется с явным размером; сбой вставки любой области →
+- [x] T047 [RT] Сборка DOCX как транзакция: картинка области вставляется с явным размером; сбой вставки любой области →
   все области её страницы заменяются членами, документ собирается заново с начала; `images_emitted` — картинки
   окончательного документа; `figure_regions_inserted`, `figure_region_members_restored`; ERROR
   `pdf_figure_region_insert_failed`. — **Proof**: сбой вставки первой и (отдельно) второй области одной страницы →
   последовательность абзацев и картинок DOCX (sha1, EMU, позиции) равна сборке без шага; счётчики равны фактическим;
   EMU области = рамка × 12700.
-- [ ] T048 [RT] Сдерживание по стадиям — тест-таблица по образцу
+- [x] T048 [RT] Сдерживание по стадиям — тест-таблица по образцу
   `test_spec082_no_failure_in_the_frame_step_changes_what_the_import_delivers`: `inventory`, `typography`, `plan`,
   `page_geometry`, `render`, `encode`, `step`, вставка первой области, вставка второй области страницы — документ равен
   прогону без шага (те же картинки на тех же местах, те же абзацы), ERROR со стадией. — **Proof**: тест; мутация «не
   ловить» на стадии роняет её строку.
-- [ ] T049 [RT] Инвариант текста FR-B7 и соседство: синтетика с областью — `parse_result.spans` тот же список, абзацы
+- [x] T049 [RT] Инвариант текста FR-B7 и соседство: синтетика с областью — `parse_result.spans` тот же список, абзацы
   DOCX равны прогону без шага (мутация «отбросить спан внутри области»); синтетика, где N картинок между короткими
   абзацами становятся одной, — абзацы после `_prepare_document_for_processing` (текст, роль, граница, подпись) равны
   прогону без шага, кроме строк-картинок; картинка, заменённая срезом A и поглощённая областью, при откате доставки
   возвращается заменённой (байты и размер среза A). — **Proof**: тесты.
-- [ ] T050 `tests/test_pdf_figure_regions_corpus.py` (`integration_local`, Rethinking): одна область, стр. 151, рамка
+- [x] T050 `tests/test_pdf_figure_regions_corpus.py` (`integration_local`, Rethinking): одна область, стр. 151, рамка
   `[42,2; 68,2; 353,8; 499,5]` ± 0,1, 22 выдаваемых члена, 261 семя, 2365 путей, 2 строки роста; других областей нет. —
   **Proof**: зелёный; без книги — `skip` (запись в Changelog, что CI его не подтверждает).
-- [ ] T051 `scripts/measure-pdf-image-frames.py`: провенанс «есть ли шаг областей»; side-by-side картинки области
+- [x] T051 `scripts/measure-pdf-image-frames.py`: провенанс «есть ли шаг областей»; side-by-side картинки области
   «члены | область | страница»; опция подготовки аудиокниги (роль, причина, текст). Замер «`main` | ветка» на четырёх
   книгах. — **Proof**: SC-B1, SC-B2 (0 различий абзацев; Rethinking 55 → 34, позиции 18–39; 2603 абзаца подготовки);
   картинка области и Ghostscript со сглаживанием — глазами (Read), запись в Changelog.
-- [ ] T052 [DOC] `docs/LOGGING_AND_ARTIFACT_RETENTION.md` (события среза B, §7), `scripts/_list_log_events.py` `TARGETS`
+- [x] T052 [DOC] `docs/LOGGING_AND_ARTIFACT_RETENTION.md` (события среза B, §7), `scripts/_list_log_events.py` `TARGETS`
   += `figure_regions.py`, `docs/WORKFLOW_AND_IMAGE_MODES.md` (PDF import: составная иллюстрация — одна картинка, подписи
   остаются абзацами), `docs/testing/TEST_TIER_INVENTORY.md` (три новых файла), Changelog спеки: мутации, числа, `file:line`.
   — **Proof**: `tests/test_documentation_links.py`, `tests/test_script_contract_static.py`,
   `tests/test_agent_contract_consistency.py`, `tests/test_spec_status_consistency.py`.
-- [ ] T053 Прогоны отдельными командами: новые файлы, `tests/test_processing_runtime.py`, `tests/test_pdf_image_frames*.py`,
+- [x] T053 Прогоны отдельными командами: новые файлы, `tests/test_processing_runtime.py`, `tests/test_pdf_image_frames*.py`,
   `tests/test_pdf_page_render.py`, `tests/test_pdf_text_layer_logical_import.py`, `tests/test_logger.py`, гарды,
   `tests/test_typecheck.py` (≥ 180000 мс). — **Proof**: счёт `passed` дословно.
 - [ ] T054 Оркестратор: полный прогон в главном дереве после слияния, `git status --porcelain` пуст; приёмочное ревью

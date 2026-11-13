@@ -42,6 +42,7 @@ TARGETS = [
     "src/docxaicorrector/pipeline/terminal_results.py",
     "src/docxaicorrector/pdf_import/images.py",
     "src/docxaicorrector/pdf_import/image_frames.py",
+    "src/docxaicorrector/pdf_import/figure_regions.py",
     "src/docxaicorrector/processing/preparation.py",
     "src/docxaicorrector/processing/processing_runtime.py",
     "src/docxaicorrector/processing/processing_service.py",

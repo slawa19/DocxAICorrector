@@ -1,4 +1,4 @@
-"""Spec 082 slice A acceptance: what the PDF bridge delivers, book by book, saved so it can be recounted.
+"""Spec 082 acceptance (slices A and B): what the PDF bridge delivers, book by book, saved so it can be recounted.
 
 Two subcommands.
 
@@ -8,7 +8,10 @@ book, the FULL sequences a reader gets: every paragraph (text, style name) in or
 (sha1, byte size, size in the DOCX in EMU) in order, with the run's provenance (label, commit, source
 tree, whether the frame-replacement step exists there) and the time taken. When the step exists, each
 replaced picture also gets a side-by-side PNG: bytes delivered before | bytes delivered now | the page
-itself (the whole page rendered, cropped to the frame by PIL -- an independent crop path).
+itself (the whole page rendered, cropped to the frame by PIL -- an independent crop path). When the slice-B step
+exists, each composite-figure render gets a side-by-side PNG: the render delivered | the page (whole page rendered,
+cropped by PIL). ``--prep`` also saves the audiobook preparation of each book (role, narration-exclusion reason and
+text of every prepared paragraph; offline, no model).
 
 ``compare`` reads two saved runs and lists every difference: paragraphs by position, pictures by
 position with every saved field (sha1, byte size, DOCX size), and -- when one run has more -- the added or
@@ -89,6 +92,20 @@ def _run(args) -> int:
         import docxaicorrector.pdf_import.image_frames as image_frames
     except ImportError:
         image_frames = None
+    try:
+        import docxaicorrector.pdf_import.figure_regions as figure_regions
+    except ImportError:
+        figure_regions = None
+    regions: list = []
+    if figure_regions is not None:
+        real_regions = figure_regions.replace_composite_figures
+
+        def recording_regions(path, extraction, images_a, spans, **kwargs):
+            outcome = real_regions(path, extraction, images_a, spans, **kwargs)
+            regions.extend(image for image in outcome.images if getattr(image, "region_members", None) is not None)
+            return outcome
+
+        figure_regions.replace_composite_figures = recording_regions  # type: ignore[assignment]
     runtime._PDF_PARSE_IN_PROCESS = True  # in-process parse, one interpreter, same modules
     replaced: list = []
     if image_frames is not None:
@@ -109,12 +126,14 @@ def _run(args) -> int:
             "commit": args.commit,
             "src": str(src),
             "frame_replacement_step": image_frames is not None,
+            "figure_region_step": figure_regions is not None,
             "module": runtime.__file__,
         },
         "books": books,
     }
     for pdf_path in args.pdfs:
         replaced.clear()
+        regions.clear()
         started = time.perf_counter()
         docx_bytes, _backend = runtime._convert_pdf_text_layer_to_docx(filename=pdf_path.name, source_bytes=pdf_path.read_bytes())
         elapsed = time.perf_counter() - started
@@ -124,17 +143,84 @@ def _run(args) -> int:
             sides_dir.mkdir(parents=True, exist_ok=True)
             stem = pdf_path.stem[:24].replace(" ", "_")
             sides = [_side_by_side(pdf_path, image, sides_dir, stem) for image in replaced]
+        if regions:
+            sides_dir.mkdir(parents=True, exist_ok=True)
+            stem = pdf_path.stem[:24].replace(" ", "_")
+            sides += [_region_side_by_side(pdf_path, image, sides_dir, stem) for image in regions]
+        replaced_pages = [image.page_number for image in replaced]
+        region_pages = [image.page_number for image in regions]
+        region_members = [len(image.region_members or ()) for image in regions]
+        replaced_count = len(replaced)
+        prep = _prepared_rows(runtime, pdf_path) if args.prep else None  # converts again: snapshot the lists first
         books[pdf_path.name] = {
             "seconds": round(elapsed, 2),
             "paragraphs": view["paragraphs"],
             "pictures": view["pictures"],
-            "replaced_pages": [image.page_number for image in replaced],
+            "replaced_pages": replaced_pages,
+            "region_pages": region_pages,
+            "region_members": region_members,
+            "prepared": prep,
             "side_by_side": sides,
         }
         print(f"{args.label}: {pdf_path.name[:40]}: {len(view['paragraphs'])} paragraphs, {len(view['pictures'])} pictures, "
-              f"{len(replaced)} replaced, {elapsed:.1f}s", flush=True)
+              f"{replaced_count} replaced, {len(region_pages)} regions, {elapsed:.1f}s", flush=True)
     (args.out / f"{args.label}.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return 0
+
+
+def _region_side_by_side(pdf_path: Path, image, out_dir: Path, stem: str) -> str:
+    """The region render delivered | the same box of the whole page rendered at the same density, cropped by PIL."""
+
+    from PIL import Image
+
+    from docxaicorrector.pdf_import.page_render import open_pdf_for_rendering, read_page_geometry
+
+    after = Image.open(io.BytesIO(image.image_bytes)).convert("RGB")
+    scale = after.size[0] / float(image.display_width_points)
+    crop = read_page_geometry(pdf_path, {image.page_number})[image.page_number].layout_cropbox
+    with open_pdf_for_rendering(pdf_path) as document:
+        page = document[image.page_number - 1]  # type: ignore[index]
+        whole = page.render(scale=scale, draw_annots=False, may_draw_forms=False).to_pil().convert("RGB")
+        page.close()
+    box = image.frame_box or (image.x0, image.top, image.x1, image.bottom)
+    pixel_box = [(box[0] - crop[0]) * scale, (box[1] - crop[1]) * scale, (box[2] - crop[0]) * scale, (box[3] - crop[1]) * scale]
+    page_view = whole.crop(tuple(int(round(v)) for v in pixel_box)).resize(after.size)
+    gap = 8
+    canvas = Image.new("RGB", (after.size[0] * 2 + gap, after.size[1]), (255, 0, 0))
+    canvas.paste(after, (0, 0))
+    canvas.paste(page_view, (after.size[0] + gap, 0))
+    target = out_dir / f"{stem}_p{image.page_number}_region.png"
+    canvas.save(target)
+    whole.save(out_dir / f"{stem}_p{image.page_number}_page.png")
+    return str(target)
+
+
+def _prepared_rows(runtime, pdf_path: Path) -> list[list]:
+    """The audiobook preparation of the book, offline: [role, narration-exclusion reason, text] per paragraph."""
+
+    from docxaicorrector.core.config import load_app_config
+    from docxaicorrector.core.constants import DEFAULT_CHUNK_SIZE
+    from docxaicorrector.processing.preparation import _prepare_document_for_processing
+
+    def no_model(*args, **kwargs):
+        raise AssertionError("no model in a measurement")
+
+    config = load_app_config()
+    config = dict(config) if isinstance(config, dict) else dict(config.to_dict())
+    normalized = runtime.normalize_uploaded_document(filename=pdf_path.name, source_bytes=pdf_path.read_bytes())
+    prepared = _prepare_document_for_processing(
+        normalized.filename, normalized.content_bytes, DEFAULT_CHUNK_SIZE, source_format=normalized.source_format,
+        conversion_backend=normalized.conversion_backend, app_config=config, processing_operation="audiobook",
+        get_client_fn=no_model, client_factory=None,
+    )
+    rows: list[list] = []
+    for job in prepared.jobs:
+        ids = list(job["paragraph_ids"])
+        texts = str(job["target_text"]).split("\n\n")
+        reasons = job.get("narration_exclusion_reasons") or [None] * len(ids)
+        for k in range(len(ids)):
+            rows.append([job["structural_roles"][k], reasons[k], texts[k] if len(texts) == len(ids) else None])
+    return rows
 
 
 def _picture_fields(before: dict | None, after: dict | None) -> list[str]:
@@ -177,14 +263,29 @@ def _compare(args) -> int:
             "pictures_removed": [d["index"] for d in picture_diffs if d["after"] is None],
             "replaced_pages_before": b["replaced_pages"],
             "replaced_pages_after": a["replaced_pages"],
+            "region_pages_before": b.get("region_pages", []),
+            "region_pages_after": a.get("region_pages", []),
             "seconds": [b["seconds"], a["seconds"]],
         }
+        if b.get("prepared") is not None and a.get("prepared") is not None:
+            # the audiobook preparation without the picture rows: text, role and narration reason, position by position
+            pb = [row for row in b["prepared"] if row[0] != "image"]
+            pa = [row for row in a["prepared"] if row[0] != "image"]
+            entry["prepared_rows"] = [len(pb), len(pa)]
+            entry["prepared_picture_rows"] = [len(b["prepared"]) - len(pb), len(a["prepared"]) - len(pa)]
+            entry["prepared_differences"] = [
+                {"index": i, "before": rb, "after": ra} for i, (rb, ra) in enumerate(zip_longest(pb, pa)) if rb != ra
+            ]
         books[name] = entry
         print(f"{name[:40]}: paragraphs {entry['paragraphs']} differences {len(paragraph_diffs)}; pictures {entry['pictures']} "
               f"differences {len(picture_diffs)} at {[d['index'] for d in picture_diffs]} "
               f"(fields {sorted({f for d in picture_diffs for f in d['fields']})}, added {entry['pictures_added']}, "
               f"removed {entry['pictures_removed']}); replaced pages {b['replaced_pages']} -> {a['replaced_pages']}; "
               f"seconds {entry['seconds']}", flush=True)
+        if "prepared_rows" in entry:
+            print(f"{name[:40]}: prepared rows without pictures {entry['prepared_rows']} differences "
+                  f"{len(entry['prepared_differences'])}; picture rows {entry['prepared_picture_rows']}; "
+                  f"region pages {entry['region_pages_before']} -> {entry['region_pages_after']}", flush=True)
     if args.out:
         Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     return 0
@@ -199,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--label", required=True)
     run.add_argument("--commit", required=True, help="commit the source tree is checked out at (provenance)")
     run.add_argument("--out", type=Path, required=True)
+    run.add_argument("--prep", action="store_true", help="also save the audiobook preparation of each book (slow)")
     compare = commands.add_parser("compare")
     compare.add_argument("before")
     compare.add_argument("after")

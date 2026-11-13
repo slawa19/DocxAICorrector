@@ -428,6 +428,40 @@ Notice экрана результата: `result.audiobook_studio_limits_exceed
 (`test_spec082_*`), `tests/test_pdf_image_frames_corpus.py`. `scripts/_list_log_events.py` сканирует
 `src/docxaicorrector/pdf_import/images.py` и `src/docxaicorrector/pdf_import/image_frames.py`.
 
+### 3.16 Спека 082, срез B: составная иллюстрация одной картинкой
+
+На странице, где есть картинка, которую извлекатель не может отдать файлом, связанная графика (картинки и пути) вместе с
+надписями мельче тела на её краю становится ОДНОЙ картинкой — PNG-отрисовкой этой области страницы (pypdfium2), а
+выданные картинки области уходят из списка. Текст не меняется: подписи схемы остаются абзацами. Шаг идёт после среза A,
+на его выходе; в ветке OCR не работает. События области пишет дочерний процесс разбора (в прогоне раннера — в
+`runs/<run_id>/app.log`, §1.1), событие вставки — родитель; текст книги — только начало ≤ 120 знаков. Контракт —
+`specs/082-composite-figure-region/contracts/events.md`.
+
+- `pdf_figure_region_rendered` — `src/docxaicorrector/pdf_import/figure_regions.py`, INFO, одно на картинку области.
+  Context: `{pdf_path, page_number, box, seed_count, image_count, path_count, members_emitted, member_keys,
+  absorbed_frame_renders, grown_line_count, scale_dpi, scale_source, width_px, height_px, bytes, grayscale}`;
+  `scale_source` — `member` (плотность задал самый плотный выданный член) или `seeds`.
+- `pdf_figure_region_declined` — там же, INFO: страница остаётся как без шага. Context: `{pdf_path, page_number, box,
+  seed_count, reason, detail}`; `reason` ∈ `image_encloses_page_text`, `typography_unknown`, `typography_disagrees`,
+  `text_block_inside`, `running_text_inside`, `full_line_inside`, `member_outside_crop_box`, `outside_crop_box`,
+  `inventory_mismatch`, `unknown_density`, `exceeds_pixel_budget`, `user_unit`, `page_geometry_disagrees`, `page_atomic`,
+  `image_count_cap`.
+- `pdf_figure_region_failed` — там же и `src/docxaicorrector/processing/processing_runtime.py` (сбой шага целиком,
+  `stage="step"`), ERROR: страница (или все страницы) как без шага. Context: `{pdf_path, page_number, stage, error_type,
+  error_message}`; `stage` ∈ `inventory`, `typography`, `page_geometry`, `plan`, `render`, `encode`, `step`.
+- `pdf_figure_region_insert_failed` — `src/docxaicorrector/processing/processing_runtime.py`, ERROR: картинку области не
+  удалось вставить в DOCX; все области этой страницы заменены своими картинками, документ собран заново. Context:
+  `{page_number, regions, members_restored, error_type, error_message}`.
+- Итог `pdf_image_extraction_summary` / `pdf_image_extraction_dropped_images` (§3.15) пишется один раз ПОСЛЕ обоих
+  шагов и получил ключи `{figure_region_enabled, figure_region_seed_pages, figure_region_rendered, figure_region_declined,
+  figure_region_failed, figure_region_images_absorbed}`; `figure_region_enabled` — `false` в ветке OCR.
+- `pdf_text_layer_import_succeeded` получил `figure_regions_inserted` и `figure_region_members_restored`;
+  `images_emitted` — картинки окончательного DOCX.
+
+Гарды: `tests/test_pdf_figure_regions.py`, `tests/test_pdf_figure_regions_render.py`,
+`tests/test_pdf_figure_regions_bridge.py`, `tests/test_pdf_figure_regions_corpus.py`. `scripts/_list_log_events.py`
+сканирует `src/docxaicorrector/pdf_import/figure_regions.py`.
+
 ## 4. Rules for adding new log events (AI agent checklist)
 
 При любой новой production-ветке с netrivial runtime-эффектом ИИ-агент обязан:
@@ -586,6 +620,11 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 
 ## 7. Changelog этого документа
 
+- 2026-11-13: спека 082 срез B — составная иллюстрация одной картинкой. Новый §3.16: `pdf_figure_region_rendered`,
+  `pdf_figure_region_declined`, `pdf_figure_region_failed`, `pdf_figure_region_insert_failed`; итог извлечения
+  (§3.15) пишется после обоих шагов и несёт `figure_region_*`; `pdf_text_layer_import_succeeded` получил
+  `figure_regions_inserted`, `figure_region_members_restored`. `scripts/_list_log_events.py` сканирует
+  `src/docxaicorrector/pdf_import/figure_regions.py`. Новых артефактов и каталогов нет.
 - 2026-11-13: спека 082 срез A, приёмочное ревью, раунд 3 — §3.15: триггер — причина и свидетельство (пространство краски И отрицательная корреляция); у `pdf_image_frame_render_declined` новая причина `not_ink_space`, причины `paint_over_frame` и `clipped_frame` раунда 2 удалены вместе с наблюдателем краски, `masked_image` теперь значит `/SMask` или `/Mask` в словаре картинки; у `pdf_image_frame_rendered` удалён ключ `compared_box`.
 - 2026-11-13: спека 082 срез A, приёмочное ревью, раунд 2 — §3.15: у `pdf_image_frame_render_declined` новые причины `masked_image`, `paint_over_frame`, `clipped_frame`; `box` событий — истинная рамка картинки, не прижатая к странице; у `pdf_image_frame_rendered` новый ключ `compared_box`; `pdf_image_frame_render_failed` покрывает и сбой кодирования PNG.
 - 2026-11-13: спека 082 срез A, приёмочное ревью — §3.15: триггер замены — антикорреляция картинки с отрисовкой рамки (не имя цветового пространства); у `pdf_image_frame_rendered` новый ключ `correlation`; у `pdf_image_frame_render_declined` новые причины `unsupported_placement`, `user_unit`, `page_geometry_disagrees`, `flat_image`; у итога извлечения новые ключи `frame_render_enabled` (`false` в ветке OCR) и `frame_render_checked`; `images_replaced_by_frame_render` считает только отрисовки, реально вставленные в DOCX.
