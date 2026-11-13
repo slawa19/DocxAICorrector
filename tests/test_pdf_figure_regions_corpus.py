@@ -60,3 +60,49 @@ def test_rethinking_money_figure_is_one_region_and_nothing_else_is(monkeypatch) 
     assert [image for image in outcome.images if image.region_members is None] == [
         image for image in images_a if image.page_number != 151
     ]
+
+
+def _picture_sequence(docx_bytes: bytes) -> list[tuple[str, int]]:
+    import hashlib
+    import io as _io
+
+    from docx import Document
+
+    document = Document(_io.BytesIO(docx_bytes))
+    blip = "{http://schemas.openxmlformats.org/drawingml/2006/main}blip"
+    embed = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+    out: list[tuple[str, int]] = []
+    for position, paragraph in enumerate(document.paragraphs):
+        for element in paragraph._element.iter(blip):
+            out.append((hashlib.sha1(document.part.related_parts[element.get(embed)].blob).hexdigest(), position))
+    return out
+
+
+def test_rethinking_money_a_failed_region_insertion_restores_the_book_as_without_the_step(monkeypatch) -> None:
+    """Acceptance review of slice B, finding 1: p151 holds members that share a source_index (the same top) and were
+    discovered in the other order; the rollback must give back the extractor's order, picture for picture."""
+
+    import docxaicorrector.processing.processing_runtime as runtime
+
+    path = _book("Rethinking-money*.pdf")
+    monkeypatch.setattr(runtime, "_PDF_PARSE_IN_PROCESS", True)
+    with monkeypatch.context() as off:
+        off.setattr(
+            fr, "replace_composite_figures", lambda p, extraction, images_a, spans, **kwargs: fr.FigureRegionOutcome(images=tuple(images_a))
+        )
+        baseline, _ = runtime._convert_pdf_text_layer_to_docx(filename=path.name, source_bytes=path.read_bytes())
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(runtime, "log_event", lambda level, event, message, **context: events.append((event, context)))
+    real_append = runtime._append_image_bytes_to_docx
+
+    def failing_region(document, image_bytes, *, width_points=None, height_points=None):
+        if height_points is not None and height_points > 400:  # the region render is 431 pt tall; no photo of the book is
+            raise RuntimeError("invented failure inserting the region")
+        return real_append(document, image_bytes, width_points=width_points, height_points=height_points)
+
+    monkeypatch.setattr(runtime, "_append_image_bytes_to_docx", failing_region)
+    restored, _ = runtime._convert_pdf_text_layer_to_docx(filename=path.name, source_bytes=path.read_bytes())
+    assert _picture_sequence(restored) == _picture_sequence(baseline)
+    succeeded = next(context for event, context in events if event == "pdf_text_layer_import_succeeded")
+    assert (succeeded["image_count"], succeeded["images_emitted"], succeeded["images_dropped"]) == (55, 55, 0)
+    assert (succeeded["figure_regions_inserted"], succeeded["figure_region_members_restored"]) == (0, 22)

@@ -198,11 +198,12 @@ def test_a_slice_a_render_absorbed_by_a_region_comes_back_as_slice_a_delivered_i
     assert _sequence(_convert(pages)) == baseline
 
 
+@pytest.mark.parametrize("page_shape", ["one_member", "tied_members"])
 @pytest.mark.parametrize("stage", ["inventory", "plan", "page_geometry", "render", "encode", "step"])
-def test_a_failure_in_the_step_leaves_the_document_as_without_it(monkeypatch, stage) -> None:
+def test_a_failure_in_the_step_leaves_the_document_as_without_it(monkeypatch, stage, page_shape) -> None:
     from docxaicorrector.pdf_import import page_render
 
-    pages = [_figure_page()]
+    pages = [_figure_page() if page_shape == "one_member" else _tied_members_page()]
     baseline = _baseline(monkeypatch, pages)
 
     def boom(*args, **kwargs):
@@ -275,7 +276,7 @@ def test_neighbouring_paragraphs_are_the_same_after_document_preparation(monkeyp
         ],
     )
 
-    def prepared_rows() -> list[tuple]:
+    def prepared_rows() -> dict[str, list]:
         config = load_app_config()
         config = dict(config) if isinstance(config, dict) else dict(config.to_dict())
         normalized = processing_runtime.normalize_uploaded_document(filename="figure.pdf", source_bytes=build_pdf([page]))
@@ -284,13 +285,7 @@ def test_neighbouring_paragraphs_are_the_same_after_document_preparation(monkeyp
             conversion_backend=normalized.conversion_backend, app_config=config, processing_operation="audiobook",
             get_client_fn=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no model")), client_factory=None,
         )
-        rows = []
-        for job in prepared.jobs:
-            texts = str(job["target_text"]).split("\n\n")
-            reasons = job.get("narration_exclusion_reasons") or [None] * len(job["paragraph_ids"])
-            for k in range(len(job["paragraph_ids"])):
-                rows.append((job["structural_roles"][k], reasons[k], texts[k] if len(texts) == len(job["paragraph_ids"]) else None))
-        return rows
+        return _prepared_snapshot(prepared)
 
     with monkeypatch.context() as off:
         off.setattr(
@@ -300,5 +295,106 @@ def test_neighbouring_paragraphs_are_the_same_after_document_preparation(monkeyp
         )
         baseline = prepared_rows()
     working = prepared_rows()
-    assert sum(1 for row in baseline if row[0] == "image") == 3 and sum(1 for row in working if row[0] == "image") == 1
-    assert [row for row in working if row[0] != "image"] == [row for row in baseline if row[0] != "image"]
+    assert sum(1 for row in baseline["jobs"] if row[0] == "image") == 3
+    assert sum(1 for row in working["jobs"] if row[0] == "image") == 1
+    for part in ("jobs", "paragraphs"):  # every paragraph: text, role, heading level -- the boundaries are the list itself
+        assert [row for row in working[part] if row[0] != "image"] == [row for row in baseline[part] if row[0] != "image"]
+    assert working["relations"] == baseline["relations"]  # caption and other relations, by their members' texts
+    assert any(row[0] == "caption" for row in working["paragraphs"])  # not vacuous: the caption is recognised
+
+
+def _prepared_snapshot(prepared) -> dict[str, list]:
+    """What the document layer made of the bridge DOCX. A job whose text does not split into one part per paragraph
+    is a failure, never a ``None`` that would compare equal (acceptance review of slice B, finding 5)."""
+
+    jobs = []
+    for job in prepared.jobs:
+        ids = list(job["paragraph_ids"])
+        texts = str(job["target_text"]).split("\n\n")
+        assert len(texts) == len(ids), f"job text has {len(texts)} parts for {len(ids)} paragraphs"
+        reasons = job.get("narration_exclusion_reasons") or [None] * len(ids)
+        jobs.extend((job["structural_roles"][k], reasons[k], texts[k]) for k in range(len(ids)))
+    paragraphs = [
+        (str(getattr(p, "role", "")), getattr(p, "heading_level", None), str(getattr(p, "text", "")))
+        for p in prepared.paragraphs
+    ]
+    by_id = {getattr(p, "paragraph_id", None): str(getattr(p, "text", "")) for p in prepared.paragraphs}
+    relations = [
+        (r.relation_kind, tuple(by_id.get(member, "?") for member in r.member_paragraph_ids), r.anchor_asset_id is not None)
+        for r in prepared.relations
+    ]
+    return {"jobs": jobs, "paragraphs": paragraphs, "relations": relations}
+
+
+def _tied_members_page() -> SyntheticPage:
+    """Two emitted members at the same top, drawn right-to-left: their discovery order is the reverse of the
+    extractor's (page, top, x0) order, and they share a ``source_index``."""
+
+    return SyntheticPage(
+        images=[
+            SyntheticImage("flate_gray", 100, 250, 200, 350, pixels=(40, 30)),
+            SyntheticImage("jpeg_gray", 230, 300, 260, 340, pixels=(30, 40), pattern="gradient"),
+            SyntheticImage("jpeg_gray", 205, 300, 225, 340, pixels=(20, 40), pattern="corner"),
+        ],
+        texts=[*_body(560, prefix="Above. "), SyntheticText(110, 300, 8, "Label A"), *_body(150, prefix="Below. ")],
+    )
+
+
+def test_a_rollback_restores_pictures_sharing_a_source_index_in_their_original_order(monkeypatch) -> None:
+    pages = [_tied_members_page()]
+    baseline = _baseline(monkeypatch, pages)
+    assert len(_pictures(baseline)) == 2
+    working = _sequence(_convert(pages))
+    assert len(_pictures(working)) == 1  # not vacuous: both members are in one region
+    real_append = processing_runtime._append_image_bytes_to_docx
+
+    def failing_region(document, image_bytes, *, width_points=None, height_points=None):
+        if image_bytes.startswith(b"\x89PNG"):
+            raise RuntimeError("invented failure inserting a region")
+        return real_append(document, image_bytes, width_points=width_points, height_points=height_points)
+
+    monkeypatch.setattr(processing_runtime, "_append_image_bytes_to_docx", failing_region)
+    assert _sequence(_convert(pages)) == baseline
+
+
+def _failing_region_insertion(monkeypatch, fail_on=(1,)):
+    real_append = processing_runtime._append_image_bytes_to_docx
+    calls = {"regions": 0}
+
+    def failing(document, image_bytes, *, width_points=None, height_points=None):
+        if image_bytes.startswith(b"\x89PNG"):
+            calls["regions"] += 1
+            if calls["regions"] in fail_on:
+                raise RuntimeError("invented failure inserting a region")
+        return real_append(document, image_bytes, width_points=width_points, height_points=height_points)
+
+    monkeypatch.setattr(processing_runtime, "_append_image_bytes_to_docx", failing)
+
+
+def test_a_rollback_that_would_exceed_the_image_cap_gives_way_as_a_whole(monkeypatch) -> None:
+    """Acceptance review of slice B, finding 3: page 1 turns two pictures into one, page 2 adds a picture (a lone
+    seed); at a cap of 2 the result fits, but giving page 1 back alone would make 3 -- slice B then gives way
+    everywhere, and slice A's list (which the cap was checked on) is delivered."""
+
+    lone = SyntheticPage(images=[SyntheticImage("flate_gray", 100, 250, 200, 350)], texts=[*_body(560), *_body(150)])
+    pages = [_tied_members_page(), lone]
+    monkeypatch.setattr(processing_runtime, "_MAX_PDF_IMPORT_IMAGE_COUNT", 2)
+    baseline = _baseline(monkeypatch, pages)
+    assert len(_pictures(baseline)) == 2
+    assert len(_pictures(_sequence(_convert(pages)))) == 2  # one region on each page
+    events = _events(monkeypatch)
+    _failing_region_insertion(monkeypatch)
+    assert _sequence(_convert(pages)) == baseline
+    assert any(event == "pdf_figure_region_declined" and context["reason"] == "image_count_cap" for _l, event, context in events)
+    succeeded = next(context for _l, event, context in events if event == "pdf_text_layer_import_succeeded")
+    assert (succeeded["image_count"], succeeded["images_emitted"], succeeded["figure_regions_inserted"]) == (2, 2, 0)
+    assert succeeded["figure_region_members_restored"] == 2
+
+
+def test_the_counters_of_a_rollback_describe_the_assembled_document(monkeypatch) -> None:
+    events = _events(monkeypatch)
+    _failing_region_insertion(monkeypatch, fail_on=range(1, 100))
+    _convert([_tied_members_page()])
+    succeeded = next(context for _l, event, context in events if event == "pdf_text_layer_import_succeeded")
+    assert (succeeded["image_count"], succeeded["images_emitted"], succeeded["images_dropped"]) == (2, 2, 0)
+    assert (succeeded["figure_regions_inserted"], succeeded["figure_region_members_restored"]) == (0, 2)

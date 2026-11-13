@@ -203,3 +203,47 @@ def test_a_renderer_that_cannot_open_the_document_keeps_the_pictures(tmp_path, m
     extraction, outcome = _run(path, monkeypatch, events)
     assert outcome.images == extraction.images and outcome.failed == 1
     assert [c["stage"] for _l, e, c in events if e == "pdf_figure_region_failed"] == ["render"]
+
+
+def test_a_correct_member_keeps_its_fine_detail_in_the_region(tmp_path) -> None:
+    """The member is a one-pixel checkerboard at 720 dpi beside a 29 dpi seed: the region must show the checkerboard,
+    not a grey blur (acceptance review, finding 2: detail, not only the PNG size)."""
+
+    member = SyntheticImage("jpeg_gray", 205, 250, 245, 290, pixels=(400, 400), pattern="checker")
+    page = SyntheticPage(
+        images=[SyntheticImage("flate_gray", 100, 250, 200, 350, pixels=(40, 30)), member],
+        texts=[*_body(560), SyntheticText(110, 300, 8, "Label A"), *_body(150)],
+    )
+    path = write_pdf(tmp_path / "checker.pdf", [page])
+    _extraction, outcome = _run(path)
+    (picture,) = outcome.images
+    rendered = Image.open(io.BytesIO(picture.image_bytes)).convert("L")
+    assert picture.display_width_points is not None
+    scale = rendered.size[0] / picture.display_width_points
+    # the member's middle (x 210..240, top 315..345): neighbouring pixels alternate dark and light
+    box = (int((210 - picture.x0) * scale), int((315 - picture.top) * scale), int((240 - picture.x0) * scale), int((345 - picture.top) * scale))
+    crop = rendered.crop(box)
+    width, height = crop.size
+    pixels = [int(crop.getpixel((x, y)) or 0) for y in range(height) for x in range(width)]  # type: ignore[arg-type]
+    jumps = [abs(int(pixels[y * width + x]) - int(pixels[y * width + x + 1])) for y in range(height) for x in range(width - 1)]
+    assert sum(jumps) / len(jumps) > 100  # a render at the seed's density would be a grey blur near 0
+
+
+def test_a_member_placed_with_a_rotation_declines_the_page(tmp_path, monkeypatch) -> None:
+    import math
+
+    angle = math.radians(45)
+    side = 40.0
+    rotated = SyntheticImage(
+        "jpeg_gray", 205, 250, 262, 307, pixels=(400, 400), pattern="checker",
+        matrix=(side * math.cos(angle), side * math.sin(angle), -side * math.sin(angle), side * math.cos(angle), 233.3, 250.0),
+    )
+    page = SyntheticPage(
+        images=[SyntheticImage("flate_gray", 100, 250, 200, 350, pixels=(40, 30)), rotated],
+        texts=[*_body(560), SyntheticText(110, 300, 8, "Label A"), *_body(150)],
+    )
+    path = write_pdf(tmp_path / "rotated.pdf", [page])
+    events: list = []
+    extraction, outcome = _run(path, monkeypatch, events)
+    assert len(extraction.images) == 1 and outcome.images == extraction.images  # the member is delivered as today
+    assert [c["reason"] for _l, e, c in events if e == "pdf_figure_region_declined"] == [fr.DECLINE_MEMBER_PLACEMENT]

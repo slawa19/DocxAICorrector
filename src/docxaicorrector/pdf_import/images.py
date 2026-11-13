@@ -60,6 +60,10 @@ class PdfImageObject:
     # -- the emitted pictures (as slice A delivered them) this render stands for, in list order, and what a failed
     # delivery restores; ``()`` -- a region with no emitted picture in it (a lone image the extractor cannot emit).
     region_members: tuple["PdfImageObject", ...] | None = None
+    # Spec 082 slice B, acceptance review finding 1: every picture slice A delivered for this region's page, absorbed or
+    # not, in slice A's order -- the page's original sequence, which a failed delivery puts back as it was (pictures
+    # sharing a ``source_index`` keep their order; a re-sort by discovery would not).
+    region_page_sequence: tuple["PdfImageObject", ...] | None = None
 
 
 # Why a discovered image was not emitted (``PdfDiscoveredImage.skip_reason``).

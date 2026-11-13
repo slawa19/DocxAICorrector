@@ -145,3 +145,13 @@ images_absorbed 22`; `frame_render_*` — как сегодня (32 / 32 / 23 / 
 - Итоговое событие `pdf_image_extraction_*` пишется ОДИН раз — после шага B (до спеки B его писал шаг среза A).
 - `pdf_text_layer_import_succeeded`: `images_emitted` — картинки окончательного DOCX после всех откатов (восстановленные
   члены считаются каждый), `figure_regions_inserted`, `figure_region_members_restored`.
+
+### Правки после приёмочного ревью среза B (2026-11-13)
+
+- `pdf_figure_region_declined.reason` дополнительно ∈ `member_placement` (выданный член размещён не прямым масштабом);
+  отказ `image_count_cap` пишет и родитель, когда откат доставки сделал бы список длиннее лимита (тогда `page_number`
+  — `null`, и уступают все области документа).
+- `pdf_text_layer_import_succeeded.image_count` — длина собранного списка картинок после всех откатов (до правки — длина
+  списка до отката).
+- `pdf_figure_region_insert_failed.members_restored` — члены областей упавшей страницы; итоговое
+  `figure_region_members_restored` — члены всех возвращённых страниц (включая возвращённые из-за лимита).

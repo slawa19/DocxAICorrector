@@ -44,7 +44,7 @@ class SyntheticImage:
     # ``gradient``: left-to-right ramp 0..255; ``dark``: every sample 40 (a dark-looking stored file);
     # ``corner``: samples 220 with a block of 30 in the top-left quarter -- an asymmetric picture whose
     # negative is told apart from it by WHERE the dark is, not only by how much (spec 082 review finding 6);
-    # ``flat``: every sample 128.
+    # ``flat``: every sample 128; ``checker``: a one-pixel 0/255 checkerboard.
     pattern: str = "gradient"
     # Optional ``cm`` matrix (a, b, c, d, e, f) replacing the axis-aligned placement in the box.
     matrix: tuple[float, float, float, float, float, float] | None = None
@@ -101,7 +101,10 @@ def _gray_pattern(pattern: str, w: int, h: int) -> bytes:
 
 def _pixels(image: SyntheticImage, channels: int) -> bytes:
     w, h = image.pixels
-    if image.pattern == "corner":
+    if image.pattern == "checker":
+        # one-pixel checkerboard 0/255: detail that survives only at the image's own pixel density (spec 082 slice B)
+        gray = bytes(0 if (x + y) % 2 else 255 for y in range(h) for x in range(w))
+    elif image.pattern == "corner":
         gray = bytes(30 if (x < w // 2 and y < h // 2) else 220 for y in range(h) for x in range(w))
     elif image.pattern == "halves_ramp":
         # Left half 64, right half a left-to-right ramp 160..224 (mean 192): the round-2 review's two-level

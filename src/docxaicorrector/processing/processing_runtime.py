@@ -986,9 +986,25 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
         # pictures it stands for (they carry their own ``source_index``: the original sequence, not a
         # reconstruction) and the document is built again from the start -- at most once per page with regions.
         restored_pages: set[int] = set()
-        members_restored = 0
+        region_pages = {image.page_number for image in image_objects if getattr(image, "region_members", None) is not None}
         while True:
             assembly_images = _restore_region_members(image_objects, restored_pages)
+            if restored_pages and len(assembly_images) > _MAX_PDF_IMPORT_IMAGE_COUNT:
+                # A page given back can grow the list (regions without members stay on other pages); slice B then
+                # gives way as a whole -- slice A's list fits, the cap was checked on it (acceptance review, finding 3).
+                log_event(
+                    logging.INFO,
+                    "pdf_figure_region_declined",
+                    "A rollback would exceed the image cap; every composite-figure region gives way to its pictures.",
+                    pdf_path=filename,
+                    page_number=None,
+                    box=None,
+                    seed_count=0,
+                    reason="image_count_cap",
+                    detail=f"{len(assembly_images)} > {_MAX_PDF_IMPORT_IMAGE_COUNT}",
+                )
+                restored_pages = set(region_pages)
+                assembly_images = _restore_region_members(image_objects, restored_pages)
             try:
                 document, images_emitted, images_dropped, delivery_counts = _assemble_pdf_text_layer_docx(
                     import_result.paragraphs, assembly_images
@@ -1000,7 +1016,6 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
                     if getattr(image, "region_members", None) is not None and image.page_number == failure.page_number
                 ]
                 restored = sum(len(image.region_members or ()) for image in page_regions)
-                members_restored += restored
                 restored_pages.add(failure.page_number)
                 log_event(
                     logging.ERROR,
@@ -1014,6 +1029,11 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
                 )
                 continue
             break
+        members_restored = sum(
+            len(image.region_members or ())
+            for image in image_objects
+            if getattr(image, "region_members", None) is not None and image.page_number in restored_pages
+        )
         document.save(str(output_path))
         output_bytes = output_path.read_bytes() if output_path.exists() else b""
         if not output_bytes:
@@ -1025,7 +1045,7 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
             filename=filename,
             span_count=len(spans),
             paragraph_count=len(import_result.paragraphs),
-            image_count=len(image_objects),
+            image_count=len(assembly_images),
             images_emitted=images_emitted,
             images_dropped=images_dropped,
             images_replaced_by_frame_render=delivery_counts.get("frame_render", 0),
@@ -1049,17 +1069,27 @@ class _FigureRegionInsertFailed(Exception):
 
 
 def _restore_region_members(image_objects, restored_pages: set[int]) -> list:
-    """The image list with every region render of ``restored_pages`` replaced by the pictures it stands for."""
+    """The image list with each page of ``restored_pages`` given back as slice A delivered it: the page's pictures are
+    replaced by the original sequence its region renders carry (``region_page_sequence``), in slice A's order -- not
+    rebuilt from the members, whose discovery order differs from the extractor's (acceptance review, finding 1)."""
 
     if not restored_pages:
         return list(image_objects)
-    restored: list = []
+    sequences: dict[int, tuple] = {}
     for image in image_objects:
-        members = getattr(image, "region_members", None)
-        if members is not None and image.page_number in restored_pages:
-            restored.extend(members)
-        else:
-            restored.append(image)
+        sequence = getattr(image, "region_page_sequence", None)
+        if getattr(image, "region_members", None) is not None and image.page_number in restored_pages and sequence is not None:
+            sequences.setdefault(image.page_number, tuple(sequence))
+    restored: list = []
+    placed: set[int] = set()
+    for image in image_objects:
+        page = image.page_number
+        if page in sequences:
+            if page not in placed:
+                restored.extend(sequences[page])
+                placed.add(page)
+            continue
+        restored.append(image)
     return restored
 
 

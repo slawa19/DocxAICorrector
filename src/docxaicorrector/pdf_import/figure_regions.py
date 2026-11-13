@@ -18,8 +18,10 @@ Every doubt declines the whole page (it stays exactly as without this step):
   text block with graphics, not a figure with labels (T3);
 - a line at body size or larger with a letter or digit overlaps the region (G1); a line with a letter at least
   ``_FULL_LINE_FILL_RATIO`` of the body column wide overlaps it (G2);
-- an emitted picture of the region does not lie entirely inside the region clipped to the CropBox; the pass's
-  images disagree with the inventory; the page geometry, the pixel density or the pixel budget forbid a render.
+- an emitted picture of the region does not lie entirely inside the region clipped to the CropBox, or is not placed
+  by an upright axis-aligned scale (its density along its own axes is not its box's: a rotated or skewed member
+  could lose pixels -- acceptance review, finding 2); the pass's images disagree with the inventory; the page
+  geometry, the pixel density or the pixel budget forbid a render.
 
 The render's pixel density is the highest of the emitted members' own densities (as slice A delivered them --
 no correct picture loses pixels) and the area-weighted median of the seeds' densities. Measured on the four
@@ -59,6 +61,7 @@ DECLINE_USER_UNIT = "user_unit"
 DECLINE_PAGE_GEOMETRY_DISAGREES = "page_geometry_disagrees"
 DECLINE_PAGE_ATOMIC = "page_atomic"
 DECLINE_IMAGE_COUNT_CAP = "image_count_cap"
+DECLINE_MEMBER_PLACEMENT = "member_placement"
 
 _PREVIEW_CHARS = 120
 # The pass and the inventory are the same pdfminer arithmetic on the same file; this only absorbs float noise.
@@ -567,7 +570,7 @@ def replace_composite_figures(
 ) -> FigureRegionOutcome:
     """Slice B on slice A's output. Never raises: a failure keeps slice A's pictures (page or document) and logs."""
 
-    from docxaicorrector.pdf_import.image_frames import _within_pixel_budget
+    from docxaicorrector.pdf_import.image_frames import _within_pixel_budget, is_upright_scale
     from docxaicorrector.pdf_import.logical_import import pdf_body_typography
     from docxaicorrector.pdf_import.page_render import (
         PageGeometryMismatch,
@@ -615,8 +618,12 @@ def replace_composite_figures(
                         geometry_of_page = geometries[page]
                         if geometry_of_page.user_unit != 1.0:
                             raise _Declined(DECLINE_USER_UNIT)
+                        page_sequence = tuple(image for image in images_a if image.page_number == page)
                         for region in page_regions:
                             members = tuple(by_key[key] for key in region.member_keys)
+                            skewed = next((m for m in members if not is_upright_scale(m.placement_matrix)), None)
+                            if skewed is not None:
+                                raise _Declined(DECLINE_MEMBER_PLACEMENT, f"image {skewed.discovery_index}: {skewed.placement_matrix}")
                             member_densities = [_picture_density(member) for member in members]
                             if any(density is None for density in member_densities):
                                 raise _Declined(DECLINE_UNKNOWN_DENSITY, "an emitted member has no readable size")
@@ -656,6 +663,7 @@ def replace_composite_figures(
                                 display_height_points=geometry.frame_height_points,
                                 frame_box=region.box,
                                 region_members=members,
+                                region_page_sequence=page_sequence,
                             )
                             built.append(
                                 (

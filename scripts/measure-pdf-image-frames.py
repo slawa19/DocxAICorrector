@@ -151,7 +151,9 @@ def _run(args) -> int:
         region_pages = [image.page_number for image in regions]
         region_members = [len(image.region_members or ()) for image in regions]
         replaced_count = len(replaced)
-        prep = _prepared_rows(runtime, pdf_path) if args.prep else None  # converts again: snapshot the lists first
+        prepared = _prepare(runtime, pdf_path) if args.prep else None  # converts again: snapshot the lists first
+        prep = _prepared_rows(prepared) if prepared is not None else None
+        structure = _prepared_structure(prepared) if prepared is not None else None
         books[pdf_path.name] = {
             "seconds": round(elapsed, 2),
             "paragraphs": view["paragraphs"],
@@ -160,6 +162,7 @@ def _run(args) -> int:
             "region_pages": region_pages,
             "region_members": region_members,
             "prepared": prep,
+            "prepared_structure": structure,
             "side_by_side": sides,
         }
         print(f"{args.label}: {pdf_path.name[:40]}: {len(view['paragraphs'])} paragraphs, {len(view['pictures'])} pictures, "
@@ -195,8 +198,8 @@ def _region_side_by_side(pdf_path: Path, image, out_dir: Path, stem: str) -> str
     return str(target)
 
 
-def _prepared_rows(runtime, pdf_path: Path) -> list[list]:
-    """The audiobook preparation of the book, offline: [role, narration-exclusion reason, text] per paragraph."""
+def _prepare(runtime, pdf_path: Path):
+    """The audiobook preparation of the book, offline (no model)."""
 
     from docxaicorrector.core.config import load_app_config
     from docxaicorrector.core.constants import DEFAULT_CHUNK_SIZE
@@ -213,14 +216,37 @@ def _prepared_rows(runtime, pdf_path: Path) -> list[list]:
         conversion_backend=normalized.conversion_backend, app_config=config, processing_operation="audiobook",
         get_client_fn=no_model, client_factory=None,
     )
+    return prepared
+
+
+def _prepared_rows(prepared) -> list[list]:
+    """[role, narration-exclusion reason, text] per prepared paragraph of every job."""
+
     rows: list[list] = []
     for job in prepared.jobs:
         ids = list(job["paragraph_ids"])
         texts = str(job["target_text"]).split("\n\n")
+        if len(texts) != len(ids):
+            # a job whose text does not split per paragraph is reported, never silently compared as None
+            raise RuntimeError(f"prepared job text has {len(texts)} parts for {len(ids)} paragraphs")
         reasons = job.get("narration_exclusion_reasons") or [None] * len(ids)
         for k in range(len(ids)):
-            rows.append([job["structural_roles"][k], reasons[k], texts[k] if len(texts) == len(ids) else None])
+            rows.append([job["structural_roles"][k], reasons[k], texts[k]])
     return rows
+
+
+def _prepared_structure(prepared) -> dict[str, list]:
+    """Paragraph boundaries and relations of the prepared document: every paragraph (role, heading level, text) and
+    every relation (kind, its members' texts, whether it is anchored to an asset)."""
+
+    by_id = {getattr(p, "paragraph_id", None): str(getattr(p, "text", "")) for p in prepared.paragraphs}
+    return {
+        "paragraphs": [[str(getattr(p, "role", "")), getattr(p, "heading_level", None), str(getattr(p, "text", ""))] for p in prepared.paragraphs],
+        "relations": [
+            [r.relation_kind, [by_id.get(m, "?") for m in r.member_paragraph_ids], r.anchor_asset_id is not None]
+            for r in prepared.relations
+        ],
+    }
 
 
 def _picture_fields(before: dict | None, after: dict | None) -> list[str]:
@@ -276,6 +302,20 @@ def _compare(args) -> int:
             entry["prepared_differences"] = [
                 {"index": i, "before": rb, "after": ra} for i, (rb, ra) in enumerate(zip_longest(pb, pa)) if rb != ra
             ]
+        if b.get("prepared_structure") is not None and a.get("prepared_structure") is not None:
+            sb, sa = b["prepared_structure"], a["prepared_structure"]
+            pb2 = [row for row in sb["paragraphs"] if row[0] != "image"]
+            pa2 = [row for row in sa["paragraphs"] if row[0] != "image"]
+            entry["prepared_paragraphs"] = [len(pb2), len(pa2)]
+            entry["prepared_paragraph_differences"] = [
+                {"index": i, "before": rb, "after": ra} for i, (rb, ra) in enumerate(zip_longest(pb2, pa2)) if rb != ra
+            ]
+            entry["prepared_relations"] = [len(sb["relations"]), len(sa["relations"])]
+            entry["prepared_relation_differences"] = [
+                {"index": i, "before": rb, "after": ra}
+                for i, (rb, ra) in enumerate(zip_longest(sb["relations"], sa["relations"]))
+                if rb != ra
+            ]
         books[name] = entry
         print(f"{name[:40]}: paragraphs {entry['paragraphs']} differences {len(paragraph_diffs)}; pictures {entry['pictures']} "
               f"differences {len(picture_diffs)} at {[d['index'] for d in picture_diffs]} "
@@ -286,6 +326,10 @@ def _compare(args) -> int:
             print(f"{name[:40]}: prepared rows without pictures {entry['prepared_rows']} differences "
                   f"{len(entry['prepared_differences'])}; picture rows {entry['prepared_picture_rows']}; "
                   f"region pages {entry['region_pages_before']} -> {entry['region_pages_after']}", flush=True)
+        if "prepared_paragraphs" in entry:
+            print(f"{name[:40]}: prepared paragraphs without pictures {entry['prepared_paragraphs']} differences "
+                  f"{len(entry['prepared_paragraph_differences'])}; relations {entry['prepared_relations']} differences "
+                  f"{len(entry['prepared_relation_differences'])}", flush=True)
     if args.out:
         Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     return 0
