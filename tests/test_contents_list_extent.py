@@ -9,6 +9,7 @@ from typing import cast
 
 from docx import Document
 from docx.document import Document as DocxDocument
+from docx.shared import Pt
 
 import docxaicorrector.document.extraction as extraction
 from docxaicorrector.core.models import ParagraphUnit
@@ -66,9 +67,15 @@ def _two_level_contents_book() -> list[ParagraphUnit]:
         _sentence("The cargo"),
         _heading("The Pilots: The Answer Lies in the Channel", 3),
         _sentence("The channel"),
+        _heading("The Engineers: Value in Stone and Timber Along the Quay", 3),
+        _sentence("The quay"),
         _heading("Lanterns and Their Keepers", 1),
         _heading("Night Watches and Signal Fires", 3),
         _sentence("The signal fire"),
+        _heading("The Keepers Guild Comes into Being", 3),
+        _heading("Measuring the Light", 3),
+        _heading("Something Odd About the Lamp Rooms", 3),
+        _sentence("The lamp room"),
         _heading("Notes", 1),
         _sentence("The note"),
     ]
@@ -76,7 +83,9 @@ def _two_level_contents_book() -> list[ParagraphUnit]:
 
 def test_a_long_line_of_sub_section_titles_stays_in_the_contents() -> None:
     # The defect: the run ended at the first line longer than the contents shape, and the rest of
-    # the list was narrated. Mutation: walk with the length limit -> the list ends before LONG_ONE.
+    # the list was narrated. Each long line splits, with nothing left over, into the titles of
+    # headings that follow in order (mutation: keep the length limit -> the list ends before
+    # LONG_ONE).
     assert _marked(_two_level_contents_book()) == [
         "Contents",
         "Preface: Tales of the Tide Keepers",
@@ -238,14 +247,36 @@ def test_a_contents_list_at_the_end_of_the_book_is_left_as_the_run_found_it() ->
 
 
 def test_without_evidence_a_long_line_still_ends_the_list() -> None:
-    # No page numbers and no later headings: the candidate run stands, so the length limit still
-    # ends the list (mutation: fall back to the whole walk -> the long line is marked).
+    # No page numbers and no later headings: nothing accounts for the long line, so the length
+    # limit still ends the list.
     paragraphs = [
         _unit("Contents"),
         _unit("The Tide Ledger"),
         _unit("Keepers of the Lamp"),
         _unit(LONG_ONE),
         _sentence("The ledger"),
+    ]
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
+
+
+def test_a_long_line_the_headings_do_not_account_for_ends_the_walk() -> None:
+    # Two of the long line's three titles have headings, and a later entry does too. The long
+    # line is not accounted for, so the walk ends before it and the later entry's evidence cannot
+    # pull it in (mutation: every long line passes the walk -> the long line and "Low Water" are
+    # marked). This is the shape Codex's review reproduced with prose and a long heading.
+    paragraphs = [
+        _unit("Contents"),
+        _unit("The Tide Ledger"),
+        _unit("Keepers of the Lamp"),
+        _unit(LONG_ONE),
+        _unit("Low Water"),
+        _sentence("The ledger"),
+        _heading("The Tide Ledger", 1),
+        _heading("Keepers of the Lamp", 1),
+        _heading("The Merchants: Cargo and Coin", 3),
+        _heading("The Pilots: The Answer Lies in the Channel", 3),
+        _heading("Low Water", 1),
     ]
 
     assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
@@ -351,8 +382,8 @@ def test_page_numbers_decide_before_named_headings() -> None:
 
 
 def test_a_line_holding_several_titles_names_its_headings() -> None:
-    # The last line holds three titles; only runs of its words name headings. It is the list's
-    # last line by evidence (mutation: whole-line matches only -> it is left out).
+    # The last line holds three titles and splits into them with nothing left over, in order. It
+    # is the list's last line by evidence (mutation: whole-line matches only -> it is left out).
     paragraphs = [
         _unit("Contents"),
         _unit("The Tide Ledger"),
@@ -362,11 +393,89 @@ def test_a_line_holding_several_titles_names_its_headings() -> None:
         _sentence("The ledger"),
         _heading("The Tide Ledger", 1),
         _heading("Keepers of the Lamp", 1),
+        _heading("Low Water", 1),
         _heading("Notes", 1),
         _heading("Index of Harbours", 1),
     ]
 
     assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp", "Low Water Notes Index of Harbours"]
+
+
+def test_a_line_only_partly_made_of_later_titles_is_no_evidence() -> None:
+    # "Low Water" names no heading: the line holds two later titles, but they do not account for
+    # it (mutation: a title occurring inside the line is enough -> it is marked).
+    paragraphs = [
+        _unit("Contents"),
+        _unit("The Tide Ledger"),
+        _unit("Keepers of the Lamp"),
+        _unit("Low Water Notes Index of Harbours"),
+        _sentence("The ledger"),
+        _heading("The Tide Ledger", 1),
+        _heading("Keepers of the Lamp", 1),
+        _heading("Notes", 1),
+        _heading("Index of Harbours", 1),
+    ]
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
+
+
+def test_titles_out_of_order_do_not_account_for_a_line() -> None:
+    # The line's two titles exist, but in the body the second comes first: a run of section titles
+    # follows the body's order (mutation: pieces in any order -> the line is marked).
+    paragraphs = [
+        _unit("Contents"),
+        _unit("The Tide Ledger"),
+        _unit("Keepers of the Lamp"),
+        _unit("Index of Harbours Notes"),
+        _sentence("The ledger"),
+        _heading("The Tide Ledger", 1),
+        _heading("Keepers of the Lamp", 1),
+        _heading("Notes", 1),
+        _heading("Index of Harbours", 1),
+    ]
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
+
+
+def test_a_numbered_entry_names_its_unnumbered_heading() -> None:
+    # The list numbers its chapters, the body's headings do not carry the number. The last entry
+    # is evidence once its ordinal is set aside (mutation: no ordinal -> the list ends one entry
+    # early).
+    paragraphs = [
+        _unit("Contents"),
+        _unit("1. The Tide Ledger"),
+        _unit("2. Keepers of the Lamp"),
+        _unit("3. Low Water"),
+        _unit("Ilsa Varn"),
+        _sentence("The ledger"),
+        _heading("The Tide Ledger", 1),
+        _heading("Keepers of the Lamp", 1),
+        _heading("Low Water", 1),
+    ]
+
+    assert _marked(paragraphs) == ["Contents", "1. The Tide Ledger", "2. Keepers of the Lamp", "3. Low Water"]
+
+
+def test_a_heading_without_a_letter_names_no_section() -> None:
+    # The body sets each chapter number as its own heading. A bare number after the list (a year,
+    # a folio) matches the third one, in order; a heading without a letter is no section
+    # (mutation: letterless headings count -> the byline and the number are marked).
+    paragraphs = [
+        _unit("Contents"),
+        _unit("The Tide Ledger"),
+        _unit("Keepers of the Lamp"),
+        _unit("Ilsa Varn"),
+        _unit("3"),
+        _sentence("The ledger"),
+        _heading("1", 1),
+        _heading("The Tide Ledger", 1),
+        _heading("2", 1),
+        _heading("Keepers of the Lamp", 1),
+        _heading("3", 1),
+        _heading("Low Water", 1),
+    ]
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
 
 
 def test_emphasis_markers_do_not_hide_a_repeated_heading_or_a_header() -> None:
@@ -415,6 +524,8 @@ def test_narration_drops_the_whole_two_level_list_and_keeps_the_body_heading() -
     document.add_paragraph("The cargo was weighed twice, once at the quay and once at the warehouse door.")
     document.add_heading("The Pilots: The Answer Lies in the Channel", level=3)
     document.add_paragraph("The channel shifted every winter, and the pilots redrew it every spring.")
+    document.add_heading("The Engineers: Value in Stone and Timber Along the Quay", level=3)
+    document.add_paragraph("The engineers built the quay of stone first and of timber later.")
     document.add_heading("Epilogue: Low Water", level=1)
     document.add_paragraph("At low water the whole harbour floor could be walked from quay to quay.")
 
@@ -459,3 +570,78 @@ def test_narration_keeps_the_title_page_lines_after_a_list_without_page_numbers(
         ("Telling the Truth about Tides", None),
         ("We do not tell the truth about tides, yet every harbour keeps a ledger of them.", None),
     ]
+
+
+# Codex acceptance review of spec 085 (2026-11-13), finding 1: a single word of a later heading
+# ("Notes") inside prose or inside a real heading made that paragraph a contents entry.
+CODEX_PROSE = (
+    "The first volume brings together the records of the harbour and the voices of those who "
+    "lived there and asks why these Notes matter?"
+)
+CODEX_LONG_HEADING = (
+    "Notes on the Lives and Work of the Harbour Keepers Along the Entire Coast During the Long Winter"
+)
+CODEX_DEDICATION = (
+    "For the keepers of the northern lights who stood their watch through every winter storm and "
+    "never once let the lamp go dark for want of oil or courage"
+)
+
+
+def _codex_book(between: list[tuple[str, int | None]], entries: tuple[str, ...], headings: tuple[str, ...]) -> DocxDocument:
+    """Codex's shapes as a DOCX. The header is a heading and each line after the list is set in its
+    own size, so that the paragraph-boundary normaliser keeps them apart as the review's function
+    calls did (a size change refuses a merge, spec 080)."""
+    document = Document()
+    document.add_heading("Contents", level=1)
+    for entry in entries:
+        document.add_paragraph(entry)
+    for size, (text, level) in enumerate(between, start=8):
+        if level is None:
+            document.add_paragraph().add_run(text).font.size = Pt(size)
+        else:
+            document.add_heading(text, level=level)
+    document.add_paragraph("The account begins.")
+    for heading in headings:
+        document.add_heading(heading, level=1)
+        document.add_paragraph(f"The chapter on {heading.lower()} begins with the tide tables of the quay.")
+    return document
+
+
+def test_prose_holding_one_word_of_a_later_heading_stays_narrated() -> None:
+    reasons = dict(
+        _narration_reasons(
+            _codex_book([("Foreword", 2), (CODEX_PROSE, None)], ("Harbours", "Tides Notes"), ("Harbours", "Tides", "Notes"))
+        )
+    )
+
+    assert reasons["Foreword"] is None
+    assert reasons[CODEX_PROSE] is None
+
+
+def test_a_long_heading_holding_one_word_of_a_later_heading_stays_narrated() -> None:
+    reasons = dict(
+        _narration_reasons(
+            _codex_book([(CODEX_LONG_HEADING, 2)], ("Harbours", "Tides Notes"), ("Harbours", "Tides", "Notes"))
+        )
+    )
+
+    assert reasons[CODEX_LONG_HEADING] is None
+
+
+def test_a_year_in_the_front_matter_is_not_a_page_number_of_the_contents() -> None:
+    # Codex finding 2: with the length limit lifted, the walk ran through a long dedication to a
+    # copyright line whose year read as a page number, and the numbered list "ended" there.
+    reasons = dict(
+        _narration_reasons(
+            _codex_book(
+                [("Foreword", 2), (CODEX_DEDICATION, None), ("Copyright Harbour Society 2026", None)],
+                ("Harbours .... 1", "Tides .... 29"),
+                ("Harbours", "Tides"),
+            )
+        )
+    )
+
+    assert reasons["Tides .... 29"] == "toc"
+    assert reasons["Foreword"] is None
+    assert reasons[CODEX_DEDICATION] is None
+    assert reasons["Copyright Harbour Society 2026"] is None

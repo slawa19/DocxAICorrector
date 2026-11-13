@@ -884,52 +884,67 @@ def _toc_region_end(paragraphs: list[ParagraphUnit], *, header: int) -> int:
 
     The list is read off the document's own evidence.
 
-    1. The walk: lines of the contents shape -- not a picture or a table, not ending as a
-       sentence (``_is_toc_candidate_text``). It stops before a heading that REPEATS one of the
-       lines already walked (``_repeats_contents_entry``: the body has begun where a listed section
-       begins) and before a second contents header, which opens a list of its own. The candidate
-       run is the walk's prefix of lines that are also short (at most 160 characters and 16 words),
-       the run the list was before this spec.
+    1. The walk: lines of the contents shape (``_is_toc_candidate_paragraph``: not a picture or a
+       table, at most 160 characters and 16 words, not ending as a sentence) -- the run the list
+       was before this spec. A line longer than that limit stays in the walk only when later
+       headings ACCOUNT FOR it (``_names_later_headings``: it is a run of section titles typeset
+       as one paragraph). The walk stops before a heading that REPEATS one of the lines already
+       walked (``_repeats_contents_entry``: the body has begun where a listed section begins) and
+       before a second contents header, which opens a list of its own.
     2. The end is set by evidence the lines carry. Two or more lines with a page number: the list
        ends with the last of them (spec 067, ``_page_numbered_positions``). Otherwise two or more
-       lines that name, in document order, headings found after them
-       (``_lines_naming_later_headings``): the list ends with the last of them. Otherwise, with no
-       evidence either way, the candidate run stands. So a line longer than the shape limit (the
-       sub-section titles of a chapter typeset as one paragraph) is kept only when a later line
-       carries evidence, and a short line after the last evidence (a title-page line, the first
-       heading of the body) is left out.
+       lines that later headings account for, in document order (``_lines_naming_later_headings``):
+       the list ends with the last of them. Otherwise, with no evidence either way, the walk
+       stands. A short line after the last evidence (a title-page line, the first heading of the
+       body) is left out.
 
-    Measured 2026-11-13 on 12 documents (spec 085): the candidate run ended too early in two (the
+    Codex acceptance review (2026-11-13): the first version matched any run of a line's words
+    against a heading, so one word ("Notes") made prose or a real heading an entry, and with the
+    length limit lifted for every line the walk ran on through a long dedication to a copyright
+    year read as a page number. Both are closed: a heading must account for the whole line, and
+    only a line the headings account for passes the length limit.
+
+    Measured 2026-11-13 on 12 documents (spec 085): the run of main ended too early in two (the
     translated and the source PDF of one book whose contents lists each chapter's sub-sections as
     one long paragraph) and too late in four (the body's first heading, or the title-page lines
-    after a list without page numbers, marked as contents); with this rule no non-contents
-    paragraph is marked, and every list ends at its last line by reading except a closing line
-    that names no heading (an advertisement page), which stays narrated.
+    after a list without page numbers, marked as contents). With this rule no non-contents
+    paragraph is marked and the too-late cases are all mended. The too-early ones are mended only
+    as far as the headings account for the long lines: the source PDF gains four lines and stops at
+    the first long line whose titles its headings do not all carry; the translation renders titles
+    differently in the contents and in the body, and its 19 lines stay narrated, as on main.
     """
     start = header + 1
+    headings = _later_heading_positions(paragraphs, start=start)
     entry_texts: set[str] = set()
-    run_end: int | None = None
     walk_end = start
-    while walk_end < len(paragraphs) and _continues_contents_list(paragraphs[walk_end], entry_texts):
-        if run_end is None and not _is_toc_candidate_paragraph(paragraphs[walk_end]):
-            run_end = walk_end
+    while walk_end < len(paragraphs) and _continues_contents_list(
+        paragraphs, walk_end, entry_texts=entry_texts, headings=headings
+    ):
         entry_texts.add(_contents_outline_text(paragraphs[walk_end].text))
         walk_end += 1
-    if run_end is None:
-        run_end = walk_end
 
     numbered = _page_numbered_positions(paragraphs, start=start, end=walk_end)
     if len(numbered) >= 2:
         return numbered[-1] + 1
-    named = _lines_naming_later_headings(paragraphs, start=start, end=walk_end)
+    named = _lines_naming_later_headings(paragraphs, start=start, end=walk_end, headings=headings)
     if len(named) >= 2:
         return named[-1] + 1
-    return run_end
+    return walk_end
 
 
-def _continues_contents_list(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
-    if not _is_toc_candidate_paragraph(paragraph, length_limited=False):
-        return False
+def _continues_contents_list(
+    paragraphs: list[ParagraphUnit],
+    position: int,
+    *,
+    entry_texts: set[str],
+    headings: dict[str, list[int]],
+) -> bool:
+    paragraph = paragraphs[position]
+    if not _is_toc_candidate_paragraph(paragraph):
+        if not _is_toc_candidate_paragraph(paragraph, length_limited=False):
+            return False
+        if _names_later_headings(paragraph.text, after=position, headings=headings) is None:
+            return False
     if _is_toc_header_line(paragraph.text):
         return False
     return not _repeats_contents_entry(paragraph, entry_texts)
@@ -949,43 +964,89 @@ def _contents_outline_text(text: str) -> str:
     return _normalize_outline_text(str(text or "").replace("*", "").replace("_", ""))
 
 
-def _lines_naming_later_headings(paragraphs: list[ParagraphUnit], *, start: int, end: int) -> list[int]:
-    """Spec 085: the lines in ``[start, end)`` that name, in document order, a heading found after
-    them.
-
-    A contents entry names its section: the line, or a run of its words when the line holds
-    several titles (``"Ledgers and Tides The Mooring Problem"``), equals the outline text of a
-    heading further on (``_contents_outline_text``). A line counts when one of the headings it
-    names lies after the line itself and after the heading the previous counted line named -- a
-    contents list walks the body in order, so a title-page or foreword line after the list that
-    happens to repeat an earlier heading's words does not count, and neither does a list at the
-    end of a book, whose headings all stand before it. Measured 2026-11-13 on 12 documents: of
-    the twelve paragraphs after each list's last line, 0 count."""
+def _later_heading_positions(paragraphs: list[ParagraphUnit], *, start: int) -> dict[str, list[int]]:
+    """Outline text -> positions (ascending) of the headings from ``start`` on. A heading without
+    a letter (an ornament such as three stars, a bare number) names no section and is left out."""
     headings: dict[str, list[int]] = {}
     for position in range(start, len(paragraphs)):
         candidate = paragraphs[position]
         if candidate.role != "heading":
             continue
         outline = _contents_outline_text(candidate.text)
-        if outline:
+        if any(character.isalpha() for character in outline):
             headings.setdefault(outline, []).append(position)
-    if not headings:
-        return []
+    return headings
+
+
+# A list ordinal opening an entry ("3. ", "12 ") -- the heading of the section may carry its
+# number apart or not at all. Digits only: a roman numeral is indistinguishable from a word.
+_CONTENTS_ENTRY_ORDINAL_PATTERN = re.compile(r"^\d{1,3}[.)]?\s+(?=\S)")
+
+
+def _names_later_headings(text: str, *, after: int, headings: Mapping[str, list[int]]) -> int | None:
+    """Spec 085 (Codex acceptance review, P1): the position of the last heading that ACCOUNTS FOR
+    the line, or ``None``.
+
+    Later headings account for a line when the line (``_contents_outline_text``, a leading list
+    ordinal set aside) is the text of one heading after ``after``, or splits with nothing left over
+    into the texts of several headings that follow one another after ``after`` in document order --
+    a run of section titles typeset as one paragraph (``"Ledgers and Tides The Mooring Problem"``).
+    A heading's text merely occurring inside the line (one word "Notes" in a sentence) is not
+    enough: that is how prose and a real heading were taken into the contents before the review."""
+    outline = _contents_outline_text(text)
+    for candidate in (outline, _CONTENTS_ENTRY_ORDINAL_PATTERN.sub("", outline, count=1)):
+        words = candidate.split()
+        if words:
+            last = _last_heading_of_full_split(words, 0, after, headings, {})
+            if last is not None:
+                return last
+    return None
+
+
+def _last_heading_of_full_split(
+    words: list[str],
+    first_word: int,
+    after: int,
+    headings: Mapping[str, list[int]],
+    memo: dict[tuple[int, int], int | None],
+) -> int | None:
+    if first_word == len(words):
+        return after
+    key = (first_word, after)
+    if key in memo:
+        return memo[key]
+    result: int | None = None
+    for last_word in range(len(words), first_word, -1):
+        positions = headings.get(" ".join(words[first_word:last_word]), ())
+        heading_position = next((position for position in positions if position > after), None)
+        if heading_position is None:
+            continue
+        result = _last_heading_of_full_split(words, last_word, heading_position, headings, memo)
+        if result is not None:
+            break
+    memo[key] = result
+    return result
+
+
+def _lines_naming_later_headings(
+    paragraphs: list[ParagraphUnit], *, start: int, end: int, headings: Mapping[str, list[int]]
+) -> list[int]:
+    """Spec 085: the lines in ``[start, end)`` that later headings account for
+    (``_names_later_headings``), in document order: a line counts when its headings lie after the
+    line itself and after the heading the previous counted line ended on -- a contents list walks
+    the body in order, so a title-page or foreword line after the list that repeats an earlier
+    heading does not count, and neither does a list at the end of a book, whose headings all stand
+    before it. Measured 2026-11-13 on 12 documents: of the twelve paragraphs after each list's last
+    line, 0 count."""
     named: list[int] = []
     last_named_heading = -1
     for position in range(start, end):
-        words = _contents_outline_text(paragraphs[position].text).split()
-        next_heading: int | None = None
-        for first_word in range(len(words)):
-            for last_word in range(first_word + 1, len(words) + 1):
-                for heading_position in headings.get(" ".join(words[first_word:last_word]), ()):
-                    if heading_position > max(position, last_named_heading) and (
-                        next_heading is None or heading_position < next_heading
-                    ):
-                        next_heading = heading_position
-        if next_heading is not None:
+        last = _names_later_headings(
+            paragraphs[position].text, after=max(position, last_named_heading), headings=headings
+        )
+        if last is not None:
             named.append(position)
-            last_named_heading = next_heading
+            last_named_heading = last
     return named
 
 

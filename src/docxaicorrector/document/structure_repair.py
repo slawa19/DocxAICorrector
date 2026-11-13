@@ -250,7 +250,7 @@ def _ends_contents_sweep(paragraph: ParagraphUnit, *, bounded_by_extraction: boo
     Round 3 (Codex acceptance review, P2): when the extraction pass has already marked this
     contents list (its header carries ``toc_header``), that pass has decided where the list ends
     -- including the cut at the last line with a page number and, since spec 085, at the last line
-    naming a later heading (``extraction._toc_region_end``) -- and the sweep does not go past the
+    later headings account for (``extraction._toc_region_end``) -- and the sweep does not go past the
     last paragraph it marked. Before, after "Contents / Introduction .... 1 / Conclusion .... 29"
     the sweep took the organisation name and the author line that followed and narration dropped
     them. The checks below remain for a list the extraction pass did not mark.
