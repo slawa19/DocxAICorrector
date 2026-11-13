@@ -24,7 +24,7 @@
       {
         "anchor_paragraph_id": "p0040",
         "anchor_source_index": 40,
-        "kind": "list_item_generated_registry_target_aggregation",
+        "kind": "toc_entry_generated_registry_target_aggregation",
         "paragraph_id": "p0041",
         "source_index": 41,
         "source_text_preview": "Putting the Care Back In Healthcare",
@@ -653,7 +653,24 @@
           "p0031",
           "p0032",
           "p0033",
-          "p0034"
+          "p0034",
+          "p0035",
+          "p0036",
+          "p0037",
+          "p0038",
+          "p0039",
+          "p0040",
+          "p0041",
+          "p0042",
+          "p0043",
+          "p0044",
+          "p0045",
+          "p0046",
+          "p0047",
+          "p0048",
+          "p0049",
+          "p0050",
+          "p0051"
         ],
         "rationale": [
           "toc_header_with_entries"
@@ -673,7 +690,7 @@
       "output_bold": 0,
       "output_italic": 0,
       "reason": null,
-      "source_bold": 11,
+      "source_bold": 20,
       "source_italic": 122
     },
     "high_confidence_merge_count": 32,
@@ -681,13 +698,13 @@
     "mapped_count": 469,
     "mapping_strategy_counts": {
       "bounded_registry_heading_containment": 1,
-      "exact_text": 19,
-      "local_gap_heading_fallback": 10,
-      "local_gap_toc_fallback": 1,
+      "exact_text": 17,
+      "local_gap_heading_fallback": 8,
+      "local_gap_toc_fallback": 4,
       "paragraph_id_rebuild_key": 14,
       "paragraph_id_registry": 315,
       "paragraph_id_registry_aggregation_anchor": 15,
-      "paragraph_id_registry_similarity": 73,
+      "paragraph_id_registry_similarity": 74,
       "positional_exact": 18,
       "projected_registry_fuzzy": 1,
       "similarity": 2
@@ -696,13 +713,13 @@
       "bad_pair_count": 0,
       "bad_pair_rule": "bad when not exact/contained, token_jaccard < 0.50, source_token_overlap < 0.85, and target_token_overlap < 0.85",
       "bad_strategy_counts": {},
-      "checked_count": 75,
+      "checked_count": 76,
       "indexing_basis": "formatting_diagnostics.target_registry[mapped_target_index]",
       "samples": [],
       "source_text_basis": "runtime.state.final_generated_paragraph_registry when available; source paragraph text fallback",
       "strategy_counts": {
         "bounded_registry_heading_containment": 1,
-        "paragraph_id_registry_similarity": 73,
+        "paragraph_id_registry_similarity": 74,
         "projected_registry_fuzzy": 1
       },
       "strategy_filter": [
@@ -771,7 +788,24 @@
           "p0031",
           "p0032",
           "p0033",
-          "p0034"
+          "p0034",
+          "p0035",
+          "p0036",
+          "p0037",
+          "p0038",
+          "p0039",
+          "p0040",
+          "p0041",
+          "p0042",
+          "p0043",
+          "p0044",
+          "p0045",
+          "p0046",
+          "p0047",
+          "p0048",
+          "p0049",
+          "p0050",
+          "p0051"
         ],
         "reasons": [
           "toc_header_with_entries"
@@ -782,8 +816,8 @@
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 486,
-      "relation_id_populated_count": 14,
+      "relation_id_missing_count": 469,
+      "relation_id_populated_count": 31,
       "source_count": 500
     },
     "source_count": 500,
@@ -1726,24 +1760,26 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 1,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 35,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "paragraph_id_registry_similarity",
         "origin_raw_indexes": [
           35
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0035",
-        "relation_ids": [],
-        "role": "heading",
+        "relation_ids": [
+          "rel_0003"
+        ],
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 33,
-        "structural_role": "heading",
+        "structural_role": "toc_entry",
         "text_preview": "part ii: examples of complementary currencies"
       },
       {
@@ -1765,11 +1801,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0036",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 34,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "building equity"
       },
       {
@@ -1791,11 +1829,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0037",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 35,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "growing intelligence"
       },
       {
@@ -1817,11 +1857,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0038",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 36,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "the creat ive economy"
       },
       {
@@ -1843,11 +1885,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0039",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 37,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "exchanging ecologies"
       },
       {
@@ -1869,11 +1913,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0040",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 38,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "minding the community’s business"
       },
       {
@@ -1895,11 +1941,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0041",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 39,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "putting the care back in healthcare"
       },
       {
@@ -1921,11 +1969,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0042",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 40,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "honoring our elders, caring for children"
       },
       {
@@ -1941,17 +1991,19 @@
         "list_num_id": "1",
         "list_numbering_format": "decimal",
         "mapped_target_index": 43,
-        "mapping_strategy": "exact_text",
+        "mapping_strategy": "local_gap_toc_fallback",
         "origin_raw_indexes": [
           43
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0043",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 41,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "eating money"
       },
       {
@@ -1973,11 +2025,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0044",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 42,
-        "structural_role": "body",
+        "structural_role": "toc_entry",
         "text_preview": "part iii: making it happen"
       },
       {
@@ -1993,17 +2047,19 @@
         "list_num_id": "1",
         "list_numbering_format": "decimal",
         "mapped_target_index": 45,
-        "mapping_strategy": "exact_text",
+        "mapping_strategy": "local_gap_toc_fallback",
         "origin_raw_indexes": [
           45
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0045",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 43,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "intentional cities"
       },
       {
@@ -2025,11 +2081,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0046",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 44,
-        "structural_role": "list",
+        "structural_role": "toc_entry",
         "text_preview": "a tale of t hree cities"
       },
       {
@@ -2038,24 +2096,26 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 47,
-        "mapping_strategy": "local_gap_heading_fallback",
+        "mapping_strategy": "local_gap_toc_fallback",
         "origin_raw_indexes": [
           47
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0047",
-        "relation_ids": [],
-        "role": "heading",
+        "relation_ids": [
+          "rel_0003"
+        ],
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 45,
-        "structural_role": "heading",
+        "structural_role": "toc_entry",
         "text_preview": "conclusion: toward a monetary democracy"
       },
       {
@@ -2064,7 +2124,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 1,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -2077,11 +2137,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0048",
-        "relation_ids": [],
-        "role": "heading",
+        "relation_ids": [
+          "rel_0003"
+        ],
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 46,
-        "structural_role": "heading",
+        "structural_role": "toc_entry",
         "text_preview": "appendix: the community currency how-to manual"
       },
       {
@@ -2090,7 +2152,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -2103,11 +2165,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0049",
-        "relation_ids": [],
-        "role": "heading",
+        "relation_ids": [
+          "rel_0003"
+        ],
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 47,
-        "structural_role": "heading",
+        "structural_role": "toc_entry",
         "text_preview": "endnotes"
       },
       {
@@ -2116,7 +2180,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -2129,11 +2193,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0050",
-        "relation_ids": [],
-        "role": "heading",
+        "relation_ids": [
+          "rel_0003"
+        ],
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 48,
-        "structural_role": "heading",
+        "structural_role": "toc_entry",
         "text_preview": "resources"
       },
       {
@@ -2155,11 +2221,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0051",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0003"
+        ],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 49,
-        "structural_role": "body",
+        "structural_role": "toc_entry",
         "text_preview": "about the authors"
       },
       {
@@ -14107,9 +14175,9 @@
         "text_preview": "the possibility of sufficiency and abundance"
       },
       {
-        "heading_level": 1,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 1",
+        "style_name": "Normal",
         "target_index": 35,
         "text_preview": "part ii: examples of complementary currencies currencies"
       },
@@ -14191,30 +14259,30 @@
         "text_preview": "a tale of t hree cities"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 47,
         "text_preview": "conclusion: toward a monetary democracy"
       },
       {
-        "heading_level": 1,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 1",
+        "style_name": "Normal",
         "target_index": 48,
         "text_preview": "appendix: the community currency how-to manual"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 49,
         "text_preview": "endnotes"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 50,
         "text_preview": "resources"
       },

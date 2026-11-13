@@ -260,17 +260,14 @@ def test_without_evidence_a_long_line_still_ends_the_list() -> None:
     assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
 
 
-def test_a_long_line_the_headings_do_not_account_for_ends_the_walk() -> None:
-    # Two of the long line's three titles have headings, and a later entry does too. The long
-    # line is not accounted for, so the walk ends before it and the later entry's evidence cannot
-    # pull it in (mutation: every long line passes the walk -> the long line and "Low Water" are
-    # marked). This is the shape Codex's review reproduced with prose and a long heading.
-    paragraphs = [
+def _bracket_book(middle: list[ParagraphUnit], tail: list[ParagraphUnit]) -> list[ParagraphUnit]:
+    """Contents / two entries / ``middle`` / ``tail`` / a sentence / the entries' headings."""
+    return [
         _unit("Contents"),
         _unit("The Tide Ledger"),
         _unit("Keepers of the Lamp"),
-        _unit(LONG_ONE),
-        _unit("Low Water"),
+        *middle,
+        *tail,
         _sentence("The ledger"),
         _heading("The Tide Ledger", 1),
         _heading("Keepers of the Lamp", 1),
@@ -278,6 +275,57 @@ def test_a_long_line_the_headings_do_not_account_for_ends_the_walk() -> None:
         _heading("The Pilots: The Answer Lies in the Channel", 3),
         _heading("Low Water", 1),
     ]
+
+
+def test_a_long_line_bracketed_by_evidence_is_in_the_list() -> None:
+    # Spec 085 round 3. Two of the long line's three titles have headings, so the headings do not
+    # account for it; an entry after it does name a later heading. Bracketed by evidence, it is in
+    # the list (mutations: unaccounted long lines end the walk, or the evidence is counted only
+    # before the first of them -> the long line and "Low Water" are narrated).
+    paragraphs = _bracket_book([_unit(LONG_ONE)], [_unit("Low Water")])
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp", LONG_ONE, "Low Water"]
+
+
+# A front-matter paragraph with no sentence end, longer than the contents shape allows.
+UNTERMINATED_DEDICATION = (
+    "For the keepers of the northern lights who stood their watch through every winter storm and "
+    "never once let the lamp go dark"
+)
+
+
+def test_residual_an_unterminated_long_paragraph_between_two_entries_is_taken() -> None:
+    # The accepted residual of the bracketing rule (spec 085, Known limits), pinned so that a
+    # change to it is seen: nothing in the paragraph's form tells it from a run of titles, and it
+    # stands between two lines that name later headings in order.
+    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION)], [_unit("Low Water")])
+
+    assert UNTERMINATED_DEDICATION in _marked(paragraphs)
+
+
+def test_an_unterminated_long_paragraph_after_the_last_entry_stays_outside() -> None:
+    # No evidence follows it: not bracketed (mutation: provisional lines kept to the walk's end
+    # when no evidence decides -> marked).
+    paragraphs = _bracket_book([], [_unit(UNTERMINATED_DEDICATION), _unit("Ilsa Varn")])
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
+
+
+def test_a_long_paragraph_ending_as_a_sentence_ends_the_walk_even_between_entries() -> None:
+    # A sentence is never carried, whatever follows it (mutation: the walk passes sentences ->
+    # the paragraph and "Low Water" are marked).
+    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ".")], [_unit("Low Water")])
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
+
+
+def test_a_long_body_heading_right_after_the_list_stays_outside() -> None:
+    # A heading of the body longer than the contents shape, not one of the entries: held
+    # provisionally, then left out by the end rule -- nothing after it accounts for a later heading.
+    paragraphs = _bracket_book(
+        [],
+        [_heading("Notes on the Lives and Work of the Harbour Keepers Along the Entire Coast During the Winter", 2)],
+    )
 
     assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
 

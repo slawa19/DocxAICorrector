@@ -885,69 +885,82 @@ def _toc_region_end(paragraphs: list[ParagraphUnit], *, header: int) -> int:
     The list is read off the document's own evidence.
 
     1. The walk: lines of the contents shape (``_is_toc_candidate_paragraph``: not a picture or a
-       table, at most 160 characters and 16 words, not ending as a sentence) -- the run the list
-       was before this spec. A line longer than that limit stays in the walk only when later
-       headings ACCOUNT FOR it (``_names_later_headings``: it is a run of section titles typeset
-       as one paragraph). The walk stops before a heading that REPEATS one of the lines already
-       walked (``_repeats_contents_entry``: the body has begun where a listed section begins) and
-       before a second contents header, which opens a list of its own.
-    2. The end is set by evidence the lines carry. Two or more lines with a page number: the list
-       ends with the last of them (spec 067, ``_page_numbered_positions``). Otherwise two or more
-       lines that later headings account for, in document order (``_lines_naming_later_headings``):
-       the list ends with the last of them. Otherwise, with no evidence either way, the walk
-       stands. A short line after the last evidence (a title-page line, the first heading of the
-       body) is left out.
+       table, not ending as a sentence, at most 160 characters and 16 words). A sentence end, a
+       picture or a table ends it, as before this spec. It also stops before a heading that
+       REPEATS one of the lines already walked (``_repeats_contents_entry``: the body has begun
+       where a listed section begins) and before a second contents header, which opens a list of
+       its own. A line that fails the shape ONLY by its length goes on in the walk: when later
+       headings account for it (``_names_later_headings``: a run of section titles typeset as one
+       paragraph) it is a line like any other; when they do not
+       (``_is_unaccounted_long_line``), it is held provisionally.
+    2. The end is set by evidence the lines carry. Two or more lines with a page number, counted
+       on the walk up to the first provisional line: the list ends with the last of them (spec
+       067, ``_page_numbered_positions``). Otherwise two or more lines that later headings account
+       for, in document order (``_lines_naming_later_headings``): the list ends with the last of
+       them -- so a provisional line is inside only when BRACKETED, an accounted-for line following
+       it, and a short line or a long paragraph after the last evidence (a title-page line, a
+       dedication, the first heading of the body) is left out. Otherwise, with no evidence, the
+       walk up to the first provisional line stands.
 
     Codex acceptance review (2026-11-13): the first version matched any run of a line's words
     against a heading, so one word ("Notes") made prose or a real heading an entry, and with the
-    length limit lifted for every line the walk ran on through a long dedication to a copyright
-    year read as a page number. Both are closed: a heading must account for the whole line, and
-    only a line the headings account for passes the length limit.
+    length limit lifted for every line the page-number rule ran on through a long dedication to a
+    copyright year. Both are closed: a heading must account for the whole line, and page numbers
+    are not counted past a provisional line. The accepted residual: a long front-matter paragraph
+    with no sentence end that stands BETWEEN two accounted-for lines is taken into the list.
 
     Measured 2026-11-13 on 12 documents (spec 085): the run of main ended too early in two (the
     translated and the source PDF of one book whose contents lists each chapter's sub-sections as
     one long paragraph) and too late in four (the body's first heading, or the title-page lines
     after a list without page numbers, marked as contents). With this rule no non-contents
-    paragraph is marked and the too-late cases are all mended. The too-early ones are mended only
-    as far as the headings account for the long lines: the source PDF gains four lines and stops at
-    the first long line whose titles its headings do not all carry; the translation renders titles
-    differently in the contents and in the body, and its 19 lines stay narrated, as on main.
+    paragraph is marked; see the spec for the per-document results.
     """
     start = header + 1
     headings = _later_heading_positions(paragraphs, start=start)
     entry_texts: set[str] = set()
+    first_unaccounted: int | None = None
     walk_end = start
-    while walk_end < len(paragraphs) and _continues_contents_list(
-        paragraphs, walk_end, entry_texts=entry_texts, headings=headings
-    ):
+    while walk_end < len(paragraphs) and _continues_contents_list(paragraphs[walk_end], entry_texts):
+        if first_unaccounted is None and _is_unaccounted_long_line(paragraphs, walk_end, headings=headings):
+            first_unaccounted = walk_end
         entry_texts.add(_contents_outline_text(paragraphs[walk_end].text))
         walk_end += 1
+    # The walk as far as its lines are settled without bracketing: up to the first long line that
+    # the headings do not account for.
+    settled_end = walk_end if first_unaccounted is None else first_unaccounted
 
-    numbered = _page_numbered_positions(paragraphs, start=start, end=walk_end)
+    numbered = _page_numbered_positions(paragraphs, start=start, end=settled_end)
     if len(numbered) >= 2:
         return numbered[-1] + 1
     named = _lines_naming_later_headings(paragraphs, start=start, end=walk_end, headings=headings)
     if len(named) >= 2:
+        # Bracketing: a long line the headings do not account for lies inside only when an
+        # accounted-for line follows it -- the list is contents before it and again after it.
         return named[-1] + 1
-    return walk_end
+    return settled_end
 
 
-def _continues_contents_list(
-    paragraphs: list[ParagraphUnit],
-    position: int,
-    *,
-    entry_texts: set[str],
-    headings: dict[str, list[int]],
-) -> bool:
-    paragraph = paragraphs[position]
-    if not _is_toc_candidate_paragraph(paragraph):
-        if not _is_toc_candidate_paragraph(paragraph, length_limited=False):
-            return False
-        if _names_later_headings(paragraph.text, after=position, headings=headings) is None:
-            return False
+def _continues_contents_list(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
+    """The walk goes on over lines of the contents shape with the length limit lifted (a sentence
+    end, a picture or a table still ends it), and stops before a second contents header and before
+    a heading that repeats a line already walked."""
+    if not _is_toc_candidate_paragraph(paragraph, length_limited=False):
+        return False
     if _is_toc_header_line(paragraph.text):
         return False
     return not _repeats_contents_entry(paragraph, entry_texts)
+
+
+def _is_unaccounted_long_line(
+    paragraphs: list[ParagraphUnit], position: int, *, headings: Mapping[str, list[int]]
+) -> bool:
+    """A line that fails the contents shape only by its length and that later headings do not
+    account for (``_names_later_headings``). Spec 085 round 3: it is held provisionally -- inside
+    the list only when bracketed by evidence after it (``_toc_region_end``)."""
+    paragraph = paragraphs[position]
+    if _is_toc_candidate_paragraph(paragraph):
+        return False
+    return _names_later_headings(paragraph.text, after=position, headings=headings) is None
 
 
 def _repeats_contents_entry(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
