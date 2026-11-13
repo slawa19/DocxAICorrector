@@ -17,7 +17,7 @@
 | `NARRATION_EXCLUSION_TOC` | `toc` | `_is_toc_structural_role` (`toc_header`/`toc_entry`) |
 | `NARRATION_EXCLUSION_INDEX` | `index` | регион `back_matter` и раздел `index` (`core/models.py:78`) |
 | `NARRATION_EXCLUSION_APPARATUS` | `apparatus` | регион `back_matter`, раздел не `index` |
-| `NARRATION_EXCLUSION_NOTES_IN_BODY` | `notes_in_body` | отметка спеки 067 FR-001 (О-2 плана; на подтверждении); со спеки 077 — без абзаца-начала главы, который отметка читает как серию из одной записи (`specs/077-epigraph-opening-narrated/spec.md`), только для озвучки |
+| `NARRATION_EXCLUSION_NOTES_IN_BODY` | `notes_in_body` | отметка спеки 067 FR-001 (О-2 плана; на подтверждении); со спеки 077 — без абзаца-начала главы, который отметка читает как серию из одной записи (`specs/077-epigraph-opening-narrated/spec.md`), только для озвучки; со спеки 079 серия из двух и более записей отмечается, только если хотя бы одна её часть — ссылка (`specs/079-notes-run-must-cite/spec.md`; это сама отметка, для всех операций) |
 | `NARRATION_EXCLUSION_FRAGMENT` | `fragment` | форма: нет буквенного токена ≥ 3 букв ИЛИ буквы < ½ непробельных; не для ролей `heading`, `epigraph`, `attribution`, `dedication` (О-1) |
 
 `NARRATION_EXCLUSION_REASONS = frozenset({...})`. Приоритет — порядок строк таблицы; у абзаца одна причина или `None`.
