@@ -42,7 +42,7 @@ from docxaicorrector.document.layout_cleanup import (
     clean_paragraph_layout_artifacts,
     write_layout_cleanup_report_artifact as _write_layout_cleanup_report_artifact_impl,
 )
-from docxaicorrector.document.structure_repair import _normalize_outline_text, repair_pdf_derived_structure
+from docxaicorrector.document.structure_repair import repair_pdf_derived_structure
 from docxaicorrector.document.roles import (
     detect_explicit_list_kind,
     extract_explicit_heading_level,
@@ -807,10 +807,7 @@ def _should_expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[
 
 
 def _is_toc_header_line(text: str) -> bool:
-    # Spec 085: read without emphasis markers -- the DOCX reader renders a bold header as
-    # "**Contents**", and two of the four book DOCX of the corpus carry it so (measured
-    # 2026-11-13); their contents lists were not recognised at all.
-    return text.replace("*", "").replace("_", "").strip().lower() in _TOC_HEADER_LINE_VALUES
+    return text.strip().lower() in _TOC_HEADER_LINE_VALUES
 
 
 def _is_toc_candidate_text(text: str) -> bool:
@@ -857,7 +854,6 @@ def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -
 
 
 def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
-    run_bounds = _contents_run_bounds(paragraphs)
     index = 0
     while index < len(paragraphs):
         paragraph = paragraphs[index]
@@ -865,10 +861,10 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
             index += 1
             continue
 
-        look_ahead = _toc_region_end(paragraphs, header=index)
-        # Spec 085: a header inside a region of the run before this spec ends no later than that
-        # region did, so the rule only ever returns paragraphs to narration there.
-        look_ahead = min([look_ahead, *(end for header, end in run_bounds if header <= index < end)])
+        look_ahead = index + 1
+        while look_ahead < len(paragraphs) and _is_toc_candidate_paragraph(paragraphs[look_ahead]):
+            look_ahead += 1
+        look_ahead = _toc_region_end_at_last_page_number(paragraphs, start=index + 1, end=look_ahead)
 
         # `index` is the header itself, so this is "header + at least 2 candidate entries",
         # not "at least 3 candidates" as this rule was described until spec 054.
@@ -881,183 +877,6 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
             continue
 
         index += 1
-
-
-def _contents_run_bounds(paragraphs: list[ParagraphUnit]) -> list[tuple[int, int]]:
-    """Spec 085: the contents regions as the pass marked them before this spec -- a header written
-    without emphasis markers, the run of lines of the contents shape after it, cut at its last
-    line with a page number when it has two or more -- as ``(header, end)``. They bound the
-    regions of ``_toc_region_end`` (``_annotate_toc_region_candidates``): wherever that run
-    recognised a list, the list now ends no later. A header seen only since this spec (one set in
-    emphasis markers) has no such bound."""
-    bounds: list[tuple[int, int]] = []
-    index = 0
-    while index < len(paragraphs):
-        if paragraphs[index].text.strip().lower() not in _TOC_HEADER_LINE_VALUES:
-            index += 1
-            continue
-        end = index + 1
-        while end < len(paragraphs) and _is_toc_candidate_paragraph(paragraphs[end]):
-            end += 1
-        numbered = _page_numbered_positions(paragraphs, start=index + 1, end=end)
-        if len(numbered) >= 2:
-            end = numbered[-1] + 1
-        if end - index >= 3:
-            bounds.append((index, end))
-            index = end
-            continue
-        index += 1
-    return bounds
-
-
-def _toc_region_end(paragraphs: list[ParagraphUnit], *, header: int) -> int:
-    """Spec 085: where the contents list under the header at ``header`` ends (exclusive index).
-
-    1. The walk is main's: lines of the contents shape (``_is_toc_candidate_paragraph``: not a
-       picture or a table, not ending in ``.``/``;``, at most 160 characters and 16 words). It now
-       also stops before a heading that REPEATS one of the lines already walked
-       (``_repeats_contents_entry``: the body has begun where a listed section begins) and before a
-       second contents header, which opens a list of its own.
-    2. The end is set by evidence the walked lines carry. Two or more lines with a page number: the
-       list ends with the last of them (spec 067, ``_page_numbered_positions``, as on main).
-       Otherwise two or more lines that name, in document order, headings found after them
-       (``_lines_naming_later_headings``): the list ends with the last of them -- a short line after
-       the last evidence (a title-page line, the first heading of the body) is left out. Otherwise
-       the walk stands.
-
-    Under a header the run before this spec recognised, the list never ends later than that run's:
-    the walk is a prefix of the run, the evidence ends lie inside the walk, and page numbers counted
-    on a prefix end no later than on the whole run. A header lying INSIDE such a region (a second
-    "Contents" line the run swallowed) is bounded by that region (``_contents_run_bounds``). A
-    line longer than the contents shape is never carried: carrying such
-    lines (runs of sub-section titles typeset as one paragraph) was tried and rejected, because
-    every form of evidence for them also took prose or a real heading in some shape that main
-    narrates (Codex acceptance reviews, three rounds; owner's decision of 2026-11-13: only the
-    part that cannot drop text ships).
-    """
-    start = header + 1
-    entry_texts: set[str] = set()
-    walk_end = start
-    while walk_end < len(paragraphs) and _continues_contents_list(paragraphs[walk_end], entry_texts):
-        entry_texts.add(_contents_outline_text(paragraphs[walk_end].text))
-        walk_end += 1
-
-    numbered = _page_numbered_positions(paragraphs, start=start, end=walk_end)
-    if len(numbered) >= 2:
-        return numbered[-1] + 1
-    headings = _later_heading_positions(paragraphs, start=start)
-    named = _lines_naming_later_headings(paragraphs, start=start, end=walk_end, headings=headings)
-    if len(named) >= 2:
-        return named[-1] + 1
-    return walk_end
-
-
-def _continues_contents_list(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
-    """Main's contents shape, and two stops of spec 085: a second contents header and a heading
-    that repeats a line already walked."""
-    if not _is_toc_candidate_paragraph(paragraph):
-        return False
-    if _is_toc_header_line(paragraph.text):
-        return False
-    return not _repeats_contents_entry(paragraph, entry_texts)
-
-
-def _repeats_contents_entry(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
-    """Spec 085: a heading whose text is one of the entries already read is that section itself:
-    the body has begun. Measured 2026-11-13: in five of 12 documents the first such heading is the
-    paragraph right after the last contents line; inside a contents list it occurs 0 times."""
-    return paragraph.role == "heading" and _contents_outline_text(paragraph.text) in entry_texts
-
-
-def _contents_outline_text(text: str) -> str:
-    """The outline text ``structure_repair`` compares contents entries by (its page reference
-    stripped, whitespace collapsed, case folded), read without emphasis markers: the bridge
-    renders the same title bold in one place and plain in another."""
-    return _normalize_outline_text(str(text or "").replace("*", "").replace("_", ""))
-
-
-def _later_heading_positions(paragraphs: list[ParagraphUnit], *, start: int) -> dict[str, list[int]]:
-    """Outline text -> positions (ascending) of the headings from ``start`` on. A heading without
-    a letter (an ornament such as three stars, a bare number) names no section and is left out."""
-    headings: dict[str, list[int]] = {}
-    for position in range(start, len(paragraphs)):
-        candidate = paragraphs[position]
-        if candidate.role != "heading":
-            continue
-        outline = _contents_outline_text(candidate.text)
-        if any(character.isalpha() for character in outline):
-            headings.setdefault(outline, []).append(position)
-    return headings
-
-
-# A list ordinal opening an entry ("3. ", "12 ") -- the heading of the section may carry its
-# number apart or not at all. Digits only: a roman numeral is indistinguishable from a word.
-_CONTENTS_ENTRY_ORDINAL_PATTERN = re.compile(r"^\d{1,3}[.)]?\s+(?=\S)")
-
-
-def _names_later_headings(text: str, *, after: int, headings: Mapping[str, list[int]]) -> int | None:
-    """Spec 085: the position of the last heading that ACCOUNTS FOR the line, or ``None``.
-
-    Later headings account for a line when the line (``_contents_outline_text``, a leading list
-    ordinal set aside) is the text of one heading after ``after``, or splits with nothing left over
-    into the texts of several headings that follow one another after ``after`` in document order.
-    A heading's text merely occurring inside the line (one word "Notes" in a sentence) is not
-    enough (Codex acceptance review, round 1)."""
-    outline = _contents_outline_text(text)
-    for candidate in (outline, _CONTENTS_ENTRY_ORDINAL_PATTERN.sub("", outline, count=1)):
-        words = candidate.split()
-        if words:
-            last = _last_heading_of_full_split(words, 0, after, headings, {})
-            if last is not None:
-                return last
-    return None
-
-
-def _last_heading_of_full_split(
-    words: list[str],
-    first_word: int,
-    after: int,
-    headings: Mapping[str, list[int]],
-    memo: dict[tuple[int, int], int | None],
-) -> int | None:
-    if first_word == len(words):
-        return after
-    key = (first_word, after)
-    if key in memo:
-        return memo[key]
-    result: int | None = None
-    for last_word in range(len(words), first_word, -1):
-        positions = headings.get(" ".join(words[first_word:last_word]), ())
-        heading_position = next((position for position in positions if position > after), None)
-        if heading_position is None:
-            continue
-        result = _last_heading_of_full_split(words, last_word, heading_position, headings, memo)
-        if result is not None:
-            break
-    memo[key] = result
-    return result
-
-
-def _lines_naming_later_headings(
-    paragraphs: list[ParagraphUnit], *, start: int, end: int, headings: Mapping[str, list[int]]
-) -> list[int]:
-    """Spec 085: the lines in ``[start, end)`` that later headings account for
-    (``_names_later_headings``), in document order: a line counts when its headings lie after the
-    line itself and after the heading the previous counted line ended on -- a contents list walks
-    the body in order, so a title-page or foreword line after the list that repeats an earlier
-    heading does not count, and neither does a list at the end of a book, whose headings all stand
-    before it. Measured 2026-11-13 on 12 documents: of the twelve paragraphs after each list's last
-    line, 0 count."""
-    named: list[int] = []
-    last_named_heading = -1
-    for position in range(start, end):
-        last = _names_later_headings(
-            paragraphs[position].text, after=max(position, last_named_heading), headings=headings
-        )
-        if last is not None:
-            named.append(position)
-            last_named_heading = last
-    return named
 
 
 def _is_toc_candidate_paragraph(paragraph: ParagraphUnit) -> bool:
@@ -1098,17 +917,22 @@ def _holds_consecutive_toc_entries(text: str) -> bool:
     return all(_is_toc_candidate_text(piece) for piece in pieces)
 
 
-def _page_numbered_positions(paragraphs: list[ParagraphUnit], *, start: int, end: int) -> list[int]:
-    """Spec 067 FR-007 follow-up: the lines in ``[start, end)`` that carry a page number. Where
-    a contents list has two or more, it ends with the last of them (``_toc_region_end``, step 2):
-    a line after it that still has the short contents shape -- the title of the first section
-    after the contents, its byline -- is not an entry. Spec 085 folded the former
-    ``_toc_region_end_at_last_page_number`` into ``_toc_region_end``; the rule is unchanged."""
-    return [
+def _toc_region_end_at_last_page_number(
+    paragraphs: list[ParagraphUnit], *, start: int, end: int
+) -> int:
+    """Spec 067 FR-007 follow-up: where a contents region carries page numbers, it ends with
+    the last line that carries one. A line after it that still has the short contents shape --
+    the title of the first section after the contents, its byline -- is not an
+    entry. A region whose entries carry no page numbers at all (fewer than two) is left as the
+    candidate run found it."""
+    numbered = [
         position
         for position in range(start, end)
         if _TOC_TRAILING_PAGE_NUMBER_PATTERN.search(paragraphs[position].text or "")
     ]
+    if len(numbered) < 2:
+        return end
+    return numbered[-1] + 1
 
 
 def _apply_or_hint_stage0_toc_role(paragraph: ParagraphUnit, *, structural_role: str) -> None:

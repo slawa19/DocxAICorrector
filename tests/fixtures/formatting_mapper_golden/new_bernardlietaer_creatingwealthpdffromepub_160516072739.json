@@ -639,27 +639,6 @@
         ],
         "relation_id": "rel_0002",
         "relation_kind": "table_caption"
-      },
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0025",
-          "p0026",
-          "p0027",
-          "p0028",
-          "p0029",
-          "p0030",
-          "p0031",
-          "p0032",
-          "p0033",
-          "p0034"
-        ],
-        "rationale": [
-          "toc_header_with_entries"
-        ],
-        "relation_id": "rel_0003",
-        "relation_kind": "toc_region"
       }
     ],
     "accepted_split_targets": [],
@@ -681,9 +660,8 @@
     "mapped_count": 469,
     "mapping_strategy_counts": {
       "bounded_registry_heading_containment": 1,
-      "exact_text": 19,
+      "exact_text": 20,
       "local_gap_heading_fallback": 10,
-      "local_gap_toc_fallback": 1,
       "paragraph_id_rebuild_key": 14,
       "paragraph_id_registry": 315,
       "paragraph_id_registry_aggregation_anchor": 15,
@@ -724,10 +702,9 @@
       "suspicious_counts": {}
     },
     "rejected_relation_candidate_count": 0,
-    "relation_count": 3,
+    "relation_count": 2,
     "relation_counts": {
-      "table_caption": 2,
-      "toc_region": 1
+      "table_caption": 2
     },
     "relation_decisions": [
       {
@@ -757,33 +734,11 @@
         "relation_kind": "table_caption",
         "structure_phase": "post_ai_final",
         "structure_source": "post_ai_final_binding"
-      },
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0025",
-          "p0026",
-          "p0027",
-          "p0028",
-          "p0029",
-          "p0030",
-          "p0031",
-          "p0032",
-          "p0033",
-          "p0034"
-        ],
-        "reasons": [
-          "toc_header_with_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 486,
-      "relation_id_populated_count": 14,
+      "relation_id_missing_count": 496,
+      "relation_id_populated_count": 4,
       "source_count": 500
     },
     "source_count": 500,
@@ -1459,13 +1414,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0025",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 23,
-        "structural_role": "toc_header",
+        "structural_role": "heading",
         "text_preview": "contents"
       },
       {
@@ -1487,13 +1440,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0026",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 24,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "preface by dennis meadows"
       },
       {
@@ -1515,13 +1466,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0027",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 25,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "foreword by hunter lovins"
       },
       {
@@ -1543,13 +1492,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0028",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 26,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "acknowledgments"
       },
       {
@@ -1558,7 +1505,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 2,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -1571,13 +1518,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0029",
-        "relation_ids": [
-          "rel_0003"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "heuristic",
         "source_index": 27,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "introduction: cities and economies"
       },
       {
@@ -1593,19 +1538,17 @@
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 30,
-        "mapping_strategy": "local_gap_toc_fallback",
+        "mapping_strategy": "exact_text",
         "origin_raw_indexes": [
           30
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0030",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 28,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "part i: local economics"
       },
       {
@@ -1627,13 +1570,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0031",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 29,
-        "structural_role": "toc_entry",
+        "structural_role": "list",
         "text_preview": "what is wealt h?"
       },
       {
@@ -1655,13 +1596,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0032",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 30,
-        "structural_role": "toc_entry",
+        "structural_role": "list",
         "text_preview": "crash and burn economics"
       },
       {
@@ -1683,13 +1622,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0033",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 31,
-        "structural_role": "toc_entry",
+        "structural_role": "list",
         "text_preview": "community capitalism"
       },
       {
@@ -1711,13 +1648,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0034",
-        "relation_ids": [
-          "rel_0003"
-        ],
+        "relation_ids": [],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 32,
-        "structural_role": "toc_entry",
+        "structural_role": "list",
         "text_preview": "the possibility of sufficiency and abundance"
       },
       {
@@ -14065,9 +14000,9 @@
         "text_preview": "acknowledgments"
       },
       {
-        "heading_level": null,
+        "heading_level": 2,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 2",
         "target_index": 29,
         "text_preview": "introduction: cities and economies"
       },

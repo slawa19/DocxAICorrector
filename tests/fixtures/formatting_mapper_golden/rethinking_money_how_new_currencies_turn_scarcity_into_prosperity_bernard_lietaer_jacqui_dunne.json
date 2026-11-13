@@ -1014,28 +1014,7 @@
       }
     ],
     "accepted_merged_sources_count": 60,
-    "accepted_relations": [
-      {
-        "anchor_asset_id": null,
-        "confidence": "high",
-        "member_paragraph_ids": [
-          "p0057",
-          "p0058",
-          "p0059",
-          "p0060",
-          "p0061",
-          "p0062",
-          "p0063",
-          "p0064",
-          "p0065"
-        ],
-        "rationale": [
-          "toc_header_with_entries"
-        ],
-        "relation_id": "rel_0001",
-        "relation_kind": "toc_region"
-      }
-    ],
+    "accepted_relations": [],
     "accepted_split_targets": [],
     "basis": "role_aware_formatting_coverage",
     "caption_heading_conflicts": [],
@@ -1097,36 +1076,12 @@
       "suspicious_counts": {}
     },
     "rejected_relation_candidate_count": 0,
-    "relation_count": 1,
-    "relation_counts": {
-      "toc_region": 1
-    },
-    "relation_decisions": [
-      {
-        "anchor_asset_id": null,
-        "decision": "accept",
-        "member_paragraph_ids": [
-          "p0057",
-          "p0058",
-          "p0059",
-          "p0060",
-          "p0061",
-          "p0062",
-          "p0063",
-          "p0064",
-          "p0065"
-        ],
-        "reasons": [
-          "toc_header_with_entries"
-        ],
-        "relation_kind": "toc_region",
-        "structure_phase": "post_ai_final",
-        "structure_source": "post_ai_final_binding"
-      }
-    ],
+    "relation_count": 0,
+    "relation_counts": {},
+    "relation_decisions": [],
     "relation_identity_population": {
-      "relation_id_missing_count": 491,
-      "relation_id_populated_count": 9,
+      "relation_id_missing_count": 500,
+      "relation_id_populated_count": 0,
       "source_count": 500
     },
     "source_count": 500,
@@ -2644,13 +2599,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0057",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 57,
-        "structural_role": "toc_header",
+        "structural_role": "heading",
         "text_preview": "contents"
       },
       {
@@ -2673,13 +2626,11 @@
         ],
         "origin_raw_text_count": 2,
         "paragraph_id": "p0058",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 58,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "foreword ix introduction: from scarcity to prosperity within a"
       },
       {
@@ -2701,13 +2652,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0059",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 59,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "generation 1"
       },
       {
@@ -2729,13 +2678,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0060",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 60,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "part one scarcity"
       },
       {
@@ -2757,13 +2704,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0061",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 61,
-        "structural_role": "toc_entry",
+        "structural_role": "list",
         "text_preview": "the failure of money: the competitive society 11"
       },
       {
@@ -2785,13 +2730,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0062",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 62,
-        "structural_role": "toc_entry",
+        "structural_role": "list",
         "text_preview": "the myth of money: what it really is 23"
       },
       {
@@ -2813,13 +2756,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0063",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 63,
-        "structural_role": "toc_entry",
+        "structural_role": "list",
         "text_preview": "a fate worse than debt: interest’s hidden consequences 37"
       },
       {
@@ -2841,13 +2782,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0064",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "heading",
         "role_confidence": "explicit",
         "source_index": 64,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "part two prosperity"
       },
       {
@@ -2869,13 +2808,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0065",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "list",
         "role_confidence": "heuristic",
         "source_index": 65,
-        "structural_role": "toc_entry",
+        "structural_role": "list",
         "text_preview": "the flying fish: a new perspective on money 57"
       },
       {

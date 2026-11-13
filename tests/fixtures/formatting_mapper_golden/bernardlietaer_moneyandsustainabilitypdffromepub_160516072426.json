@@ -427,12 +427,27 @@
           "p0022",
           "p0023",
           "p0024",
-          "p0025"
+          "p0025",
+          "p0026",
+          "p0027"
         ],
         "rationale": [
           "contiguous_toc_entries"
         ],
         "relation_id": "rel_0004",
+        "relation_kind": "toc_region"
+      },
+      {
+        "anchor_asset_id": null,
+        "confidence": "high",
+        "member_paragraph_ids": [
+          "p0029",
+          "p0030"
+        ],
+        "rationale": [
+          "contiguous_toc_entries"
+        ],
+        "relation_id": "rel_0005",
         "relation_kind": "toc_region"
       }
     ],
@@ -447,7 +462,7 @@
       "output_bold": 0,
       "output_italic": 0,
       "reason": null,
-      "source_bold": 63,
+      "source_bold": 64,
       "source_italic": 235
     },
     "high_confidence_merge_count": 13,
@@ -495,10 +510,10 @@
       "suspicious_counts": {}
     },
     "rejected_relation_candidate_count": 1,
-    "relation_count": 4,
+    "relation_count": 5,
     "relation_counts": {
       "table_caption": 3,
-      "toc_region": 1
+      "toc_region": 2
     },
     "relation_decisions": [
       {
@@ -577,7 +592,23 @@
           "p0022",
           "p0023",
           "p0024",
-          "p0025"
+          "p0025",
+          "p0026",
+          "p0027"
+        ],
+        "reasons": [
+          "contiguous_toc_entries"
+        ],
+        "relation_kind": "toc_region",
+        "structure_phase": "post_ai_final",
+        "structure_source": "post_ai_final_binding"
+      },
+      {
+        "anchor_asset_id": null,
+        "decision": "accept",
+        "member_paragraph_ids": [
+          "p0029",
+          "p0030"
         ],
         "reasons": [
           "contiguous_toc_entries"
@@ -588,8 +619,8 @@
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 476,
-      "relation_id_populated_count": 24,
+      "relation_id_missing_count": 472,
+      "relation_id_populated_count": 28,
       "source_count": 500
     },
     "source_count": 500,
@@ -1313,7 +1344,7 @@
         "boundary_confidence": "high",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": 2,
+        "heading_level": null,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
@@ -1326,11 +1357,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0026",
-        "relation_ids": [],
-        "role": "heading",
+        "relation_ids": [
+          "rel_0004"
+        ],
+        "role": "body",
         "role_confidence": "heuristic",
         "source_index": 26,
-        "structural_role": "heading",
+        "structural_role": "toc_entry",
         "text_preview": "the club of rome: eu chapter - cor-eu"
       },
       {
@@ -1352,11 +1385,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0027",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0004"
+        ],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 27,
-        "structural_role": "body",
+        "structural_role": "toc_entry",
         "text_preview": "honorary president hrh p rinc e p hil ip of belgium"
       },
       {
@@ -1404,11 +1439,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0029",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0005"
+        ],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 29,
-        "structural_role": "body",
+        "structural_role": "toc_entry",
         "text_preview": "introductory remarks to the report to finance watch and the world business"
       },
       {
@@ -1430,11 +1467,13 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0030",
-        "relation_ids": [],
+        "relation_ids": [
+          "rel_0005"
+        ],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 29,
-        "structural_role": "body",
+        "structural_role": "toc_entry",
         "text_preview": "academy"
       },
       {
@@ -13857,9 +13896,9 @@
         "text_preview": "bibliography"
       },
       {
-        "heading_level": 2,
+        "heading_level": null,
         "mapped": true,
-        "style_name": "Heading 2",
+        "style_name": "Normal",
         "target_index": 26,
         "text_preview": "the club of rome: eu chapter - cor-eu"
       },
