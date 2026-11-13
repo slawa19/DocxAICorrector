@@ -80,6 +80,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_pdf_image_frames_review.py`
 - `tests/test_pdf_image_frames_review2.py`
 - `tests/test_pdf_page_render.py`
+- `tests/test_pdf_reference_line_not_heading.py`
 - `tests/test_pdf_text_layer_logical_import.py`
 - `tests/test_pdf_text_layer_quality.py`
 - `tests/test_preparation.py`
