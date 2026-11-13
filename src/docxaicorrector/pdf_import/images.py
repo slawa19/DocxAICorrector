@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from docxaicorrector.core.logger import log_event
+from docxaicorrector.pdf_import.paint_evidence import ClipEntry, iter_pages_with_evidence
 
 # Defensive page budget for a *direct* call into this extractor. The primary
 # resource budget lives in ``processing.processing_runtime`` and rejects
@@ -45,6 +46,31 @@ class PdfImageObject:
     # included): the ``matrix`` of the ``LTFigure`` pdfminer opens for the image's ``Do``. ``None``
     # when the walk could not see it.
     placement_matrix: tuple[float, float, float, float, float, float] | None = None
+    # Spec 082 acceptance round 2. ``frame_box`` is the image's true frame ``(x0, top, x1, bottom)``,
+    # top-origin, NOT clamped to the page (``top`` above is clamped to 0 for the ordering key and may
+    # understate how far the image reaches past the top edge); ``None`` falls back to the fields above.
+    # ``mask`` names what decides where the image is transparent (``SMask``, ``Mask``, ``ImageMask``,
+    # ``SMaskInData``, ``ExtGState SMask``) and ``clips`` the clipping paths in force when it is drawn
+    # (``paint_evidence.ClipEntry`` with a top-origin box). The defaults mean "none seen"; the extractor
+    # always fills them from the page walk.
+    frame_box: tuple[float, float, float, float] | None = None
+    mask: str | None = None
+    clips: tuple[ClipEntry, ...] = ()
+
+
+@dataclass(frozen=True)
+class PdfPaintedRegion:
+    """A path or shading painted on a page (spec 082 acceptance round 2): a conservative top-origin box
+    ``(x0, top, x1, bottom)``, how far a stroke may reach past it, and whether it is a zero-width stroke."""
+
+    page_number: int
+    x0: float
+    top: float
+    x1: float
+    bottom: float
+    reach: float
+    hairline: bool
+    kind: str
 
 
 # Why a discovered image was not emitted (``PdfDiscoveredImage.skip_reason``).
@@ -64,6 +90,7 @@ class PdfDiscoveredImage:
     bottom: float
     colour_space_family: str | None
     skip_reason: str | None
+    frame_box: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +98,7 @@ class PdfImageExtraction:
     images: tuple[PdfImageObject, ...]
     discovered: tuple[PdfDiscoveredImage, ...]
     pages_truncated: bool = False
+    painted: tuple[PdfPaintedRegion, ...] = ()
 
 
 def extract_pdf_images_and_inventory(pdf_path: str | Path) -> PdfImageExtraction:
@@ -82,15 +110,17 @@ def extract_pdf_images_and_inventory(pdf_path: str | Path) -> PdfImageExtraction
     """
 
     try:
-        from pdfminer.high_level import extract_pages
         from pdfminer.layout import LTFigure, LTImage
     except ImportError as exc:  # pragma: no cover - depends on optional env
         raise RuntimeError("optional_dependency_missing:pdfminer.six") from exc
 
     images: list[PdfImageObject] = []
     discovered: list[PdfDiscoveredImage] = []
+    painted: list[PdfPaintedRegion] = []
     pages_truncated = False
-    for page_index, page_layout in enumerate(extract_pages(str(pdf_path)), start=1):
+    # The same walk as ``pdfminer.high_level.extract_pages``, observed for what the page does to each image
+    # besides placing it (``paint_evidence``); the layout is unchanged.
+    for page_index, (page_layout, evidence) in enumerate(iter_pages_with_evidence(pdf_path), start=1):
         if page_index > _MAX_PDF_IMAGE_SOURCE_PAGES:
             pages_truncated = True
             log_event(
@@ -102,16 +132,35 @@ def extract_pdf_images_and_inventory(pdf_path: str | Path) -> PdfImageExtraction
             )
             break
         page_height = _coerce_optional_float(getattr(page_layout, "height", None))
+        for region in evidence.painted:
+            x0, top, x1, bottom = _top_origin_box(region.box, page_height)
+            painted.append(
+                PdfPaintedRegion(
+                    page_number=page_index,
+                    x0=x0,
+                    top=top,
+                    x1=x1,
+                    bottom=bottom,
+                    reach=region.reach,
+                    hairline=region.hairline,
+                    kind=region.kind,
+                )
+            )
         for discovery_index, (image, placement_matrix) in enumerate(
             _iter_pdfminer_images_with_placement(page_layout, lt_image_type=LTImage, lt_figure_type=LTFigure)
         ):
-            top, bottom = _pdfminer_top_origin_bounds(
-                y0=float(getattr(image, "y0", 0.0) or 0.0),
-                y1=float(getattr(image, "y1", 0.0) or 0.0),
-                page_height=page_height,
-            )
+            y0 = float(getattr(image, "y0", 0.0) or 0.0)
+            y1 = float(getattr(image, "y1", 0.0) or 0.0)
+            top, bottom = _pdfminer_top_origin_bounds(y0=y0, y1=y1, page_height=page_height)
             x0 = float(getattr(image, "x0", 0.0) or 0.0)
             x1 = float(getattr(image, "x1", x0) or x0)
+            frame_box = _top_origin_box((x0, y0, x1, y1), page_height)
+            image_evidence = evidence.for_image(image)
+            if image_evidence is None:
+                mask, clips = "unknown", ()
+            else:
+                mask = image_evidence.mask
+                clips = tuple(ClipEntry(entry.kind, _top_origin_box(entry.box, page_height)) for entry in image_evidence.clips)
             family = _colour_space_family(image)
             image_bytes = _extract_pdfminer_image_file_bytes(image)
             mime_type = _detect_image_mime_type(image_bytes) if image_bytes else None
@@ -130,6 +179,7 @@ def extract_pdf_images_and_inventory(pdf_path: str | Path) -> PdfImageExtraction
                     bottom=bottom,
                     colour_space_family=family,
                     skip_reason=skip_reason,
+                    frame_box=frame_box,
                 )
             )
             if skip_reason is not None or image_bytes is None:
@@ -150,12 +200,16 @@ def extract_pdf_images_and_inventory(pdf_path: str | Path) -> PdfImageExtraction
                     discovery_index=discovery_index,
                     colour_space_family=family,
                     placement_matrix=placement_matrix,
+                    frame_box=frame_box,
+                    mask=mask,
+                    clips=clips,
                 )
             )
     return PdfImageExtraction(
         images=tuple(sorted(images, key=lambda item: (item.page_number, item.top, item.x0))),
         discovered=tuple(discovered),
         pages_truncated=pages_truncated,
+        painted=tuple(painted),
     )
 
 
@@ -328,6 +382,16 @@ def _pdfminer_top_origin_bounds(
     top = max(0.0, page_height - float(y1))
     bottom = max(top, page_height - float(y0))
     return top, bottom
+
+
+def _top_origin_box(box: tuple[float, float, float, float], page_height: float | None) -> tuple[float, float, float, float]:
+    """A layout box ``(x0, y0, x1, y1)`` (origin bottom-left) as ``(x0, top, x1, bottom)``, NOT clamped to
+    the page: the admission checks of spec 082 need to see how far a frame reaches past an edge."""
+
+    x0, y0, x1, y1 = (float(v) for v in box)
+    if not page_height or page_height <= 0:
+        return (x0, y1, x1, y0)
+    return (x0, page_height - y1, x1, page_height - y0)
 
 
 def _coerce_optional_float(value: object) -> float | None:

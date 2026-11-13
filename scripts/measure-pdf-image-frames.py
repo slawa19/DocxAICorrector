@@ -11,7 +11,8 @@ replaced picture also gets a side-by-side PNG: bytes delivered before | bytes de
 itself (the whole page rendered, cropped to the frame by PIL -- an independent crop path).
 
 ``compare`` reads two saved runs and lists every difference: paragraphs by position, pictures by
-position with both sha1. Nothing is summarised away.
+position with every saved field (sha1, byte size, DOCX size), and -- when one run has more -- the added or
+removed tail, item by item. Nothing is summarised away.
 
 Offline: no model, no network. Run from the repository root in WSL, for example:
     . .venv/bin/activate && python -I scripts/measure-pdf-image-frames.py run --src <base>/src \
@@ -29,6 +30,7 @@ import io
 import json
 import sys
 import time
+from itertools import zip_longest
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -135,34 +137,53 @@ def _run(args) -> int:
     return 0
 
 
+def _picture_fields(before: dict | None, after: dict | None) -> list[str]:
+    if before is None or after is None:
+        return ["added" if before is None else "removed"]
+    return [field for field in ("sha1", "bytes", "emu") if before.get(field) != after.get(field)]
+
+
 def _compare(args) -> int:
     before = json.loads(Path(args.before).read_text(encoding="utf-8"))
     after = json.loads(Path(args.after).read_text(encoding="utf-8"))
     books: dict[str, object] = {}
     result: dict[str, object] = {"before": before["provenance"], "after": after["provenance"], "books": books}
-    for name, b in before["books"].items():
+    for name in sorted(set(before["books"]) | set(after["books"])):
+        if name not in before["books"] or name not in after["books"]:
+            books[name] = {"only_in": "before" if name in before["books"] else "after"}
+            print(f"{name[:40]}: only in the {books[name]['only_in']} run", flush=True)
+            continue
+        b = before["books"][name]
         a = after["books"][name]
+        # Every position of the longer sequence is compared: an item present on one side only is a
+        # difference with ``None`` on the other (an added or removed paragraph or picture), and a picture
+        # differs when ANY of its sha1, byte size or DOCX size differs.
         paragraph_diffs = [
             {"index": i, "before": pb, "after": pa}
-            for i, (pb, pa) in enumerate(zip(b["paragraphs"], a["paragraphs"]))
+            for i, (pb, pa) in enumerate(zip_longest(b["paragraphs"], a["paragraphs"]))
             if pb != pa
         ]
         picture_diffs = [
-            {"index": i, "before": pb, "after": pa}
-            for i, (pb, pa) in enumerate(zip(b["pictures"], a["pictures"]))
-            if pb["sha1"] != pa["sha1"]
+            {"index": i, "before": pb, "after": pa, "fields": _picture_fields(pb, pa)}
+            for i, (pb, pa) in enumerate(zip_longest(b["pictures"], a["pictures"]))
+            if pb != pa
         ]
         entry = {
             "paragraphs": [len(b["paragraphs"]), len(a["paragraphs"])],
             "pictures": [len(b["pictures"]), len(a["pictures"])],
             "paragraph_differences": paragraph_diffs,
             "picture_differences": picture_diffs,
+            "pictures_added": [d["index"] for d in picture_diffs if d["before"] is None],
+            "pictures_removed": [d["index"] for d in picture_diffs if d["after"] is None],
+            "replaced_pages_before": b["replaced_pages"],
             "replaced_pages_after": a["replaced_pages"],
             "seconds": [b["seconds"], a["seconds"]],
         }
         books[name] = entry
         print(f"{name[:40]}: paragraphs {entry['paragraphs']} differences {len(paragraph_diffs)}; pictures {entry['pictures']} "
-              f"differences {len(picture_diffs)} at {[d['index'] for d in picture_diffs]}; replaced pages {a['replaced_pages']}; "
+              f"differences {len(picture_diffs)} at {[d['index'] for d in picture_diffs]} "
+              f"(fields {sorted({f for d in picture_diffs for f in d['fields']})}, added {entry['pictures_added']}, "
+              f"removed {entry['pictures_removed']}); replaced pages {b['replaced_pages']} -> {a['replaced_pages']}; "
               f"seconds {entry['seconds']}", flush=True)
     if args.out:
         Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
