@@ -8,6 +8,7 @@ from io import BytesIO
 from typing import cast
 
 from docx import Document
+from docx.document import Document as DocxDocument
 
 import docxaicorrector.document.extraction as extraction
 from docxaicorrector.core.models import ParagraphUnit
@@ -383,7 +384,7 @@ def test_emphasis_markers_do_not_hide_a_repeated_heading_or_a_header() -> None:
     assert _marked(paragraphs) == ["**Contents**", "**Preface** *by Ilsa Varn*", "Keepers of the Lamp"]
 
 
-def _narration_reasons(document: Document) -> list[tuple[str, str | None]]:
+def _narration_reasons(document: DocxDocument) -> list[tuple[str, str | None]]:
     """(text, narration exclusion reason) of every paragraph, in document order, through the real
     extraction, semantic blocks and audiobook jobs (the phase preparation uses before any model
     has looked at the structure)."""
