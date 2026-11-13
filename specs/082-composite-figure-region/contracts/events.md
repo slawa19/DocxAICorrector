@@ -104,7 +104,9 @@ frame_render_checked 32, frame_render_replaced 32, frame_render_declined 23, fra
 
 ### `pdf_figure_region_insert_failed` — ERROR, родитель
 
-`page_number`, `source_index`, `stage` ∈ `probe` (до сборки: область заменена членами на их местах), `insert` (в сборке:
+`page_number`, `regions` (картинок областей этой страницы), `members_restored` (их членов, вернувшихся на свои места),
+`error_type`, `error_message` (≤ 120). Сборка документа после этого повторяется с начала (FR-B10); прежняя редакция
+этого пункта: `source_index`, `stage` ∈ `probe` (до сборки: область заменена членами на их местах), `insert` (в сборке:
 члены вставлены прежним путём на месте области), `members`, `members_inserted`, `error_type`, `error_message` (≤ 120).
 
 ### Итог `pdf_image_extraction_summary` / `pdf_image_extraction_dropped_images` — новые ключи
@@ -131,3 +133,15 @@ images_absorbed 22`; `frame_render_*` — как сегодня (32 / 32 / 23 / 
 
 `docs/LOGGING_AND_ARTIFACT_RETENTION.md` — подраздел «Спека 082, срез B: составная иллюстрация одной картинкой» и
 запись в §7; `scripts/_list_log_events.py` `TARGETS` += `src/docxaicorrector/pdf_import/figure_regions.py`.
+
+### Правки после ревью дизайна среза B, раунд 2 (2026-11-13)
+
+- `pdf_figure_region_declined.reason` дополнительно ∈ `image_encloses_page_text`, `typography_unknown` (T1),
+  `typography_disagrees` (T2), `text_block_inside` (T3), `member_outside_crop_box`, `unknown_density`,
+  `image_count_cap` (итог шага B превысил бы лимит картинок — шаг отказывает целиком).
+- `pdf_figure_region_failed.stage` ∈ `inventory`, `typography`, `plan`, `page_geometry`, `render`, `encode`, `step`;
+  стадии `probe` нет.
+- `pdf_figure_region_rendered` дополнительно: `scale_source` ∈ `member`, `seeds` — чья плотность задала отрисовку.
+- Итоговое событие `pdf_image_extraction_*` пишется ОДИН раз — после шага B (до спеки B его писал шаг среза A).
+- `pdf_text_layer_import_succeeded`: `images_emitted` — картинки окончательного DOCX после всех откатов (восстановленные
+  члены считаются каждый), `figure_regions_inserted`, `figure_region_members_restored`.

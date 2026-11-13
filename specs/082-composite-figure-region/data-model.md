@@ -174,15 +174,16 @@ class EncodedFrame:
 @dataclass(frozen=True)
 class PdfImageObject:
     ...                                                     # поля §2 без изменений
-    region_members: tuple["PdfImageObject", ...] = ()       # не пусто — это картинка области: N выданных объектов
-                                                            # (как их выдал срез A), которые она заменяет; откат = они
+    region_members: tuple["PdfImageObject", ...] | None = None
+    # None — обычная картинка; кортеж — картинка области: N выданных объектов (как их выдал срез A), которые она
+    # заменяет; () — область без выданных членов (N = 0, одиночная непередаваемая картинка); откат = они
 ```
 
 Картинка области: `page_number`; `x0, top, x1, bottom` = рамка области (пересечённая с `CropBox`; `top` прижат к 0, как
 у картинок); `frame_box` = та же рамка без прижатия; `source_index = max(0, (page_number − 1) · 10000 + round(top))`;
 `image_bytes` = PNG отрисовки; `mime_type = "image/png"`; `display_width_points` / `display_height_points` = рамка
 отрисовки в pt (явный размер в DOCX); `width_points` / `height_points` = рамка области; `discovery_index = None`;
-`original_image_bytes = None` (это не замена одной картинки — откат идёт к членам). Признак — `bool(region_members)`.
+`original_image_bytes = None` (это не замена одной картинки — откат идёт к членам). Признак — `region_members is not None` (ревью дизайна раунда 2, находка 5).
 Пиклится: члены — те же frozen-объекты.
 
 ### §6. Опись графики страницы (`pdf_import/figure_regions.py`)
@@ -214,6 +215,13 @@ REGION_DECLINE_RUNNING_TEXT = "running_text_inside"       # G1
 REGION_DECLINE_FULL_LINE = "full_line_inside"             # G2
 REGION_DECLINE_INVENTORY_MISMATCH = "inventory_mismatch"  # проход описи и опись картинок расходятся
 REGION_DECLINE_OUTSIDE_CROP_BOX = "outside_crop_box"      # пересечение с CropBox пусто
+REGION_DECLINE_IMAGE_ENCLOSES_TEXT = "image_encloses_page_text"   # картинка содержит > половины строк страницы
+REGION_DECLINE_TYPOGRAPHY_UNKNOWN = "typography_unknown"  # T1
+REGION_DECLINE_TYPOGRAPHY_DISAGREES = "typography_disagrees"  # T2
+REGION_DECLINE_TEXT_BLOCK = "text_block_inside"           # T3
+REGION_DECLINE_MEMBER_OUTSIDE = "member_outside_crop_box" # M
+REGION_DECLINE_UNKNOWN_DENSITY = "unknown_density"        # ни у одной картинки области нет размера в пикселях
+REGION_DECLINE_IMAGE_COUNT_CAP = "image_count_cap"        # итог B превысил бы лимит картинок (N = 0)
 # при отрисовке (те же имена, что у среза A): "user_unit", "page_geometry_disagrees", "exceeds_pixel_budget"
 
 
@@ -233,7 +241,8 @@ class FigureRegion:
     image_count: int
     path_count: int
     grown_line_count: int                         # строк мельче тела, по которым рамка выросла
-    scale: float                                  # px на pt: взвешенная по площади медиана плотностей картинок
+    seed_density: float | None                    # px на pt: взвешенная по площади медиана плотностей семян
+    # плотность отрисовки = max(seed_density, наибольшая плотность выданных членов в images_a) — при применении
 
 
 @dataclass(frozen=True)

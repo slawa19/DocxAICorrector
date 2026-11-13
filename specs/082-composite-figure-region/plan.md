@@ -128,7 +128,7 @@ src/docxaicorrector/pdf_import/
 ├── figure_regions.py  # НОВ.: read_page_graphics (сдержанный проход описи, только страницы с семенем),
 │                      #       plan_figure_regions (чистое правило: связь, семя, рост, слияние, G1/G2, CropBox),
 │                      #       apply_figure_regions (масштаб, page_render, PNG, атомарность страницы, события)
-├── images.py          # ИЗМ.: PdfImageObject.region_members (кортеж исходных объектов; пусто — обычная картинка)
+├── images.py          # ИЗМ.: PdfImageObject.region_members (None — обычная картинка; () — N = 0; кортеж — члены)
 ├── logical_import.py  # ИЗМ. (согласовать, Q-5): публичная pdf_body_typography(spans) — вынос :152-176 без изменения
 │                      #       поведения; build_paragraph_units_from_text_spans вызывает её же
 └── __init__.py        # без изменений (figure_regions импортирует мост напрямую, как image_frames)
@@ -139,7 +139,7 @@ src/docxaicorrector/processing/processing_runtime.py
 tests/test_pdf_figure_regions.py             # НОВ. (Unit-Contract): правило на рамках, без PDF
 tests/test_pdf_figure_regions_render.py      # НОВ. (Unit-Contract): синтетический PDF (tests/pdf_synthetic.py), проход, отрисовка
 tests/test_pdf_figure_regions_corpus.py      # НОВ. (Integration-Local): Rethinking стр. 151
-tests/test_processing_runtime.py             # ИЗМ.: мост, сдерживание по стадиям, OCR, лимит, проба вставки
+tests/test_processing_runtime.py             # ИЗМ.: мост, сдерживание по стадиям, OCR, лимит, откат доставки
 scripts/measure-pdf-image-frames.py          # ИЗМ.: шаг областей в провенансе; подготовка аудиокниги — опция
 ```
 
@@ -176,14 +176,14 @@ seed_pages = {p : discovered с skip_reason}  ── пусто ─────�
   image_bytes=png, mime_type="image/png", source_index=max(0, (page−1)·10000+round(top)), width_points, height_points,
   display_*=рамка отрисовки, frame_box=рамка области, region_members=члены из images_A)`.
 - **Порядок со срезом A (FR-B9).** Срез A — первым и без изменений; области строятся на его выходе; откат — его выход.
-- **Мост (FR-B10, FR-B12).** Родитель до построения `content_items`: `_resolve_region_pictures_for_docx(image_objects)` —
-  для каждой картинки с `region_members` проба `Document().add_paragraph().add_run().add_picture(BytesIO(png), width,
-  height)`; исключение → картинка заменяется членами (каждый со своим `source_index`, порядок как без шага) + ERROR
-  `pdf_figure_region_insert_failed` (`stage="probe"`). В сборке картинка области вставляется `_append_image_bytes_to_docx`
-  с явным размером; сбой после пробы → члены прежним путём `_append_pdf_image_to_docx` на её месте + тот же ERROR
-  (`stage="insert"`). Счётчик `figure_regions_inserted` — только вставленные области.
-- **Лимит (Q-6).** `_enforce_pdf_image_count_cap(image_extraction.images, …)` — до среза A; после шагов не проверяется
-  (они число только уменьшают).
+- **Мост (FR-B10, FR-B12, FR-B13; редакция после ревью дизайна раунда 2).** Дочерний процесс:
+  `_enforce_pdf_image_count_cap(image_extraction.images, …)` до шагов; `_replace_pdf_images_by_page_frames` выполняет срез
+  A (без изменений), затем `figure_regions.replace_composite_figures(…)` (никогда не бросает; сбой стадии — выход A для
+  страницы или всех страниц + ERROR), затем пишет ОДНО итоговое событие с ключами обоих шагов. Родитель: сборка DOCX —
+  цикл транзакций: собрать всё в новом `Document()`; если вставка картинки области бросила — запомнить её страницу,
+  заменить все области этой страницы их членами (исходные `source_index` — исходная последовательность) и собрать заново;
+  счётчики — по окончательной сборке. Отдельной пробы вставки нет (ревью раунда 2, находка 2).
+- **Лимит (Q-6).** До обоих шагов; итог B сверх лимита — отказ шага B целиком (`image_count_cap`), выход A.
 - **OCR (FR-B11).** `ocr_used` → шаг областей не вызывается; `figure_region_enabled: false` в итоговом событии.
 
 ### Риски среза B
@@ -194,7 +194,11 @@ seed_pages = {p : discovered с skip_reason}  ── пусто ─────�
 | Картинка дублирует текст тела / скан становится картинкой | G1/G2 по положительной площади; испытание 2: 1 из 914 |
 | Потеря текста | спаны не фильтруются и не помечаются — инвариант FR-B7 и тест с мутацией |
 | Неверный порядок картинок | ключ `(page, top, x0)` и `source_index` — как у извлекателя; замер: 33 прочие картинки в том же порядке |
-| Сбой вставки после рендера | проба до сборки; откат к членам; остаток записан |
+| Сбой вставки после рендера | транзакция сборки: страница целиком откатывается к членам, документ собирается заново |
+| Исправный член теряет пиксели | плотность не ниже наибольшей плотности выданных членов; бюджет — отказ |
+| Неверный профиль или рамка полосы — ложное принятие | охватывающая графика, T1–T3, рост только краем графики |
+| Член частично вне `CropBox` | отказ страницы `member_outside_crop_box` |
+| Срок / авария PDFium | принятый предел среза A: импорт теряется; работа B — только страницы с семенем |
 | Расхождение профиля с импортёром | публичная функция, которую вызывает и импортёр (Q-5) |
 | Стоимость | проход только по страницам с семенем: Rethinking +0,93 с, остальные 0; шаг целиком 2,07 с |
 
