@@ -71,6 +71,9 @@ This inventory is intentionally pragmatic:
 - `tests/test_paragraph_boundary_normalization.py`
 - `tests/test_paragraph_record_and_production_verdict.py`
 - `tests/test_passthrough_unmapped_acceptance.py`
+- `tests/test_pdf_figure_regions.py`
+- `tests/test_pdf_figure_regions_bridge.py`
+- `tests/test_pdf_figure_regions_render.py`
 - `tests/test_pdf_hanging_indent_entry_lines.py`
 - `tests/test_pdf_hanging_indent_note_lines.py`
 - `tests/test_pdf_image_frames.py`
@@ -183,6 +186,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_formatting_restoration_golden.py`
 - `tests/test_image_integration.py`
 - `tests/test_pdf_candidate_benchmark_project.py`
+- `tests/test_pdf_figure_regions_corpus.py`
 - `tests/test_pdf_image_frames_corpus.py`
 - `tests/test_pdf_import_backend_comparison.py`
 - `tests/test_real_document_pipeline_validation.py`

@@ -589,8 +589,12 @@ def _run_pdf_parse_stages(
         )
         image_objects = []
     else:
-        image_objects = _replace_pdf_images_by_page_frames(input_path, image_extraction, spans, ocr_used=ocr_used)
-        _enforce_pdf_image_count_cap(image_objects, filename=filename, max_image_count=max_image_count)
+        # Spec 082 slice B, Q-6: the cap is checked on what the extractor emitted, before either step -- the decision
+        # to reject a document is today's; slice B itself refuses to grow the list past the cap.
+        _enforce_pdf_image_count_cap(image_extraction.images, filename=filename, max_image_count=max_image_count)
+        image_objects = _replace_pdf_images_by_page_frames(
+            input_path, image_extraction, spans, ocr_used=ocr_used, max_image_count=max_image_count
+        )
 
     return _PdfParseStagesResult(
         spans=spans,
@@ -602,24 +606,31 @@ def _run_pdf_parse_stages(
     )
 
 
-def _replace_pdf_images_by_page_frames(input_path: Path, image_extraction, spans, *, ocr_used: bool = False) -> list:
-    """Spec 082 slice A: swap the bytes of emitted images that are negatives of their page for a render of
-    their page frame, then write the one outcome event of image extraction.
+def _replace_pdf_images_by_page_frames(
+    input_path: Path, image_extraction, spans, *, ocr_used: bool = False, max_image_count: int | None = None
+) -> list:
+    """Spec 082: slice A, then slice B, then the one outcome event of image extraction.
 
-    Text is not touched: ``spans`` are only read (a frame with text over it is declined). A failure of the
-    step as a whole -- not of one render, which ``apply_frame_replacements`` already contains -- keeps the
-    images exactly as the extractor emitted them; the book never loses its images to this step.
+    Slice A swaps the bytes of emitted images that are negatives of their page for a render of their page frame;
+    slice B replaces the emitted pictures of a composite figure (a page region holding an image the extractor
+    cannot emit) by one render of that region, on slice A's output. Text is not touched by either: ``spans`` are
+    only read. A failure of a step as a whole keeps the pictures as they stood before it; the book never loses its
+    images to these steps.
 
-    Not in the OCR branch: there the spans come from the OCR output while images and renders come from
-    the original PDF, and nothing proves the two share their geometry (acceptance review, finding 7).
+    Neither step runs in the OCR branch: there the spans come from the OCR output while images and renders come
+    from the original PDF, and nothing proves the two share their geometry (acceptance review, finding 7).
     """
 
+    from docxaicorrector.pdf_import import figure_regions
     from docxaicorrector.pdf_import.image_frames import apply_frame_replacements, plan_frame_replacements
     from docxaicorrector.pdf_import.images import log_pdf_image_extraction_outcome
 
     if ocr_used:
-        log_pdf_image_extraction_outcome(image_extraction, pdf_path=input_path, frame_render_enabled=False)
+        log_pdf_image_extraction_outcome(
+            image_extraction, pdf_path=input_path, frame_render_enabled=False, figure_region_enabled=False
+        )
         return list(image_extraction.images)
+    frame_counters: dict[str, int] = {}
     try:
         plan = plan_frame_replacements(image_extraction, spans)
         outcome = apply_frame_replacements(input_path, image_extraction, plan)
@@ -635,17 +646,55 @@ def _replace_pdf_images_by_page_frames(input_path: Path, image_extraction, spans
             error_type=exc.__class__.__name__,
             error_message=str(exc)[:120],
         )
-        log_pdf_image_extraction_outcome(image_extraction, pdf_path=input_path)
-        return list(image_extraction.images)
+        images_a = list(image_extraction.images)
+    else:
+        images_a = list(outcome.images)
+        frame_counters = {
+            "frame_render_checked": outcome.checked,
+            "frame_render_replaced": outcome.replaced,
+            "frame_render_declined": outcome.declined,
+            "frame_render_failed": outcome.failed,
+        }
+    region_counters: dict[str, int] = {}
+    try:
+        regions = figure_regions.replace_composite_figures(
+            input_path, image_extraction, images_a, spans, max_image_count=max_image_count
+        )
+    except Exception as exc:  # noqa: BLE001 - slice A's pictures stay as they are
+        log_event(
+            logging.ERROR,
+            "pdf_figure_region_failed",
+            "Rendering composite-figure regions failed; the pictures stay as slice A delivered them.",
+            pdf_path=str(input_path),
+            page_number=None,
+            stage="step",
+            error_type=exc.__class__.__name__,
+            error_message=str(exc)[:120],
+        )
+        images = images_a
+    else:
+        images = list(regions.images)
+        region_counters = {
+            "figure_region_seed_pages": regions.seed_pages,
+            "figure_region_rendered": regions.rendered,
+            "figure_region_declined": regions.declined,
+            "figure_region_failed": regions.failed,
+            "figure_region_images_absorbed": regions.images_absorbed,
+        }
     log_pdf_image_extraction_outcome(
         image_extraction,
         pdf_path=input_path,
-        frame_render_checked=outcome.checked,
-        frame_render_replaced=outcome.replaced,
-        frame_render_declined=outcome.declined,
-        frame_render_failed=outcome.failed,
+        frame_render_checked=frame_counters.get("frame_render_checked", 0),
+        frame_render_replaced=frame_counters.get("frame_render_replaced", 0),
+        frame_render_declined=frame_counters.get("frame_render_declined", 0),
+        frame_render_failed=frame_counters.get("frame_render_failed", 0),
+        figure_region_seed_pages=region_counters.get("figure_region_seed_pages", 0),
+        figure_region_rendered=region_counters.get("figure_region_rendered", 0),
+        figure_region_declined=region_counters.get("figure_region_declined", 0),
+        figure_region_failed=region_counters.get("figure_region_failed", 0),
+        figure_region_images_absorbed=region_counters.get("figure_region_images_absorbed", 0),
     )
-    return list(outcome.images)
+    return images
 
 
 def _enforce_pdf_span_count_cap(spans, *, filename: str, max_span_count: int) -> None:
@@ -897,9 +946,6 @@ def _run_pdf_parse_stages_in_process_guarded(
 
 
 def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
-    from docx import Document
-
-    from docxaicorrector.document.shared_xml import mark_document_as_pdf_bridge_output
     from docxaicorrector.pdf_import.logical_import import build_paragraph_units_from_text_spans
 
     _enforce_pdf_import_file_size_budget(filename=filename, source_bytes=source_bytes)
@@ -935,31 +981,39 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
         if not import_result.paragraphs:
             raise RuntimeError("pdf_text_layer_import_empty_document")
 
-        document = Document()
-        # Spec 067 FR-002 (Codex P1): name this DOCX as the bridge's output, so `extraction.py`
-        # honours the bridge's per-paragraph signals (the table-cell `w:cnfStyle`) here and
-        # never in a native DOCX that carries the same property.
-        mark_document_as_pdf_bridge_output(document)
-        content_items = [
-            ("paragraph", int(getattr(paragraph, "source_index", 0)), index, paragraph)
-            for index, paragraph in enumerate(import_result.paragraphs)
-        ]
-        content_items.extend(
-            ("image", int(getattr(image, "source_index", 0)), index, image)
-            for index, image in enumerate(image_objects)
-        )
-        images_emitted = 0
-        images_dropped = 0
-        delivery_counts: dict[str, int] = {}
-        for item_type, _source_index, _index, payload in sorted(content_items, key=lambda item: (item[1], item[0] == "paragraph", item[2])):
-            if item_type == "image":
-                if _append_pdf_image_to_docx(document, payload, delivery_counts):
-                    images_emitted += 1
-                else:
-                    images_dropped += 1
+        # Spec 082 slice B FR-B10: the assembly is a transaction. When the render of a composite-figure region
+        # cannot be inserted, the partly built document is dropped, every region of THAT page gives way to the
+        # pictures it stands for (they carry their own ``source_index``: the original sequence, not a
+        # reconstruction) and the document is built again from the start -- at most once per page with regions.
+        restored_pages: set[int] = set()
+        members_restored = 0
+        while True:
+            assembly_images = _restore_region_members(image_objects, restored_pages)
+            try:
+                document, images_emitted, images_dropped, delivery_counts = _assemble_pdf_text_layer_docx(
+                    import_result.paragraphs, assembly_images
+                )
+            except _FigureRegionInsertFailed as failure:
+                page_regions = [
+                    image
+                    for image in image_objects
+                    if getattr(image, "region_members", None) is not None and image.page_number == failure.page_number
+                ]
+                restored = sum(len(image.region_members or ()) for image in page_regions)
+                members_restored += restored
+                restored_pages.add(failure.page_number)
+                log_event(
+                    logging.ERROR,
+                    "pdf_figure_region_insert_failed",
+                    "A composite-figure render could not be inserted into the DOCX; its page was rebuilt with its pictures.",
+                    page_number=failure.page_number,
+                    regions=len(page_regions),
+                    members_restored=restored,
+                    error_type=failure.cause.__class__.__name__,
+                    error_message=str(failure.cause)[:120],
+                )
                 continue
-            paragraph = payload
-            _append_pdf_text_paragraph_to_docx(document, paragraph)
+            break
         document.save(str(output_path))
         output_bytes = output_path.read_bytes() if output_path.exists() else b""
         if not output_bytes:
@@ -975,12 +1029,93 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
             images_emitted=images_emitted,
             images_dropped=images_dropped,
             images_replaced_by_frame_render=delivery_counts.get("frame_render", 0),
+            figure_regions_inserted=delivery_counts.get("figure_region", 0),
+            figure_region_members_restored=members_restored,
             skipped_page_number_count=import_result.report.skipped_page_number_count,
             skipped_repeated_page_furniture_count=import_result.report.skipped_repeated_page_furniture_count,
             skipped_blank_page_notice_count=import_result.report.skipped_blank_page_notice_count,
             body_text_ratio=parse_result.body_text_ratio,
         )
         return output_bytes, "pdf-text-layer"
+
+
+class _FigureRegionInsertFailed(Exception):
+    """Inserting the render of a composite-figure region failed; the assembly restarts without that page's regions."""
+
+    def __init__(self, page_number: int, cause: BaseException) -> None:
+        super().__init__(f"figure region insert failed on page {page_number}")
+        self.page_number = page_number
+        self.cause = cause
+
+
+def _restore_region_members(image_objects, restored_pages: set[int]) -> list:
+    """The image list with every region render of ``restored_pages`` replaced by the pictures it stands for."""
+
+    if not restored_pages:
+        return list(image_objects)
+    restored: list = []
+    for image in image_objects:
+        members = getattr(image, "region_members", None)
+        if members is not None and image.page_number in restored_pages:
+            restored.extend(members)
+        else:
+            restored.append(image)
+    return restored
+
+
+def _assemble_pdf_text_layer_docx(paragraphs, image_objects):
+    """Build the bridge DOCX: paragraphs and pictures interleaved by ``source_index`` (a picture before a paragraph
+    at the same index). Raises ``_FigureRegionInsertFailed`` when a region render cannot be inserted."""
+
+    from docx import Document
+
+    from docxaicorrector.document.shared_xml import mark_document_as_pdf_bridge_output
+
+    document = Document()
+    # Spec 067 FR-002 (Codex P1): name this DOCX as the bridge's output, so `extraction.py`
+    # honours the bridge's per-paragraph signals (the table-cell `w:cnfStyle`) here and
+    # never in a native DOCX that carries the same property.
+    mark_document_as_pdf_bridge_output(document)
+    content_items = [
+        ("paragraph", int(getattr(paragraph, "source_index", 0)), index, paragraph)
+        for index, paragraph in enumerate(paragraphs)
+    ]
+    content_items.extend(
+        ("image", int(getattr(image, "source_index", 0)), index, image)
+        for index, image in enumerate(image_objects)
+    )
+    images_emitted = 0
+    images_dropped = 0
+    delivery_counts: dict[str, int] = {}
+    for item_type, _source_index, _index, payload in sorted(content_items, key=lambda item: (item[1], item[0] == "paragraph", item[2])):
+        if item_type == "image":
+            if getattr(payload, "region_members", None) is not None:
+                _append_region_picture_to_docx(document, payload)
+                images_emitted += 1
+                delivery_counts["figure_region"] = delivery_counts.get("figure_region", 0) + 1
+                continue
+            if _append_pdf_image_to_docx(document, payload, delivery_counts):
+                images_emitted += 1
+            else:
+                images_dropped += 1
+            continue
+        _append_pdf_text_paragraph_to_docx(document, payload)
+    return document, images_emitted, images_dropped, delivery_counts
+
+
+def _append_region_picture_to_docx(document, image_object) -> None:
+    """Spec 082 FR-B6: a region render goes in at the size of its rendered frame; a failure is raised to the
+    assembly, which rebuilds the page with the pictures the render stands for."""
+
+    try:
+        _append_image_bytes_to_docx(
+            document,
+            image_object.image_bytes,
+            width_points=getattr(image_object, "display_width_points", None),
+            height_points=getattr(image_object, "display_height_points", None),
+        )
+    except Exception as exc:
+        raise _FigureRegionInsertFailed(int(image_object.page_number), exc) from exc
 
 
 def _append_pdf_text_paragraph_to_docx(document, paragraph) -> None:

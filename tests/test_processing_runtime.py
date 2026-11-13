@@ -4095,7 +4095,7 @@ def test_spec082_no_failure_in_the_frame_step_changes_what_the_import_delivers(m
     import docxaicorrector.pdf_import.image_frames as image_frames
 
     with monkeypatch.context() as off:
-        off.setattr(processing_runtime, "_replace_pdf_images_by_page_frames", lambda path, extraction, spans, ocr_used=False: list(extraction.images))
+        off.setattr(processing_runtime, "_replace_pdf_images_by_page_frames", lambda path, extraction, spans, ocr_used=False, **_kwargs: list(extraction.images))
         baseline_paragraphs, baseline_blobs = _two_negatives_docx(off)
     assert baseline_blobs[0] == 2 and len(baseline_blobs[1]) == 2 and any(baseline_paragraphs)
     with monkeypatch.context() as working:

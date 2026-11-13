@@ -76,6 +76,9 @@ _SUPERSCRIPT_REFERENCE_TAIL_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹ "
 # the item ran on from, and spec 078 a longer numbered line as one that wrapped. One value,
 # named in spec 078 where it had been written out twice; the value is unchanged.
 _FULL_LINE_FILL_RATIO = 0.72
+# A line of at least this many words can be a line of running body text (the body column is measured on such
+# lines only); spec 082 slice B reads the same test.
+_BODY_LINE_MIN_WORDS = 7
 # Spec 064 FR-007: two spans are in one table row when their tops differ by at most this share
 # of a line's height and their sizes by less than this many points.
 _TABLE_ROW_BASELINE_TOLERANCE = 0.3
@@ -146,9 +149,26 @@ class _PdfStyleCluster:
     prominence: float
 
 
-def build_paragraph_units_from_text_spans(
-    spans: list[PdfTextSpan],
-) -> PdfSourceImportResult:
+@dataclass(frozen=True)
+class PdfBodyTypography:
+    """The body typography the importer measures for a document: its body font size and body column."""
+
+    body_font_size: float | None
+    body_left_x0: float | None
+    body_right_x1: float | None
+
+
+@dataclass(frozen=True)
+class _PreparedImportSpans:
+    normalized_spans: list[PdfTextSpan]
+    repeated_furniture_keys: set[tuple[str, str]]
+    display_text_spans: list[PdfTextSpan]
+    skipped_running_head_count: int
+    ordered_spans: list[PdfTextSpan]
+    layout_profile: _PdfHeadingLayoutProfile
+
+
+def _prepare_spans_for_import(spans: list[PdfTextSpan]) -> _PreparedImportSpans:
     normalized_spans = [span for span in spans if _normalize_text(span.text)]
     repeated_furniture_keys = _detect_repeated_page_furniture_keys(tuple(normalized_spans))
     # Spec 067 FR-007: a running head on the page-number line is furniture even on one or two
@@ -167,13 +187,44 @@ def build_paragraph_units_from_text_spans(
         kept_spans = [span for span in normalized_spans if span not in running_heads]
         skipped_running_head_count = len(normalized_spans) - len(kept_spans)
         normalized_spans = kept_spans
-    dehyphenation_evidence = _build_soft_wrap_dehyphenation_evidence(normalized_spans)
     ordered_spans = sorted(normalized_spans, key=lambda item: (item.page_number, item.top, item.x0))
     layout_profile = _build_heading_layout_profile(
         ordered_spans,
         repeated_furniture_keys=repeated_furniture_keys,
         display_text_spans=display_text_spans,
     )
+    return _PreparedImportSpans(
+        normalized_spans=normalized_spans,
+        repeated_furniture_keys=repeated_furniture_keys,
+        display_text_spans=display_text_spans,
+        skipped_running_head_count=skipped_running_head_count,
+        ordered_spans=ordered_spans,
+        layout_profile=layout_profile,
+    )
+
+
+def pdf_body_typography(spans: list[PdfTextSpan]) -> PdfBodyTypography:
+    """The importer's body font size and body column, by the very preparation the importer runs (spec 082 slice B
+    reads them to tell running text from the labels of a figure)."""
+
+    profile = _prepare_spans_for_import(list(spans)).layout_profile
+    return PdfBodyTypography(
+        body_font_size=profile.body_font_size,
+        body_left_x0=profile.body_left_x0,
+        body_right_x1=profile.body_right_x1,
+    )
+
+
+def build_paragraph_units_from_text_spans(
+    spans: list[PdfTextSpan],
+) -> PdfSourceImportResult:
+    prepared = _prepare_spans_for_import(spans)
+    normalized_spans = prepared.normalized_spans
+    repeated_furniture_keys = prepared.repeated_furniture_keys
+    skipped_running_head_count = prepared.skipped_running_head_count
+    dehyphenation_evidence = _build_soft_wrap_dehyphenation_evidence(normalized_spans)
+    ordered_spans = prepared.ordered_spans
+    layout_profile = prepared.layout_profile
     median_font_size = layout_profile.body_font_size
 
     emitted: list[ParagraphUnit] = []
@@ -775,7 +826,7 @@ def _build_heading_layout_profile(
         if _looks_like_page_number(span) or _looks_like_toc_entry(span):
             continue
         words = _words(text)
-        if len(words) < 7:
+        if len(words) < _BODY_LINE_MIN_WORDS:
             continue
         if body_font_size and span.font_size:
             ratio = float(span.font_size) / body_font_size

@@ -56,6 +56,10 @@ class PdfImageObject:
     frame_box: tuple[float, float, float, float] | None = None
     ink_space: bool | None = None
     mask: str | None = None
+    # Spec 082 slice B: set only on a render of a composite-figure region. ``None`` -- an ordinary picture; a tuple
+    # -- the emitted pictures (as slice A delivered them) this render stands for, in list order, and what a failed
+    # delivery restores; ``()`` -- a region with no emitted picture in it (a lone image the extractor cannot emit).
+    region_members: tuple["PdfImageObject", ...] | None = None
 
 
 # Why a discovered image was not emitted (``PdfDiscoveredImage.skip_reason``).
@@ -183,6 +187,12 @@ def log_pdf_image_extraction_outcome(
     frame_render_replaced: int = 0,
     frame_render_declined: int = 0,
     frame_render_failed: int = 0,
+    figure_region_enabled: bool = True,
+    figure_region_seed_pages: int = 0,
+    figure_region_rendered: int = 0,
+    figure_region_declined: int = 0,
+    figure_region_failed: int = 0,
+    figure_region_images_absorbed: int = 0,
 ) -> None:
     """The one outcome event of PDF image extraction (spec 082 FR-A10).
 
@@ -204,6 +214,13 @@ def log_pdf_image_extraction_outcome(
         "frame_render_replaced": frame_render_replaced,
         "frame_render_declined": frame_render_declined,
         "frame_render_failed": frame_render_failed,
+        # Spec 082 slice B: composite-figure regions (written once, after both steps).
+        "figure_region_enabled": figure_region_enabled,
+        "figure_region_seed_pages": figure_region_seed_pages,
+        "figure_region_rendered": figure_region_rendered,
+        "figure_region_declined": figure_region_declined,
+        "figure_region_failed": figure_region_failed,
+        "figure_region_images_absorbed": figure_region_images_absorbed,
     }
     if skipped_count > 0:
         # Discovered images that never became emittable objects are a silent
