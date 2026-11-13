@@ -1,16 +1,18 @@
-"""Spec 082 slice A, Codex acceptance review round 2: reproductions of the findings, kept as regression tests.
+"""Spec 082 slice A, Codex acceptance reviews round 2 and 3: reproductions of the findings, kept as tests.
 
-Finding 1: a negative correlation proves nothing when something on the page changes how the image looks
-besides the image itself. The "correct" picture here is a DeviceGray JPEG stored exactly as it should look
-(left half 64, right half 192). Something on the page hides or darkens one half -- a vector fill over it, a
-clip, a soft mask, a colour-key mask, an ExtGState soft mask, a shading, a form's BBox -- and the render
-becomes ANTI-correlated with the correct stored picture (premise asserted in every test). Delivering the
-render would lose half the picture; the image must keep its bytes.
+Round 2, finding 1: a negative correlation proves nothing when something on the page changes how the image
+looks besides the image itself. The "correct" picture here is stored exactly as it should look (left half
+64, right half a ramp 160..224). Something on the page hides or darkens one half -- a vector fill, a
+shading, a clip, a soft mask, a colour-key mask, an ExtGState soft mask, a form's BBox -- and the render
+becomes ANTI-correlated with the correct stored picture (premise asserted in every test). Round 3 answers
+with the CAUSE half of the trigger, not by observing the paint: an image outside an ink space is never
+replaced; an image whose dictionary names an /SMask or /Mask is declined. The residual -- an ink-space image
+already right as stored AND anti-correlated by something unobserved -- is pinned as such.
 
-Finding 2: an image that reaches past the TOP of the page was seen as entirely inside it (its top had been
-clamped to zero before the admission check); the four sides are tested.
+Round 2, finding 2: an image that reaches past the TOP of the page was seen as entirely inside it (its top
+had been clamped to zero before the admission check); the four sides are tested.
 
-Finding 3: an exception while encoding the render escaped the per-image handling.
+Round 2, finding 3: an exception while encoding the render escaped the per-image handling.
 """
 
 from __future__ import annotations
@@ -76,27 +78,22 @@ def _negative_photo(**kwargs) -> SyntheticImage:
 
 
 _RIGHT_HALF = "160 300 100 100 re"
-_LEFT_HALF = "60 300 100 100 re"
 
 _HIDING_CASES = {
     # a black fill over the right half: the page shows [64, 0]
-    "vector_fill_over": (dict(), dict(overlays=["0 g " + _RIGHT_HALF + " f"]), "paint_over_frame"),
+    "vector_fill_over": (dict(), dict(overlays=["0 g " + _RIGHT_HALF + " f"]), "not_ink_space"),
     # a dark shading painted over the right half
-    "shading_over": (dict(), dict(overlays=["q " + _RIGHT_HALF + " W n /Sh0 sh Q"]), "paint_over_frame"),
-    # a soft mask that makes the left half transparent: the page shows [white, ramp]
-    "image_smask": (dict(smask="left_clear"), dict(), "masked_image"),
-    # a colour key that makes the 64 samples transparent
-    "colour_key_mask": (dict(colour_key="[40 90]"), dict(), "masked_image"),
-    # an ExtGState soft mask whose luminosity is black over the left half
-    "extgstate_smask": (dict(gs_smask=True), dict(), "masked_image"),
-    # a clip that shows only the right half: the page shows [white, ramp]. The comparison is made on the
-    # part the clip shows -- ramp against ramp, positive -- so the image is kept, not declined.
-    "clip_shows_a_part": (dict(clip=_RIGHT_HALF + " W n"), dict(), None),
+    "shading_over": (dict(), dict(overlays=["q " + _RIGHT_HALF + " W n /Sh0 sh Q"]), "not_ink_space"),
+    # a clip that shows only the right half: the page shows [white, ramp]
+    "clip_shows_a_part": (dict(clip=_RIGHT_HALF + " W n"), dict(), "not_ink_space"),
     # the same through a form whose BBox is the right half
-    "form_bbox_clip": (dict(form_bbox=(160, 300, 260, 400)), dict(), None),
-    # a clip of five corners (the right half with an extra vertex on its left edge): only an axis-aligned
-    # rectangle of four corners is followed, anything else is declined
-    "five_corner_clip": (dict(clip="160 300 m 260 300 l 260 400 l 160 400 l 160 350 l h W n"), dict(), "clipped_frame"),
+    "form_bbox_clip": (dict(form_bbox=(160, 300, 260, 400)), dict(), "not_ink_space"),
+    # an ExtGState soft mask whose luminosity is black over the left half
+    "extgstate_smask": (dict(gs_smask=True), dict(), "not_ink_space"),
+    # a soft mask that makes the left half transparent -- named in the image dictionary
+    "image_smask": (dict(smask="left_clear"), dict(), "masked_image"),
+    # a colour key that makes the 64 samples transparent -- named in the image dictionary
+    "colour_key_mask": (dict(colour_key="[40 90]"), dict(), "masked_image"),
 }
 
 
@@ -106,67 +103,57 @@ def test_a_correct_image_the_page_partly_hides_keeps_its_bytes(tmp_path, monkeyp
     path = write_pdf(tmp_path / (case + ".pdf"), [SyntheticPage(images=[_correct_photo(**image_kwargs)], **page_kwargs)])
     extraction, _plan, outcome, events = _run(path, monkeypatch)
     (stored,) = extraction.images
-    # Premise: the page view is anti-correlated with the CORRECT stored picture, so the sign read over the
-    # whole frame would replace it with a render that has lost half of it.
+    # Premise: the page view is anti-correlated with the CORRECT stored picture, so the sign alone would
+    # replace it with a render that has lost half of it.
     assert _correlation(_grey(stored.image_bytes), _grey(_page_view(path, (60, 200, 260, 300)))) < -0.5
     assert outcome.replaced == 0
     assert outcome.images == extraction.images
     reasons = [context["reason"] for _level, event, context in events if event == "pdf_image_frame_render_declined"]
-    assert reasons == ([reason] if reason else []), events
-    if reason is None:
-        assert outcome.checked == 1  # compared on the visible part, and found to be the page's own picture
+    assert reasons == [reason], events
+
+
+@pytest.mark.parametrize(("case", "image_kwargs"), [("smask", dict(smask="left_clear")), ("colour_key", dict(colour_key="[20 40]"))])
+def test_an_ink_space_negative_with_a_mask_in_its_dictionary_is_declined(tmp_path, monkeypatch, case, image_kwargs) -> None:
+    """The one structural decline round 3 keeps from round 2, read from the image dictionary pdfminer already
+    gives: where a mask is transparent the page shows what is beneath, not the image."""
+    path = write_pdf(tmp_path / (case + ".pdf"), [SyntheticPage(images=[_negative_photo(**image_kwargs)])])
+    extraction, _plan, outcome, events = _run(path, monkeypatch)
+    assert outcome.replaced == 0 and outcome.images == extraction.images
+    reasons = [context["reason"] for _level, event, context in events if event == "pdf_image_frame_render_declined"]
+    assert reasons == ["masked_image"]
+
+
+def test_residual_an_ink_image_right_as_stored_and_darkened_by_unobserved_paint_is_replaced(tmp_path) -> None:
+    """The residual of the round-3 rule, pinned so that it stays visible: two independent coincidences --
+    an ink-space image already right as stored (/Decode [1 0] cancels the tint inversion) AND paint over it
+    that this step does not observe (a black fill over its right half) -- make it anti-correlated with its
+    frame, and it is replaced by the render, which shows the page with the fill. Spec 082 records this as
+    the residual; observing paint was tried in round 2 and dropped in round 3."""
+    photo = SyntheticImage("jpeg_separation", 60, 300, 260, 400, pixels=(300, 150), pattern="halves_ramp", decode="[1 0]")
+    path = write_pdf(tmp_path / "residual.pdf", [SyntheticPage(images=[photo], overlays=["0 g " + _RIGHT_HALF + " f"])])
+    _extraction, _plan, outcome, _events = _run(path)
+    (image,) = outcome.images
+    assert outcome.replaced == 1 and image.original_image_bytes is not None
 
 
 @pytest.mark.parametrize(
     ("case", "image_kwargs", "page_kwargs"),
     [
         ("path_beside_the_frame", dict(), dict(overlays=["0 g 270 300 50 100 re f"])),
-        ("path_under_text_elsewhere", dict(), dict(overlays=["0 g 60 100 200 20 re f"])),
         ("clip_containing_the_frame", dict(clip="40 280 240 140 re W n"), dict()),
         ("form_bbox_containing_the_frame", dict(form_bbox=(0, 0, 400, 600)), dict()),
         # a picture frame cropping its photograph by a point on every side, as layout programs do
         ("clip_cropping_a_point", dict(clip="61 301 198 98 re W n"), dict()),
-        # the same rectangle followed by a lone moveto, as InDesign writes it
-        ("clip_with_a_lone_moveto", dict(clip="61 301 198 98 re 61 399 m W n"), dict()),
-        # the same rectangle as four lines without closepath (a clip is implicitly closed)
-        ("clip_as_four_lines", dict(clip="61 301 m 259 301 l 259 399 l 61 399 l W n"), dict()),
-        # a clip set and restored (q ... Q) before the image is drawn is not in force at the image
-        ("clip_restored_by_Q", dict(), dict(paths=["q 0 0 10 10 re W n Q"])),
     ],
 )
-def test_page_content_that_cannot_reach_the_frame_does_not_decline_a_negative(tmp_path, case, image_kwargs, page_kwargs) -> None:
-    """The declines are evidence-bound, not blanket: a negative with a path beside it, or a clip / form BBox
-    containing its whole frame, is still replaced by its render."""
+def test_an_ink_space_negative_beside_paint_or_inside_a_clip_is_replaced(tmp_path, case, image_kwargs, page_kwargs) -> None:
+    """Paint and clips are not observed: a negative is compared on its whole frame and replaced."""
     path = write_pdf(tmp_path / (case + ".pdf"), [SyntheticPage(images=[_negative_photo(**image_kwargs)], **page_kwargs)])
     _extraction, _plan, outcome, _events = _run(path)
     (image,) = outcome.images
     assert outcome.replaced == 1
     assert image.original_image_bytes is not None
     assert _correlation(_grey(image.image_bytes), _grey(image.original_image_bytes)) < -0.9
-
-
-@pytest.mark.parametrize(
-    ("case", "overlay"),
-    [
-        # a vertical stroke 3 pt right of the frame, 8 pt wide: its paint reaches 1 pt into the frame
-        ("stroke_spilling_in", "8 w 0 G 263 300 m 263 400 l S"),
-        # a filled curve whose end points lie right of the frame and whose bulge reaches into it
-        ("curve_bulging_in", "0 g 270 300 m 150 330 150 370 270 400 c h f"),
-        # a hairline across the frame
-        ("hairline_across", "0 w 0 G 40 350 m 280 350 l S"),
-        # a hairline 0.1 pt inside the right edge: one device pixel wide, it covers the last pixel column
-        # (half a render pixel is 1/3 pt here); as a zero-width line it would not reach a pixel centre
-        ("hairline_along_the_edge", "0 w 0 G 259.9 290 m 259.9 410 l S"),
-    ],
-)
-def test_paint_that_reaches_into_the_frame_declines_even_a_negative(tmp_path, monkeypatch, case, overlay) -> None:
-    """Where paint may reach is bounded conservatively: a stroke's width (with its joins and caps), a curve's
-    control points, a zero-width line's device pixel."""
-    path = write_pdf(tmp_path / (case + ".pdf"), [SyntheticPage(images=[_negative_photo()], overlays=[overlay])])
-    extraction, _plan, outcome, events = _run(path, monkeypatch)
-    assert outcome.replaced == 0 and outcome.images == extraction.images
-    reasons = [context["reason"] for _level, event, context in events if event == "pdf_image_frame_render_declined"]
-    assert reasons == ["paint_over_frame"]
 
 
 @pytest.mark.parametrize(
@@ -199,75 +186,61 @@ def test_the_ordering_key_of_an_image_reaching_past_the_top_is_unchanged(tmp_pat
     assert (image.top, image.bottom, image.source_index) == (0.0, 50.0, 0)
 
 
-def test_the_observed_walk_yields_the_layout_pdfminer_yields(tmp_path) -> None:
-    """The evidence walk only observes: every layout object pdfminer's own ``extract_pages`` yields, in the
-    same order with the same box, on a page with text, paths, a shading, a clip, a mask and a form."""
-    from pdfminer.high_level import extract_pages
+def test_reading_the_image_dictionary_never_raises() -> None:
+    """Round 3 (the lesson of its finding 1): what the extractor reads from the image dictionary -- the
+    cause, the mask -- may not cost the import its images. An unreadable dictionary declines that image."""
+    from docxaicorrector.pdf_import import images as pdf_images
 
-    from docxaicorrector.pdf_import.paint_evidence import iter_pages_with_evidence
-    from pdf_synthetic import SyntheticText
+    class _Exploding(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("invented unreadable dictionary")
 
-    page = SyntheticPage(
-        images=[_correct_photo(clip=_RIGHT_HALF + " W n"), SyntheticImage("jpeg_gray", 60, 100, 160, 150, smask="left_clear"),
-                SyntheticImage("jpeg_rgb", 200, 100, 300, 150, form_bbox=(150, 80, 350, 170), gs_smask=True)],
-        texts=[SyntheticText(40, 520, 11, "An invented line of text."), SyntheticText(40, 500, 11, "Another invented line.")],
-        paths=["0.5 g 20 20 50 50 re f", "1 w 0 G 10 580 m 390 580 l S"],
-        overlays=["q 300 400 80 80 re W n /Sh0 sh Q", "0 g 330 300 m 360 330 340 360 310 340 c f"],
-    )
-    path = write_pdf(tmp_path / "walk.pdf", [page, SyntheticPage(texts=[SyntheticText(40, 300, 12, "A second page.")])])
+    class _Stream:
+        attrs = _Exploding()
 
-    def flatten(element):
-        items = []
-        for child in element:
-            bbox = tuple(round(v, 6) for v in getattr(child, "bbox", ()))
-            items.append((type(child).__name__, bbox, getattr(child, "get_text", lambda: "")()))
-            if hasattr(child, "__iter__") and type(child).__name__ in {"LTFigure", "LTTextBoxHorizontal", "LTTextLineHorizontal"}:
-                items.extend(flatten(child))
-        return items
+    class _Image:
+        stream = _Stream()
 
-    expected = [flatten(layout) for layout in extract_pages(str(path))]
-    observed = [flatten(layout) for layout, _evidence in iter_pages_with_evidence(path)]
-    assert observed == expected
-    assert sum(len(items) for items in expected) > 10
+    assert pdf_images._image_mask(_Image()) == "unreadable"
+    assert pdf_images._is_ink_space(_Image()) is False
 
 
 @pytest.mark.parametrize(
-    ("path", "kind"),
+    ("colour_space", "ink"),
     [
-        ([("m", 0, 0), ("l", 10, 0), ("l", 10, 5), ("l", 0, 5), ("h",)], "rectangle"),
-        ([("m", 0, 0), ("l", 10, 0), ("l", 10, 5), ("l", 0, 5)], "rectangle"),
-        ([("m", 0, 0), ("l", 10, 0), ("l", 10, 5), ("l", 0, 5), ("l", 0, 0)], "rectangle"),
-        ([("m", 0, 0), ("l", 10, 0), ("l", 10, 5), ("l", 0, 5), ("h",), ("m", 0, 5)], "rectangle"),
-        ([("m", 0, 0), ("l", 10, 0), ("l", 10, 5), ("l", 0, 5), ("h",), ("m", 20, 20), ("l", 30, 20), ("l", 30, 30), ("h",)], "other"),
-        ([("m", 0, 0), ("l", 10, 0), ("c", 12, 2, 12, 3, 10, 5), ("l", 0, 5), ("h",)], "other"),
-        ([("m", 0, 0), ("l", 10, 1), ("l", 10, 5), ("l", 0, 5), ("h",)], "other"),
-        ([("m", 0, 0), ("l", 10, 0), ("l", 10, 5), ("l", 10, 0), ("h",)], "other"),
-        ([("m", 0, 0), ("l", 10, 0), ("l", 10, 5), ("l", 5, 5), ("l", 0, 5), ("h",)], "other"),
-        ([], "other"),
+        ("Separation", True),
+        ("DeviceN", True),
+        ("IndexedSeparation", True),
+        ("IndexedRGB", False),
+        ("DeviceGray", False),
+        ("ICCBased", False),
+        ("Unresolvable", False),
     ],
 )
-def test_only_one_axis_aligned_four_corner_subpath_is_a_rectangle_clip(path, kind) -> None:
-    from docxaicorrector.pdf_import.paint_evidence import clip_entry
+def test_the_cause_is_an_ink_space_indexed_over_one_included(colour_space, ink) -> None:
+    from pdfminer.psparser import LIT
 
-    assert clip_entry(path, (1, 0, 0, 1, 0, 0)).kind == kind
+    from docxaicorrector.pdf_import import images as pdf_images
 
+    tint = {"FunctionType": 2}
+    spaces = {
+        "Separation": [LIT("Separation"), LIT("Black"), LIT("DeviceGray"), tint],
+        "DeviceN": [LIT("DeviceN"), [LIT("Black")], LIT("DeviceGray"), tint],
+        "IndexedSeparation": [LIT("Indexed"), [LIT("Separation"), LIT("Black"), LIT("DeviceGray"), tint], 255, b""],
+        "IndexedRGB": [LIT("Indexed"), LIT("DeviceRGB"), 255, b""],
+        "DeviceGray": LIT("DeviceGray"),
+        "ICCBased": [LIT("ICCBased"), {"N": 3}],
+        "Unresolvable": LIT("CS0"),
+    }
 
-def test_paint_reaching_into_a_frame_is_told_from_paint_that_only_borders_it() -> None:
-    from docxaicorrector.pdf_import.images import PdfPaintedRegion
+    class _Stream:
+        attrs = {"ColorSpace": spaces[colour_space]}
 
-    frame = (100.0, 100.0, 200.0, 150.0)
-    half = 0.25
+    class _Image:
+        stream = _Stream()
 
-    def region(box, reach=0.0, hairline=False):
-        return PdfPaintedRegion(1, *box, reach=reach, hairline=hairline, kind="path")
+    assert pdf_images._is_ink_space(_Image()) is ink
 
-    reaches = image_frames._reaches_into
-    assert reaches(region((150, 120, 150, 120)), frame, half)  # a zero-size path inside
-    assert reaches(region((90, 125, 210, 125), hairline=True), frame, half)  # a hairline across
-    assert reaches(region((200.0, 100, 210, 150), reach=0.5), frame, half)  # a stroke spilling in
-    assert not reaches(region((200.0, 100, 210, 150)), frame, half)  # a fill that borders the frame
-    assert not reaches(region((199.8, 100, 210, 150)), frame, half)  # ... or reaches less than half a pixel in
-    assert not reaches(region((100, 10, 200, 90), reach=5.0), frame, half)  # a stroke that stops short
 
 
 def test_the_compare_command_reports_size_only_changes_and_added_or_removed_tails(tmp_path) -> None:
@@ -304,28 +277,39 @@ def test_the_compare_command_reports_size_only_changes_and_added_or_removed_tail
     assert [(d["index"], d["before"], d["after"]) for d in entry["paragraph_differences"]] == [(1, None, ["q", "Normal"])]
 
 
+_PER_IMAGE_STAGES = {
+    # stage: (function in image_frames, counted as checked when it fails)
+    "frame_geometry": ("frame_geometry", 2),
+    "render": ("render_frame", 2),
+    "comparison": ("correlation_with_page", 2),
+    "encode": ("encode_frame_png", 3),
+}
+
+
 @pytest.mark.parametrize("failing_call", ["first", "last"])
-def test_an_encoding_failure_is_one_failed_image_and_the_rest_are_still_replaced(tmp_path, monkeypatch, failing_call) -> None:
-    """Finding 3: the encoder raising for one image keeps that image's bytes, counts it as failed, logs an
-    ERROR -- and every other candidate is still processed."""
+@pytest.mark.parametrize("stage", sorted(_PER_IMAGE_STAGES))
+def test_a_failure_in_one_image_is_one_failed_image_and_the_rest_are_still_replaced(tmp_path, monkeypatch, stage, failing_call) -> None:
+    """Round 2 finding 3 (the encoder), extended in round 3 to every per-image stage: the failing image keeps
+    its bytes, is counted as failed, gets one ERROR -- and every other candidate is still processed."""
     photos = [
         SyntheticImage("jpeg_separation", 60, y, 260, y + 100, pixels=(300, 150), pattern="corner")
         for y in (450, 300, 150)
     ]
     path = write_pdf(tmp_path / "three.pdf", [SyntheticPage(images=photos)])
-    real_encode = image_frames.encode_frame_png
+    name, checked = _PER_IMAGE_STAGES[stage]
+    real = getattr(image_frames, name)
     calls: list[int] = []
 
-    def flaky(image, geometry):
+    def flaky(*args, **kwargs):
         calls.append(1)
         if (failing_call == "first" and len(calls) == 1) or (failing_call == "last" and len(calls) == 3):
-            raise MemoryError("invented encoder failure")
-        return real_encode(image, geometry)
+            raise MemoryError("invented failure at " + stage)
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(image_frames, "encode_frame_png", flaky)
+    monkeypatch.setattr(image_frames, name, flaky)
     extraction, plan, outcome, events = _run(path, monkeypatch)
     assert len(plan.candidates) == 3 and len(calls) == 3
-    assert (outcome.checked, outcome.replaced, outcome.failed) == (3, 2, 1)
+    assert (outcome.checked, outcome.replaced, outcome.failed) == (checked, 2, 1)
     failed_index = 0 if failing_call == "first" else 2
     failed_key = (plan.candidates[failed_index].image.page_number, plan.candidates[failed_index].image.discovery_index)
     errors = [(level, context) for level, event, context in events if event == "pdf_image_frame_render_failed"]
@@ -335,3 +319,20 @@ def test_an_encoding_failure_is_one_failed_image_and_the_rest_are_still_replaced
     kept = [image for image in outcome.images if image.original_image_bytes is None]
     assert [(image.page_number, image.discovery_index) for image in kept] == [failed_key]
     assert {image.image_bytes for image in kept} <= {image.image_bytes for image in extraction.images}
+
+
+@pytest.mark.parametrize("name", ["read_page_geometry", "open_pdf_for_rendering"])
+def test_a_document_level_failure_keeps_every_image_and_counts_each_as_failed(tmp_path, monkeypatch, name) -> None:
+    """The document cannot be read for rendering: no exception leaves the step, every candidate keeps its
+    bytes and gets its own ERROR."""
+    photos = [SyntheticImage("jpeg_separation", 60, y, 260, y + 100, pixels=(300, 150), pattern="corner") for y in (450, 150)]
+    path = write_pdf(tmp_path / "two.pdf", [SyntheticPage(images=photos)])
+
+    def boom(*args, **kwargs):
+        raise OSError("invented unreadable document")
+
+    monkeypatch.setattr(image_frames, name, boom)
+    extraction, _plan, outcome, events = _run(path, monkeypatch)
+    assert outcome.images == extraction.images
+    assert (outcome.checked, outcome.replaced, outcome.failed) == (0, 0, 2)
+    assert [level for level, event, _context in events if event == "pdf_image_frame_render_failed"] == [logging.ERROR, logging.ERROR]

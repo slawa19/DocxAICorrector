@@ -1,6 +1,6 @@
 # Contract: события картинок PDF (срез A) и итог извлечения
 
-**Spec**: [../spec.md](../spec.md) FR-A9, FR-A10 | **Date**: 2026-11-13 (раунд 2)
+**Spec**: [../spec.md](../spec.md) FR-A9, FR-A10 | **Date**: 2026-11-13 (раунд 3 приёмочного ревью)
 
 События отрисовки пишет дочерний процесс разбора (`processing_runtime.py:705-791`); при прогоне раннера они попадают в
 `<run_dir>/app.log` через `DOCX_AI_RUN_LOG_FILE` (`docs/LOGGING_AND_ARTIFACT_RETENTION.md` §1.1). Событие вставки пишет
@@ -14,9 +14,8 @@
 | `pdf_path` | str | как у `pdf_image_extraction_summary` |
 | `page_number`, `discovery_index` | int | ключ картинки |
 | `box` | [float×4] | рамка размещения, pt, 1 знак; истинная, не прижатая к странице (раунд 2 ревью, находка 2) |
-| `colour_space` | str | семейство цветового пространства (справочно; триггером не служит) |
+| `colour_space` | str | семейство цветового пространства; у заменённой — пространство краски (причина, раунд 3) |
 | `correlation` | float | коэффициент корреляции картинки с отрисовкой рамки (< 0 — негатив), 4 знака |
-| `compared_box` | [float×4] \| null | часть рамки, которую показывает обтравка и на которой считалась корреляция; `null`, если обтравка рамку не режет (раунд 2) |
 | `source_width_px`, `source_height_px` | int | пиксели источника |
 | `width_px`, `height_px` | int | пиксели отрисовки (≥ источника) |
 | `scale_dpi` | float | плотность отрисовки |
@@ -27,16 +26,15 @@
 
 `pdf_path`, `page_number`, `discovery_index`, `box`, `colour_space`, `reason`, `detail` (≤ 120 знаков: начало строки поверх
 рамки, ключ другой картинки, матрица размещения или текст расхождения движков). `reason` ∈ `text_over_frame`,
-`image_over_frame`, `masked_image` (прозрачность картинки задаёт маска: её `/SMask`, `/Mask`, `/ImageMask`,
-`/SMaskInData` или мягкая маска графического состояния), `unsupported_placement` (размещение — не прямой масштаб), `unreadable_source` (заголовок файла не
-читается или рамка пуста), `paint_over_frame` (контур или заливка `sh` может лечь на рамку глубже полпикселя отрисовки),
-`clipped_frame` (действующая обтравка — не прямоугольник по осям, или из-под неё не видно ни одного пикселя источника),
-`user_unit` (`/UserUnit` ≠ 1), `outside_crop_box` (рамка не целиком внутри `CropBox`),
+`image_over_frame`, `masked_image` (в словаре картинки `/SMask` или `/Mask`; `detail` — какой, или `unreadable`, если
+словарь не читается), `not_ink_space` (пространство не `Separation`/`DeviceN` и не `Indexed` над ними: причины для
+замены нет; раунд 3), `unsupported_placement` (размещение — не прямой масштаб), `unreadable_source` (заголовок файла не
+читается или рамка пуста), `user_unit` (`/UserUnit` ≠ 1), `outside_crop_box` (рамка не целиком внутри `CropBox`),
 `exceeds_pixel_budget`, `page_geometry_disagrees` (pdfminer и PDFium по-разному меряют страницу), `flat_image` (нет
 разброса яркости). INFO: отказ — штатный исход, картинка остаётся как сегодня. Картинка, сравнённая и похожая на свою
 страницу (r ≥ 0), события не порождает — её считает `frame_render_checked`.
 
-## `pdf_image_frame_render_failed` — ERROR, одно на картинку, отрисовка, сравнение или кодирование которой бросили исключение
+## `pdf_image_frame_render_failed` — ERROR, одно на картинку, рамка, отрисовка, сравнение или кодирование которой бросили исключение
 
 `pdf_path`, `page_number`, `discovery_index`, `box`, `error_type`, `error_message` (≤ 120). Картинка остаётся с исходными
 байтами, остальные картинки обрабатываются дальше (до раунда 2 ревью сбой кодирования PNG прерывал весь план и не
@@ -63,10 +61,10 @@
 
 Уровень — как сегодня: WARNING `pdf_image_extraction_dropped_images` при `skipped > 0`, иначе INFO
 `pdf_image_extraction_summary`. Ожидаемо на корпусе: Rethinking — WARNING, `discovered 316, emitted 55, skipped 261,
-frame_render_checked 31, frame_render_replaced 31, frame_render_declined 24, frame_render_failed 0` (тест корпуса; до
-раунда 2 ревью было 33/32/22: фото стр. 276 теперь отказ `paint_over_frame`, обложка — `outside_crop_box`);
-Money — INFO, сравнено 42, отказ 1 (обложка: текст поверх); Creating — сравнено 55, отказов 7; Value — сравнено 32,
-отказов 10 (`masked_image`); заменено 0 во всех трёх (research R28, замер `round2_probe` 2026-11-13).
+frame_render_checked 32, frame_render_replaced 32, frame_render_declined 23, frame_render_failed 0` (тест корпуса;
+отказы — 22 картинки стр. 151 и обложка `not_ink_space`); Money — INFO, сравнено 0, отказов 43 (текст 1,
+`not_ink_space` 42); Creating — сравнено 0, отказов 62 (текст 7, `not_ink_space` 55); Value — сравнено 0, отказов 42
+(`masked_image` 10, `not_ink_space` 32); заменено 0 во всех трёх (research R29, `work-082/round3_probe.json`).
 
 ## `pdf_text_layer_import_succeeded` — один новый ключ
 

@@ -18,6 +18,7 @@ import docxaicorrector.pdf_import.image_frames as image_frames
 from docxaicorrector.pdf_import.image_frames import (
     DECLINE_EXCEEDS_PIXEL_BUDGET,
     DECLINE_IMAGE_OVER_FRAME,
+    DECLINE_NOT_INK_SPACE,
     DECLINE_OUTSIDE_CROP_BOX,
     DECLINE_TEXT_OVER_FRAME,
     DECLINE_UNSUPPORTED_PLACEMENT,
@@ -50,7 +51,7 @@ _UPRIGHT = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # sentinel: the upright matrix of ``b
 def _image(
     index: int,
     box,
-    family: str | None = "DeviceRGB",
+    family: str | None = "Separation",
     *,
     page: int = 1,
     pixels=(300, 150),
@@ -92,11 +93,18 @@ BOX = (50.0, 100.0, 200.0, 175.0)
 # --------------------------------------------------------------------------- pure decisions
 
 
-@pytest.mark.parametrize("family", ["Separation", "DeviceN", "DeviceGray", "DeviceRGB", "ICCBased", "DeviceCMYK", None])
-def test_every_upright_emitted_image_is_checked_whatever_its_colour_space(family) -> None:
-    """The evidence decides, not the label (finding 3)."""
+@pytest.mark.parametrize(
+    ("family", "ink"),
+    [("Separation", True), ("DeviceN", True), ("DeviceGray", False), ("DeviceRGB", False), ("ICCBased", False), ("DeviceCMYK", False), (None, False)],
+)
+def test_only_an_ink_space_image_is_checked(family, ink) -> None:
+    """The cause half of the trigger (acceptance round 3): only an ink space explains stored bytes that are the
+    inverse of the page; the evidence (the sign) is then read on those. Mutation 'any colour space' makes the
+    light-space rows candidates."""
     plan = plan_frame_replacements(_extraction(_image(0, BOX, family)), [])
-    assert [c.image.discovery_index for c in plan.candidates] == [0]
+    assert [c.image.discovery_index for c in plan.candidates] == ([0] if ink else [])
+    if not ink:
+        assert [d.reason for d in plan.declines] == [DECLINE_NOT_INK_SPACE]
 
 
 def test_the_render_scale_is_the_source_pixel_density() -> None:
@@ -225,11 +233,11 @@ def test_an_ink_space_negative_is_replaced_by_a_render_that_is_the_page(tmp_path
 
 @pytest.mark.parametrize("kind", ["jpeg_gray", "jpeg_rgb"])
 def test_an_image_that_looks_like_its_page_keeps_its_bytes(tmp_path, kind) -> None:
-    """Mutation: replacing whatever the sign makes these replaced."""
+    """Not an ink space: declined before any render (acceptance round 3), the bytes stay."""
     path = write_pdf(tmp_path / (kind + ".pdf"), [_page_with(kind)])
     extraction, outcome = _run(path)
     assert outcome.images == extraction.images
-    assert (outcome.checked, outcome.replaced) == (1, 0)
+    assert (outcome.checked, outcome.replaced, outcome.declined) == (0, 0, 1)
 
 
 def test_a_label_over_the_picture_keeps_the_negative_and_logs_the_decline(tmp_path, monkeypatch) -> None:

@@ -51,24 +51,16 @@ class PdfImageObject:
     original_mime_type: str | None = None
     placement_matrix: tuple[float, float, float, float, float, float] | None = None
     # матрица LTFigure, в которую pdfminer завернул Do картинки, в пространстве макета (с поворотом страницы)
-    # раунд 2 приёмочного ревью (research R28):
+    # раунд 2/3 приёмочного ревью (research R28, R29):
     frame_box: tuple[float, float, float, float] | None = None   # истинная рамка (x0, top, x1, bottom), НЕ прижатая
                                                                  # к странице; top/bottom выше — прижаты (ключ порядка)
-    mask: str | None = None                   # "SMask" | "Mask" | "ImageMask" | "SMaskInData" | "ExtGState SMask"
-    clips: tuple[ClipEntry, ...] = ()         # обтравки в силе при Do: ClipEntry(kind "rectangle"|"other", box top-origin)
-
-
-@dataclass(frozen=True)
-class PdfPaintedRegion:                       # PdfImageExtraction.painted: закрашенный контур или заливка sh
-    page_number: int
-    x0: float; top: float; x1: float; bottom: float   # консервативная рамка, top-origin, не прижата
-    reach: float                              # насколько краска штриха может выйти за рамку
-    hairline: bool                            # штрих нулевой ширины (один пиксель устройства)
-    kind: str                                 # "path" | "shading"
+    ink_space: bool | None = None             # причина: Separation | DeviceN | Indexed над ними; None — не читалось
+    mask: str | None = None                   # "SMask" | "Mask" из словаря картинки; "unreadable" — словарь не читается
 ```
 
-Умолчания `mask=None`, `clips=()` значат «не видели» — так строят картинку тесты решения; извлекатель заполняет их
-всегда (картинка, для которой проход ничего не записал, получает `mask="unknown"` и отказ).
+`ink_space` и `mask` читает обход (`images._is_ink_space`, `images._image_mask`) из словаря потока, который pdfminer уже
+даёт; оба никогда не бросают. Запись, построенная без `ink_space` (тесты решения), получает причину по имени семейства.
+Поля раунда 2 `clips` и `PdfImageExtraction.painted` (`PdfPaintedRegion`) удалены вместе с наблюдателем краски (раунд 3).
 
 Замена — та же картинка (`page_number`, рамка, `source_index`, `discovery_index` те же) с `image_bytes` = PNG
 отрисовки, `mime_type="image/png"`, `display_*` = размер фактической рамки отрисовки и `original_*` = прежние байты.
@@ -86,15 +78,14 @@ DECLINE_OUTSIDE_CROP_BOX = "outside_crop_box"             # рамка не це
 DECLINE_EXCEEDS_PIXEL_BUDGET = "exceeds_pixel_budget"
 DECLINE_PAGE_GEOMETRY_DISAGREES = "page_geometry_disagrees"
 DECLINE_FLAT_IMAGE = "flat_image"
-DECLINE_PAINT_OVER_FRAME = "paint_over_frame"             # раунд 2: контур/заливка может лечь на рамку
-DECLINE_MASKED_IMAGE = "masked_image"                     # раунд 2: прозрачность задаёт маска
-DECLINE_CLIPPED_FRAME = "clipped_frame"                   # раунд 2: обтравка не прямоугольник / не видно ни пикселя
+DECLINE_MASKED_IMAGE = "masked_image"                     # /SMask или /Mask в словаре картинки
+DECLINE_NOT_INK_SPACE = "not_ink_space"                   # раунд 3: причины нет — пространство не краска
+INK_SPACE_FAMILIES = frozenset({"Separation", "DeviceN"})
 
 
 def is_upright_scale(matrix) -> bool: ...
-def visible_box(clips, frame) -> tuple[float, float, float, float] | None: ...  # None — обтравка не прямоугольник
-def correlation_with_page(image_bytes: bytes, rendered, *, source_window=None, render_window=None) -> float | None: ...
-# None — плоская или пустое окно; окна (left, top, right, bottom) px сужают сравнение до видимой части
+def is_ink_space(image: PdfImageObject) -> bool: ...      # причина (FR-A1)
+def correlation_with_page(image_bytes: bytes, rendered) -> float | None: ...   # свидетельство; None — плоская
 
 
 @dataclass(frozen=True)
@@ -103,7 +94,6 @@ class FrameCandidate:
     source_width_px: int
     source_height_px: int
     scale: float                 # px на pt = плотность источника / 72
-    visible_box: tuple[float, float, float, float] | None = None   # часть рамки под обтравкой; None — не режет
 
 
 @dataclass(frozen=True)

@@ -135,6 +135,23 @@ Tier: полный цикл (Конституция III). Раунд 2 (посл
   документы, Changelog спеки. — **Proof**: `work-082/after3/compare.json`, `mutations_round2.txt`,
   `mutations_review_after_round2.txt`.
 
+## Правки по приёмочному ревью среза A, раунд 3 (2026-11-13)
+
+Решение оркестратора — упростить. Решения — spec Changelog «приёмочное ревью Codex, срез A, раунд 3», research R29.
+
+- [x] T036 Удалить наблюдатель краски (`pdf_import/paint_evidence.py`), отказы `paint_over_frame`, `clipped_frame`,
+  сужение сравнения; обход картинок — снова `extract_pages`. — **Proof**: `git show --stat`, тесты.
+- [x] T037 Триггер «причина И свидетельство»; отказ `not_ink_space`; `/SMask`/`/Mask` из словаря; чтение никогда не
+  бросает. — **Proof**: `test_only_an_ink_space_image_is_checked`, `test_cause_half_…`, `test_evidence_half_…`,
+  `test_reading_the_image_dictionary_never_raises`, `test_the_cause_is_an_ink_space_indexed_over_one_included`.
+- [x] T038 [RT] Сдерживание по стадиям (план, геометрия страницы, рамка, отрисовка, сравнение, кодирование, вставка). —
+  **Proof**: `test_spec082_no_failure_in_the_frame_step_changes_what_the_import_delivers`,
+  `test_a_failure_in_one_image_is_one_failed_image_and_the_rest_are_still_replaced`,
+  `test_a_document_level_failure_keeps_every_image_and_counts_each_as_failed`.
+- [x] T039 Замер «`main` | ветка» на четырёх книгах, десять троек глазами (стр. 276 включительно), мутации C1–C13 и
+  повтор N1–N18, документы, Changelog. — **Proof**: `work-082/after4/compare.json`, `mutations_round3.txt`,
+  `mutations_review_after_round3.txt`.
+
 ## Срез B
 
 Задачи не пишутся до ревью дизайна раунда 2 (spec FR-B1…FR-B8, research R23–R24, Q-4). Перечень контрпримеров, которые
@@ -142,5 +159,5 @@ Tier: полный цикл (Конституция III). Раунд 2 (посл
 
 ## Сводка
 
-Срез A: 35 задач (Setup 3, Foundational 1, срез A 9, Polish 8, правки ревью 9, правки ревью раунда 2 — 5). **[RT]**:
-T003, T004, T009–T011, T026. **[IMG]**: T004, T023, T032. **[REQ]**: T001. **[DOC]**: T014–T016, T018, T030, T035.
+Срез A: 39 задач (Setup 3, Foundational 1, срез A 9, Polish 8, правки ревью 9, раунда 2 — 5, раунда 3 — 4). **[RT]**:
+T003, T004, T009–T011, T026, T038. **[IMG]**: T004, T023, T032. **[REQ]**: T001. **[DOC]**: T014–T016, T018, T030, T035.
