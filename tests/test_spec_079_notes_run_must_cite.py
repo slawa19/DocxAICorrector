@@ -213,10 +213,12 @@ def _entry(text: str, status: str) -> SimpleNamespace:
 
 def test_the_gate_counts_untranslated_numbered_prose_that_is_no_notes_run() -> None:
     text = _UNTRANSLATED_NUMBERED_PROSE
-    # The premises: not a notes run (spec 079); read WHOLE, the gate calls it bibliography (three
-    # four-digit numbers); the pair rule accepts the English answer, so only the gate can see it.
+    # The premises: not a notes run (spec 079); three four-digit numbers, which the whole-paragraph
+    # reading called bibliography until spec 083 (it now reads the paragraph as prose by form, so
+    # both readings count it; this test pins the chain reading); the pair rule accepts the English
+    # answer, so only the gate can see it.
     assert output_validation.is_notes_run_paragraph(text) is False
-    assert quality_gate._is_bibliography_or_url_dominant_text(text) is True
+    assert len(quality_gate._BIBLIOGRAPHY_LIKE_PATTERN.findall(text)) >= 3
     assert output_validation.classify_processed_block(_ITS_SOURCE, text) == "valid"
 
     part = output_validation.notes_run_untranslated_part(text)

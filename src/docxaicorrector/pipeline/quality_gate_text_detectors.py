@@ -6,6 +6,11 @@ string/sample predicates that decide language, bibliography/URL dominance, and
 citation-form list-fragment residue. No behaviour change -- ``quality_gate``
 re-exports every name so ``quality_gate.<name>`` / ``late_phases.<name>`` keep
 resolving for callers and the test namespace.
+
+The module imports nothing from the package at load time. Spec 083 added one import inside
+``_reads_as_prose_by_share`` (the prose-form test lives in ``output_validation``, which imports
+this module), so the bibliography shortcut reads the same form definition as the rest of the
+pipeline.
 """
 
 import re
@@ -73,7 +78,43 @@ def _latin_letter_ratio(text: str) -> float:
     return len(latin_letters) / len(letters)
 
 
+def _reads_as_prose_by_share(text: str) -> bool:
+    """Spec 083: is ``text`` prose by FORM -- at least ``PROSE_FORM_MIN_RESIDUE_SHARE`` of its words
+    with a letter are lowercase running words left outside reference material?
+
+    The share half of the repository's one prose-form test (``output_validation.prose_form_word_counts``,
+    spec 064 FR-006): title spans of title length, parentheticals and brackets, address-shaped tokens,
+    tokens with a digit and short abbreviations are reference material; what is left in lowercase is the
+    running text of a sentence. A bibliography is names, capitalised titles, places, publishers and
+    numbers, so its share stays low; a sentence is mostly lowercase words. Script-neutral: a lowercase
+    letter of any cased script counts, and text with no cased letters has no residue and is not prose by
+    this test (the old behaviour).
+
+    Imported inside the function: ``output_validation`` imports this module (``_latin_letter_ratio``),
+    so a module-level import would be a cycle -- the arrangement ``paragraph_break_detection`` uses.
+    """
+    from docxaicorrector.pipeline.output_validation import PROSE_FORM_MIN_RESIDUE_SHARE, prose_form_word_counts
+
+    residue, total = prose_form_word_counts(text)
+    return bool(total) and residue / total >= PROSE_FORM_MIN_RESIDUE_SHARE
+
+
 def _is_bibliography_or_url_dominant_text(text: str) -> bool:
+    """Should the whole-paragraph untranslated-body test skip ``text`` as bibliographic apparatus?
+
+    Spec 083: three bibliographic hits (``_BIBLIOGRAPHY_LIKE_PATTERN``: a four-digit number, a year in
+    brackets, or a bibliographic word) are bibliography only when the paragraph is NOT prose by form
+    (``_reads_as_prose_by_share``). A bare count of four-digit numbers cannot tell a reference list
+    from a sentence that mentions three years, and an English prose paragraph left untranslated was
+    invisible to the gate. Measured 2026-11-13 on the four English corpus books read as if returned
+    untranslated: the count hid 108 prose paragraphs, and with the form condition 107 of them are
+    counted (the one left is a quotation set in italics line by line, which the share reads as title
+    spans), as are 13 notes of commentary; every note made of references stays skipped (highest share
+    among them 0.363, lowest among the counted prose 0.417). On the 7 078 delivered paragraphs of the
+    four translations no count changes. Numbers in spec 083.
+
+    The address branch and the numbered-lines branch are unchanged (spec 083 Non-goals).
+    """
     stripped = _strip_structural_markdown_prefix(text)
     if not stripped:
         return False
@@ -81,7 +122,7 @@ def _is_bibliography_or_url_dominant_text(text: str) -> bool:
         words = _LATIN_WORD_PATTERN.findall(stripped)
         return len(words) < 40
     bibliography_hits = len(_BIBLIOGRAPHY_LIKE_PATTERN.findall(stripped))
-    if bibliography_hits >= 3:
+    if bibliography_hits >= 3 and not _reads_as_prose_by_share(stripped):
         return True
     lines = [line.strip() for line in stripped.splitlines() if line.strip()]
     if lines and sum(1 for line in lines if re.match(r"^\s*(?:\[\d+\]|\d+[.)])\s+", line)) / len(lines) >= 0.5:
