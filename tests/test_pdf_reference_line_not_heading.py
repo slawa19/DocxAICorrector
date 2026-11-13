@@ -7,9 +7,11 @@ entry is set in title-cased words, the typographic heading path
 indent and the case are its heading evidence, and the sanity invariant that keeps a line that
 cites from becoming a heading (``_looks_like_footnote_or_citation_tail``) read only that one
 line, while the entry's year sat on the wrapped line under it. The rule
-(``_opens_a_wrapped_citation_entry``) asks three things of such a line, each read off the page:
-the next line wraps to the hanging indent of a run of entries, the line ran out of room for the
-next line's first word, and the two lines read together as a citation.
+(``_opens_a_wrapped_citation_entry``) asks four things of such a line, each read off the page:
+the next line wraps to the hanging indent of a run of entries, the run is not prose set with a
+first-line indent (no full line at the indent runs on at the margin -- Codex acceptance review,
+P1), the line ran out of room for the next line's first word, and the two lines read together as
+a citation.
 
 What the tests below prove, and how:
   * POSITIVE tests -- the entry line is no longer a heading, and without the rule it is one
@@ -248,24 +250,109 @@ def test_condition_hanging_run__full_width_heading_above_prose_that_cites_stays_
     assert "The Quiet Accounting of the Northern Harbours and Their Patient Clerks" in _headings(spans)
 
 
-def test_condition_ran_out_of_room__short_heading_over_indented_prose_that_cites_stays_a_heading() -> None:
-    # Pins the line-full condition. Prose set with a first-line indent shows the margin / indent
-    # step at every paragraph start, so a short heading at the margin over an indented first
-    # line sits in such a "run" too, and the two lines read together cite. The heading ended
-    # short, for a reason of its own. Mutation: drop `_entry_line_ran_out_of_room` -> demoted.
-    indent = _LEFT + 16.0
+_INDENTED_PROSE: list[Row] = [
+    ("In 1874, the clerks of the northern ports began to keep a second ledger for", _LEFT + 16.0, 440.0, _BODY, False),
+    ("the guild, and the habit spread along the coast within a single decade.", _LEFT, 420.0, _BODY, False),
+    ("Some towns resisted the change for many years and kept to the old books.", _LEFT + 16.0, 440.0, _BODY, False),
+    ("They argued that one ledger was enough for an honest harbour master.", _LEFT, 400.0, _BODY, False),
+]
+_FULL_HEADING = "The Quiet Accounting of the Northern Harbours and Their Patient Clerks Too"
+
+
+def test_condition_first_line_indent__full_width_heading_over_indented_prose_stays_a_heading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Codex acceptance review, P1: prose set with a first-line indent shows the margin / indent
+    # step at every paragraph start, so a heading that fills the measure over such prose sat in
+    # a "run" (H), ran out of room (R), and read as a citation with the first prose line, which
+    # carries a year after a comma (C). What tells the run is prose: a full line at the indent
+    # runs on at the margin. Mutation: drop `_run_returns_running_text_to_the_margin` -> demoted.
+    spans = _page([(_FULL_HEADING, _LEFT, _FULL, _BODY, True), *_INDENTED_PROSE], gap_before=_PITCH * 2.0)
+
+    assert _FULL_HEADING in _headings(spans)
+
+    # Anti-vacuum: without the first-line-indent test the other three conditions hold here.
+    monkeypatch.setattr(logical_import, "_run_returns_running_text_to_the_margin", lambda *args, **kwargs: False)
+    assert _FULL_HEADING not in _headings(spans)
+
+
+def test_full_width_heading_over_a_one_line_paragraph_then_indented_prose_stays_a_heading() -> None:
+    # A variant of the review's shape: the first paragraph is one short line, so the line under
+    # the heading never runs on; the paragraphs after it do.
     spans = _page(
         [
-            ("The Harbour Accounts", _LEFT, 170.0, _BODY, True),
-            ("In 1874, the clerks of the northern ports began to keep a second ledger for", indent, 440.0, _BODY, False),
-            ("the guild, and the habit spread along the coast within a single decade.", _LEFT, 420.0, _BODY, False),
-            ("Some towns resisted the change for many years and kept to the old books.", indent, 440.0, _BODY, False),
-            ("They argued that one ledger was enough for an honest harbour master.", _LEFT, 400.0, _BODY, False),
+            (_FULL_HEADING, _LEFT, _FULL, _BODY, True),
+            ("In 1874, the clerks began a second ledger.", _LEFT + 16.0, 280.0, _BODY, False),
+            *_INDENTED_PROSE[2:],
+            *_INDENTED_PROSE[:2],
         ],
         gap_before=_PITCH * 2.0,
     )
 
+    assert _FULL_HEADING in _headings(spans)
+
+
+def test_full_width_heading_over_an_indented_block_quotation_stays_a_heading() -> None:
+    spans = _page(
+        [
+            (_FULL_HEADING, _LEFT, _FULL, _BODY, True),
+            ("In 1874, the clerks of the northern ports began to keep a second ledger for", _LEFT + 16.0, 440.0, _BODY, False),
+            ("the guild, and the habit spread along the coast within a single decade,", _LEFT + 16.0, 430.0, _BODY, False),
+            ("and so the second ledger outlived the guild that had asked for it.", _LEFT + 16.0, 380.0, _BODY, False),
+            *_INDENTED_PROSE[2:],
+        ],
+        gap_before=_PITCH * 2.0,
+    )
+
+    assert _FULL_HEADING in _headings(spans)
+
+
+def test_full_width_heading_over_a_numbered_list_stays_a_heading() -> None:
+    spans = _page(
+        [
+            (_FULL_HEADING, _LEFT, _FULL, _BODY, True),
+            ("1. In 1874, the clerks of the northern ports began to keep a second", _LEFT, 440.0, _BODY, False),
+            ("ledger for the guild of the port.", _LEFT + 16.0, 260.0, _BODY, False),
+            ("2. In 1881, the southern ports followed, though not all of", _LEFT, 430.0, _BODY, False),
+            ("them kept it for long.", _LEFT + 16.0, 200.0, _BODY, False),
+        ],
+        gap_before=_PITCH * 2.0,
+    )
+
+    assert _FULL_HEADING in _headings(spans)
+
+
+def test_short_heading_over_indented_prose_that_cites_stays_a_heading() -> None:
+    # The same prose under a short heading: held by the first-line-indent test and by R.
+    spans = _page([("The Harbour Accounts", _LEFT, 170.0, _BODY, True), *_INDENTED_PROSE], gap_before=_PITCH * 2.0)
+
     assert "The Harbour Accounts" in _headings(spans)
+
+
+def test_condition_ran_out_of_room__author_label_over_a_hanging_list_is_not_decided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pins the line-full condition. A list set with a hanging indent in which an author's name
+    # stands at the margin as a label over the works at the indent: the name line ended short,
+    # for a reason of its own, so the rule does not decide it, although the run is a hanging one
+    # and the name plus the first work read as a citation. Mutation: drop
+    # `_entry_line_ran_out_of_room` -> demoted.
+    rows: list[Row] = [
+        ("Edith Marlow", _ENTRY, 140.0, _BODY, False),
+        ("The Ledgers of Small Harbours (Portsmouth: Tidewater Press, 1987).", _HANG, 420.0, _BODY, False),
+        ("Moorings and Tolls of the Northern Coast and Its Many Small Ports (Leith:", _HANG, _FULL, _BODY, False),
+        ("Grey Gull Books, 1992).", _HANG, 200.0, _BODY, False),
+        ("Ansel Quill", _ENTRY, 130.0, _BODY, False),
+        ("Salt, Fish and Fees: The Port Towns (Bristol: Harbour Lane, 2001).", _HANG, 400.0, _BODY, False),
+    ]
+    spans = _page(rows)
+
+    with_rule = [text for text in _headings(spans) if text == "Edith Marlow"]
+    _rule_off(monkeypatch)
+    without_rule = [text for text in _headings(spans) if text == "Edith Marlow"]
+
+    assert with_rule == ["Edith Marlow"]
+    assert with_rule == without_rule
 
 
 def test_condition_citation__hanging_list_that_does_not_cite_keeps_its_headings(monkeypatch: pytest.MonkeyPatch) -> None:

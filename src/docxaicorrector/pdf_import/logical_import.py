@@ -1593,25 +1593,34 @@ def _opens_a_wrapped_citation_entry(
     heading, but it reads the one line; an entry that wraps before its year or address
     ("Surname, A. *A Title of Some Length* (City: Publisher" + "Press 1999)") passes it, and
     the indent of a hanging-indent list together with title-cased words is enough for the
-    style clusters to call that line a heading. All three are required, each read off the page:
+    style clusters to call that line a heading. All four are required, each read off the page:
       * the next line wraps to the hanging indent of a run (`_line_wraps_to_the_hanging_indent`,
         the spec 081 test): it starts right of `span` by the first-line-indent step, and the
         unbroken run of same-size lines on the page shows that margin / indent pair at least
-        twice. A heading above a list, or above prose, is followed by a line at the margin;
+        twice. A heading above a list, or above prose set flush, is followed by a line at the
+        margin;
+      * the run is not prose set with a first-line indent
+        (`_run_returns_running_text_to_the_margin`): nowhere in it does a full line at the indent
+        run on at the margin. Prose shows the margin / indent step at every paragraph start too;
+        under a full-width heading it read as a list (Codex acceptance review, P1);
       * `span` ran out of room for the next line's first word (`_entry_line_ran_out_of_room`):
-        in prose set with a first-line indent a short heading at the margin is also followed by
-        an indented line, but it ended for a reason of its own;
+        a short line at the margin over the indent -- an author set as a label above his works
+        -- ended for a reason of its own;
       * the line and the next line read together as a citation by the same invariant.
     The deterministic heading paths (a chapter label, a numbered section heading) never reach
     this: it is asked only on the typographic path. The run is looked up on `span`'s page, so
     nothing is compared across a page break, where the edges of facing pages differ. Measured
     2026-11-13 on the four corpus PDFs with the classifier as it stood before this rule: of 677
-    lines typed heading by typography, 3 hold all three -- the first lines of three entries of
+    lines typed heading by typography, 3 hold all four -- the first lines of three entries of
     one reference list in Creating Wealth -- and they are the only lines for which the run test
     holds at all (spec 084)."""
     if next_span is None:
         return False
     if not _line_wraps_to_the_hanging_indent(
+        span, next_span, page_lines=page_lines, layout_profile=layout_profile
+    ):
+        return False
+    if _run_returns_running_text_to_the_margin(
         span, next_span, page_lines=page_lines, layout_profile=layout_profile
     ):
         return False
@@ -4085,12 +4094,27 @@ def _hanging_indent_run_entry_count(
     `_entry_continuation_keeps_the_wrap_indent` gives an edge. An entry of the run is a line at
     the margin directly followed by a line at the indent. Zero when the block does not hold
     the head's first line too."""
+    run = _hanging_indent_run(page_lines, head_first_line, tail_first_line)
+    return sum(
+        1
+        for (_, upper), (_, lower) in zip(run, run[1:])
+        if upper == "margin" and lower == "indent"
+    )
+
+
+def _hanging_indent_run(
+    page_lines: list[PdfTextSpan],
+    head_first_line: PdfTextSpan,
+    tail_first_line: PdfTextSpan,
+) -> list[tuple[PdfTextSpan, str | None]]:
+    """The run `_hanging_indent_run_entry_count` reads, line by line with its edge ('margin' or
+    'indent'); empty when there is no run that holds both lines."""
     size = _span_font_size(tail_first_line)
     if size is None:
-        return 0
+        return []
     index = next((k for k, line in enumerate(page_lines) if line is tail_first_line), None)
     if index is None:
-        return 0
+        return []
     margin, indent, tolerance = float(head_first_line.x0), float(tail_first_line.x0), 0.5 * size
 
     def belongs(line: PdfTextSpan) -> bool:
@@ -4115,16 +4139,11 @@ def _hanging_indent_run_entry_count(
         end += 1
     block = page_lines[start : end + 1]
     if not any(line is head_first_line for line in block):
-        return 0
-    positions = [
-        _hanging_indent_line_position(line, margin=margin, indent=indent, tolerance=tolerance)
+        return []
+    return [
+        (line, _hanging_indent_line_position(line, margin=margin, indent=indent, tolerance=tolerance))
         for line in block
     ]
-    return sum(
-        1
-        for upper, lower in zip(positions, positions[1:])
-        if upper == "margin" and lower == "indent"
-    )
 
 
 def _entry_line_sits_at_the_hanging_indent(
@@ -4180,6 +4199,34 @@ def _line_wraps_to_the_hanging_indent(
     return (
         _hanging_indent_run_entry_count(page_lines, entry_first_line, line)
         >= _HANGING_INDENT_MIN_RUN_ENTRIES
+    )
+
+
+def _run_returns_running_text_to_the_margin(
+    entry_first_line: PdfTextSpan,
+    line: PdfTextSpan,
+    *,
+    page_lines: list[PdfTextSpan],
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """Spec 084 (Codex acceptance review, P1): the margin / indent run is set with a FIRST-LINE
+    indent, not a hanging one.
+
+    The two are mirror images and both show the margin -> indent step at every item, so the
+    step alone does not tell them apart (prose under a full-width heading counted as a list of
+    references). What does is where running text goes after a line at the indent that ran out
+    of room (`_entry_line_ran_out_of_room`): in a hanging-indent list it wraps to the indent
+    again -- the entry goes on under itself; in prose set with a first-line indent the
+    paragraph's first line is at the indent and its text runs on at the margin. One such return
+    anywhere in the run makes it prose."""
+    run = _hanging_indent_run(page_lines, entry_first_line, line)
+    return any(
+        upper == "indent"
+        and lower == "margin"
+        and _entry_line_ran_out_of_room(
+            upper_line, _normalize_text(lower_line.text), layout_profile=layout_profile
+        )
+        for (upper_line, upper), (lower_line, lower) in zip(run, run[1:])
     )
 
 
