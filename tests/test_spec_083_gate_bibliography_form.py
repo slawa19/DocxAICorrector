@@ -100,6 +100,56 @@ _AUTHOR_DATE_REFERENCES = (
     "of the older pilots. Quayside Press. Brandt, L. (2016). How the northern ports share their dues with the "
     "villages along the channel. Saltmarsh Books."
 )
+# (f) Review round 2 -- the year as a sentence of its own: Name, I. 2009. Title. Place: Publisher. and the
+# full-name variant; then a range and a letter suffix.
+_YEAR_SENTENCE_INITIALS = (
+    "Ferrow, M. 2009. How small harbour towns pay for their ferries and keep the lights on during long winters. "
+    "Kelbrook: Saltmarsh Books. Okonkwo, T. 2013. Why coastal guilds lend to fishing crews and protect the jobs "
+    "of the older pilots. Kelbrook: Quayside Press. Brandt, L. 2016. How the northern ports share their dues with "
+    "the villages that keep the channel clear. Kelbrook: Saltmarsh Books."
+)
+_YEAR_SENTENCE_FULL_NAMES = _YEAR_SENTENCE_INITIALS.replace("Ferrow, M.", "Ferrow, Marta.").replace(
+    "Okonkwo, T.", "Okonkwo, Tobi."
+).replace("Brandt, L.", "Brandt, Lena.")
+_YEAR_RANGE_REFERENCES = _YEAR_SENTENCE_FULL_NAMES.replace("Marta. 2009.", "Marta. 2009–2011.").replace(
+    "Tobi. 2013.", "Tobi. 2013-2014."
+)
+_YEAR_SUFFIX_REFERENCES = (
+    "Ferrow, Marta. 2009a. How small harbour towns pay for their ferries and keep the lights on during long "
+    "winters. Kelbrook: Saltmarsh Books. Ferrow, Marta. 2009b. Why coastal guilds lend to fishing crews and "
+    "protect the jobs of the older pilots. Kelbrook: Quayside Press. Okonkwo, Tobi. 2013. How the northern ports "
+    "share their dues with the villages along the channel. Kelbrook: Saltmarsh Books. Brandt, Lena. 2016. How "
+    "the tides were measured in the old harbour. Kelbrook: Saltmarsh Books."
+)
+# Prose whose sentences END in a year, every other one: the year follows a word, the sentence is not only a
+# year -- if it marked the sentence, each following sentence would be read with it and nothing would count.
+_PROSE_ENDING_IN_YEARS = (
+    "The last great storm came to the northern quay in 1987. The council did nothing for years, and the pilots "
+    "repaired the timber themselves every spring. The old lighthouse fell into the channel in 1994. Nobody "
+    "rebuilt it, and the channel silted up within a decade. It happened in 1998. The town never recovered, and "
+    "the last boats left for the river in 2003."
+)
+# Prose whose sentences OPEN with a year: the year runs on into the sentence, it is not a sentence of its own.
+_PROSE_OPENING_WITH_YEARS = (
+    "Storms came to the northern quay almost every winter of that century. 1987 was the worst of them all, and "
+    "half of the old timber piles were lost in a single night. The council did nothing for years. 1994 brought "
+    "another storm, and the lighthouse at the end of the quay fell into the channel. Nobody rebuilt it. 2003 saw "
+    "the last of the boats leave the harbour for the towns along the river."
+)
+# A chronicle: a year, then ONE sentence, then the next year -- the form of the author-date list.
+_CHRONICLE_ONE_SENTENCE_PER_YEAR = (
+    "1998. The harbour closed after the winter storms, and the pilots were told to look for work in the south. "
+    "1999. The ferries stopped, and the villages on the far shore were cut off for most of the year. 2000. The "
+    "council sold the old quay to a trading company that never came back to use it. 2001. The last of the "
+    "pilots left the town with their families and their boats."
+)
+# A chronicle with two sentences per year: the second sentence follows an unmarked one and is running text.
+_CHRONICLE_TWO_SENTENCES_PER_YEAR = (
+    "1998. The harbour closed after the winter storms. The pilots were told to look for work in the south, and "
+    "most of them went. 1999. The ferries stopped for good. The villages on the far shore were cut off for most "
+    "of the year, and the school there closed. 2000. The council sold the old quay. Nobody ever came back to use "
+    "it, and the timber rotted where it stood."
+)
 # Prose whose three years include one in brackets: one sentence carries a mark, the others do not.
 _PROSE_WITH_ONE_BRACKETED_YEAR = (
     "The harbour guild of Kelbrook rebuilt its northern quay in 1987, after a winter of storms had left half of "
@@ -243,6 +293,51 @@ def test_a_title_in_the_sentence_after_the_year_belongs_to_its_entry() -> None:
     _premises_of_a_plain_title_list(text)
     assert detectors._is_bibliography_or_url_dominant_text(text) is True
     assert quality_gate._untranslated_body_char_count(text) == 0
+
+
+def test_a_year_standing_as_a_sentence_marks_its_entry() -> None:
+    """Review round 2: ``Name, I. 2009. Title. Place: Publisher.`` and ``Name, First. 2009. ...`` -- both
+    exempt before spec 083 -- do not give the FATAL verdict on a correct translation, even as one long paragraph."""
+    translated = [_PROSE_WITH_YEARS_RU] * 200
+    for text in (_YEAR_SENTENCE_INITIALS, _YEAR_SENTENCE_FULL_NAMES):
+        _premises_of_a_plain_title_list(text)
+        assert output_validation.has_hard_reference_mark(text) is False
+        assert detectors._DATE_FIELD_YEAR_PATTERN.search(text) is None
+        assert detectors._is_bibliography_or_url_dominant_text(text) is True
+        long_list = " ".join([text] * 6)
+        assert len(long_list) >= 2351
+        report = _report(*(translated + [long_list]))
+        assert report["untranslated_body_text_chars"] == 0
+        assert "untranslated_body_text_above_threshold" not in report["gate_reasons"]
+
+
+def test_a_year_range_or_a_lettered_year_stands_as_a_sentence_too() -> None:
+    for text in (_YEAR_RANGE_REFERENCES, _YEAR_SUFFIX_REFERENCES):
+        _premises_of_a_plain_title_list(text)
+        assert detectors._is_bibliography_or_url_dominant_text(text) is True
+        assert quality_gate._untranslated_body_char_count(text) == 0
+
+
+def test_a_sentence_ending_or_opening_with_a_year_is_still_running_text() -> None:
+    for text in (_PROSE_ENDING_IN_YEARS, _PROSE_OPENING_WITH_YEARS):
+        assert _reaches_whole_paragraph_path(text)
+        assert len(detectors._BIBLIOGRAPHY_LIKE_PATTERN.findall(text)) >= 3
+        assert quality_gate._untranslated_body_char_count(text) == len(text)
+
+
+def test_a_chronicle_with_one_sentence_per_year_reads_as_a_list() -> None:
+    """The accepted cost of the year-as-sentence mark (spec 083, review round 2): a chronicle left in English
+    whose every year is followed by ONE sentence is not counted -- exactly as before spec 083, when its three
+    years hid it. A chronicle whose years carry two sentences is counted."""
+    hidden = _CHRONICLE_ONE_SENTENCE_PER_YEAR
+    assert _reaches_whole_paragraph_path(hidden)
+    assert len(detectors._BIBLIOGRAPHY_LIKE_PATTERN.findall(hidden)) >= 3
+    assert quality_gate._untranslated_body_char_count(hidden) == 0
+    counted = _CHRONICLE_TWO_SENTENCES_PER_YEAR
+    assert _reaches_whole_paragraph_path(counted)
+    assert len(detectors._BIBLIOGRAPHY_LIKE_PATTERN.findall(counted)) >= 3
+    # the leading "1998. " is read as a list-item prefix and stripped before counting
+    assert quality_gate._untranslated_body_char_count(counted) == len(detectors._strip_structural_markdown_prefix(counted))
 
 
 def test_a_reference_note_with_a_short_pointer_stays_skipped() -> None:

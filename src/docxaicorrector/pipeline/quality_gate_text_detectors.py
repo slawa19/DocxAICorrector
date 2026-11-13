@@ -106,15 +106,25 @@ _SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"“‘(*])")
 # Spec 083: a year in the DATE FIELD of a reference -- after a comma, alone or behind one capitalised
 # word (", 2009", ", March 2013", ", Spring 2009"). A year in running text follows a word, not a comma.
 _DATE_FIELD_YEAR_PATTERN = re.compile(r",\s*(?:[A-Z][^\W\d_]*\s+)?(?:1[5-9]\d\d|20\d\d)(?!\d)")
+# Spec 083 (review round 2): a year that stands as a sentence of its own -- right after a full stop and
+# closed by one, optionally with a one-letter suffix or as a range ("Rowan, A. 2009. Title.", "Rowan,
+# Alice. 2009a.", "2009-2011."). Running prose puts a year inside a sentence, after a word.
+_YEAR_ALONE = r"(?:1[5-9]\d\d|20\d\d)[a-z]?"
+_YEAR_SENTENCE_PATTERN = re.compile(rf"[.!?]\s+{_YEAR_ALONE}(?:\s*[–-]\s*{_YEAR_ALONE})?\.(?=\s|$)")
 
 
 def _carries_reference_mark(sentence: str) -> bool:
     """Spec 083: does the sentence say where a work is found -- a year in brackets, a page or volume
-    locator, a web address (``output_validation.has_hard_reference_mark``, spec 077) or a year in the
-    date field (``_DATE_FIELD_YEAR_PATTERN``)?"""
+    locator, a web address (``output_validation.has_hard_reference_mark``, spec 077), a year in the
+    date field (``_DATE_FIELD_YEAR_PATTERN``) or a year standing as a sentence of its own
+    (``_YEAR_SENTENCE_PATTERN``, the author-date layout ``Name, I. 2009. Title. Place: Publisher.``)?"""
     from docxaicorrector.pipeline.output_validation import has_hard_reference_mark
 
-    return has_hard_reference_mark(sentence) or _DATE_FIELD_YEAR_PATTERN.search(sentence) is not None
+    return (
+        has_hard_reference_mark(sentence)
+        or _DATE_FIELD_YEAR_PATTERN.search(sentence) is not None
+        or _YEAR_SENTENCE_PATTERN.search(sentence) is not None
+    )
 
 
 def _has_unmarked_running_sentence(text: str) -> bool:
