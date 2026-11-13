@@ -1,91 +1,67 @@
-# Contract: события областей иллюстраций и итог извлечения картинок PDF
+# Contract: события картинок PDF (срез A) и итог извлечения
 
-**Spec**: [../spec.md](../spec.md) FR-012 | **Date**: 2026-11-13
+**Spec**: [../spec.md](../spec.md) FR-A9, FR-A10 | **Date**: 2026-11-13 (раунд 2)
 
-Все события пишет дочерний процесс разбора (`processing_runtime.py:705-791`); при прогоне раннера они попадают в
-`<run_dir>/app.log` через `DOCX_AI_RUN_LOG_FILE` (`docs/LOGGING_AND_ARTIFACT_RETENTION.md` §1.1). Уровни — по §2
-документа логирования. Текст книги в событиях — только начало ≤ 120 знаков (§4 п. 5). Имена проверены на отсутствие в
-каталоге §3 и в `src/` (2026-11-13).
+События отрисовки пишет дочерний процесс разбора (`processing_runtime.py:705-791`); при прогоне раннера они попадают в
+`<run_dir>/app.log` через `DOCX_AI_RUN_LOG_FILE` (`docs/LOGGING_AND_ARTIFACT_RETENTION.md` §1.1). Событие вставки пишет
+родитель при сборке DOCX. Текст книги — только начало ≤ 120 знаков (§4 п. 5). Имена проверены на отсутствие в каталоге §3
+и в `src/` (2026-11-13).
 
-## `pdf_figure_region_rendered` — INFO, одно на принятую область
+## `pdf_image_frame_rendered` — INFO, одно на заменённую картинку
 
 | Ключ | Тип | Смысл |
 |---|---|---|
-| `filename` | str | имя загрузки (как у `pdf_import_over_budget`) |
-| `page_number` | int | 1-based |
-| `box` | [float×4] | рамка области, pt, 1 знак после запятой |
-| `seed_kind` | str | `non_emittable` \| `ink_space` |
-| `resolution_dpi` | float | после потолка FR-008 |
-| `width_px`, `height_px` | int | размер PNG |
+| `pdf_path` | str | как у `pdf_image_extraction_summary` |
+| `page_number`, `discovery_index` | int | ключ картинки |
+| `box` | [float×4] | рамка размещения, pt, 1 знак |
+| `colour_space` | str | семейство (`Separation` / `DeviceN`) |
+| `source_width_px`, `source_height_px` | int | пиксели источника |
+| `width_px`, `height_px` | int | пиксели отрисовки (≥ источника) |
+| `scale_dpi` | float | плотность отрисовки |
 | `bytes` | int | размер PNG |
 | `grayscale` | bool | PNG в оттенках серого |
-| `images_absorbed` | int | все картинки области |
-| `images_absorbed_emittable` | int | из них те, что вышли бы отдельно |
-| `paths_absorbed` | int | пути области |
-| `lines_suppressed` | int | строк убрано из текста |
-| `chars_suppressed` | int | их знаков |
-| `suppressed_preview` | str | начало описания картинки, ≤ 120 знаков |
 
-## `pdf_figure_region_declined` — INFO, одно на отклонённую область
+## `pdf_image_frame_render_declined` — INFO, одно на картинку-кандидата без замены
 
-| Ключ | Тип | Смысл |
-|---|---|---|
-| `filename`, `page_number`, `box`, `seed_kind` | | как выше |
-| `reason` | str | `body_size_text` (G1) \| `full_measure_line` (G2); при обоих — `body_size_text` |
-| `blocking_text_preview` | str | начало строки-причины, ≤ 120 знаков |
-| `images_kept` | int | картинок области, оставшихся как сегодня |
+`pdf_path`, `page_number`, `discovery_index`, `box`, `colour_space`, `reason` (`text_over_frame` | `image_over_frame` |
+`exceeds_pixel_budget` | `outside_crop_box`), `detail` (≤ 120 знаков: начало строки поверх рамки или ключ другой
+картинки). INFO: отказ — штатный исход, картинка остаётся как сегодня.
 
-INFO, а не WARNING: отказ — штатный исход правила (страница остаётся как до спеки), не деградация.
+## `pdf_image_frame_render_failed` — ERROR, одно на картинку, отрисовка которой бросила исключение
 
-## `pdf_figure_region_render_failed` — ERROR, одно на область, которую не удалось отрисовать
+`pdf_path`, `page_number`, `discovery_index`, `box`, `error_type`, `error_message` (≤ 120). Картинка остаётся с исходными
+байтами. ERROR — дефект кода или входа; уведомления в интерфейсе нет.
 
-| Ключ | Тип | Смысл |
-|---|---|---|
-| `filename`, `page_number`, `box` | | как выше |
-| `error_type` | str | класс исключения |
-| `error_message` | str | `str(exc)`, ≤ 120 знаков |
+## `pdf_image_replacement_insert_failed` — ERROR, родитель, при сбое вставки PNG-замены в DOCX
 
-Страница остаётся как до спеки (FR-011). ERROR — потому что это дефект кода или входа, который надо чинить; в
-интерфейсе уведомления нет.
+`source_index`, `page_number`, `error_type`, `error_message` (≤ 120), `fallback_inserted` (bool — удалось ли вставить
+исходные байты прежним путём). Если не удалось и исходное — дальше прежнее `pdf_text_layer_image_render_dropped`.
 
 ## `pdf_image_extraction_summary` / `pdf_image_extraction_dropped_images` — изменение
 
-Сегодня эмитятся внутри извлекателя (`pdf_import/images.py:99-125`) до правила областей и считают «пропущенной» каждую
-неотдаваемую картинку — на Rethinking это 261 WARNING-«потеря», хотя после спеки они на картинке области. После
-спеки событие эмитится ОДИН раз, после областей (функция в `images.py`, вызов из `_run_pdf_parse_stages`), и:
+Эмитится ОДИН раз после шага замен (функция `images.py`, вызов из `_run_pdf_parse_stages`), раньше — внутри извлекателя.
+Смысл прежних ключей не меняется:
 
-| Ключ | Было | Стало |
-|---|---|---|
-| `discovered` | все `LTImage` | то же |
-| `emitted` | отдаваемые | картинки, ушедшие в DOCX: отдельные + картинки областей |
-| `skipped` | `discovered − emitted` | картинки, не ушедшие никуда: `discovered − absorbed − standalone` |
-| `skipped_no_image_bytes`, `skipped_unknown_mime` | | только по неушедшим |
-| `figure_regions_rendered` | — | новое |
-| `figure_regions_declined` | — | новое |
-| `figure_regions_failed` | — | новое |
-| `figure_region_images_absorbed` | — | новое |
-| `figure_region_paths_absorbed` | — | новое |
-| `figure_region_lines_suppressed` | — | новое |
-| `figure_region_chars_suppressed` | — | новое |
-| `pages_truncated` | | то же |
+| Ключ | Смысл |
+|---|---|
+| `discovered`, `emitted`, `skipped`, `skipped_no_image_bytes`, `skipped_unknown_mime`, `pages_truncated` | как сегодня (`images.py:99-125`); выводятся из `skip_reason` описи |
+| `frame_render_replaced` | новое: заменено отрисовкой рамки |
+| `frame_render_declined` | новое: кандидатов без замены |
+| `frame_render_failed` | новое: сбоев отрисовки |
 
-Уровень: WARNING `pdf_image_extraction_dropped_images`, когда `skipped > 0` (картинка потеряна), иначе INFO
-`pdf_image_extraction_summary` — тот же принцип, что сейчас.
+Уровень — как сегодня: WARNING `pdf_image_extraction_dropped_images` при `skipped > 0`, иначе INFO
+`pdf_image_extraction_summary`. Ожидаемо: Rethinking — WARNING, `discovered 316, emitted 55, skipped 261,
+frame_render_replaced 32, frame_render_declined 12, frame_render_failed 0`; Money / Creating / Value — INFO, новые
+счётчики 0.
 
-Ожидаемо на корпусе (`research.md` R17): Rethinking US1 — `discovered 316, emitted 34, skipped 0,
-figure_regions_rendered 1, figure_region_images_absorbed 283, figure_region_lines_suppressed 54,
-figure_region_chars_suppressed 528` → INFO (сегодня — WARNING с `skipped 261`). US1 + US2 — `emitted 34`,
-`figure_regions_rendered 33`, `figure_region_images_absorbed 315`. Money / Creating / Value — как сегодня, новые
-счётчики нулевые.
+## `pdf_text_layer_import_succeeded` — один новый ключ
 
-## `pdf_text_layer_import_succeeded` — два новых ключа
-
-`figure_regions_rendered`, `figure_region_lines_suppressed` (из `_PdfParseStagesResult`, data-model §6); `image_count`
-— длина итогового списка.
+`images_replaced_by_frame_render` — число картинок-замен в итоговом списке (родитель считает по
+`original_image_bytes is not None`); `images_emitted` — вставленные в DOCX, как раньше.
 
 ## Документы
 
-- `docs/LOGGING_AND_ARTIFACT_RETENTION.md`: события `pdf_image_extraction_*` уходят из §3.8 («зарегистрированы, не
-  описаны») в описанные; три новых события — новым подразделом §3.15 «Спека 082: области иллюстраций PDF»; запись в §7.
+- `docs/LOGGING_AND_ARTIFACT_RETENTION.md`: `pdf_image_extraction_*` — из §3.8 в описанные; четыре новых события —
+  подразделом «Спека 082: картинки PDF как на странице»; запись в §7.
 - `scripts/_list_log_events.py`: `TARGETS` += `src/docxaicorrector/pdf_import/images.py`,
-  `src/docxaicorrector/pdf_import/figure_render.py` (сегодня `images.py` там нет, и его события скрипт не видит).
+  `src/docxaicorrector/pdf_import/image_frames.py`.

@@ -1,218 +1,141 @@
-# Implementation Plan: составная иллюстрация PDF приходит одной картинкой
+# Implementation Plan: картинки PDF — такими, какими их видит читатель страницы
 
-**Branch**: `082-composite-figure` (от `main` @ `9b5db10`) | **Date**: 2026-11-13 | **Spec**: [spec.md](spec.md)
+**Branch**: `082-composite-figure` (от `main` @ `9b5db10`) | **Date**: 2026-11-13 (раунд 2, после ревью дизайна) |
+**Spec**: [spec.md](spec.md)
 
-**Input**: `specs/082-composite-figure-region/spec.md`; решения — [research.md](research.md) (R1–R17); сущности —
-[data-model.md](data-model.md); контракты — [contracts/events.md](contracts/events.md),
-[contracts/import-output.md](contracts/import-output.md); проверка — [quickstart.md](quickstart.md); задачи —
-[tasks.md](tasks.md).
+**Input**: `spec.md` (срезы A и B); решения — [research.md](research.md) (R1, R18–R24 действуют; R2–R7, R9, R11, R17 —
+данные первой редакции среза B); сущности — [data-model.md](data-model.md); контракты —
+[contracts/events.md](contracts/events.md), [contracts/import-output.md](contracts/import-output.md); проверка —
+[quickstart.md](quickstart.md); задачи — [tasks.md](tasks.md).
 
-**База**: `main` @ `9b5db10`. Все `file:line` сверены на нём 2026-11-13. Если ветка фазы 2 уйдёт вперёд — сверить
-заново (Конституция VIII); расхождение — вопрос оркестратору.
+**База**: `main` @ `9b5db10`; ссылки `file:line` сверены 2026-11-13. Если ветка уйдёт вперёд — сверить заново
+(Конституция VIII).
 
 ## Summary
 
-Импорт PDF по текстовому слою находит на странице «составную иллюстрацию» — рисунок из картинок и путей, в котором
-есть картинка, которую извлекатель не отдаёт (US1) или которая хранится в пространстве краски (US2), — растит её рамку
-до соседних рисунков и мелких подписей, отказывается, если внутри текст тела или полная строка, и заменяет всё это
-одной PNG-отрисовкой рамки (`pypdfium2`), с подписями внутри как пикселями и их текстом в Alt Text. Всё — до DOCX, в
-дочернем процессе разбора, под его сроком; ядро конвейера видит обычную картинку. На корпусе меняется одна страница
-(Rethinking 151) и, с US2, 32 фотографии той же книги; три другие книги — побайтно те же.
+**Срез A (строится сейчас).** Импорт PDF по текстовому слою узнаёт выданную картинку, чьи байты по определению формата —
+не вид страницы (цветовое пространство краски `Separation`/`DeviceN`), и заменяет её байты PNG-отрисовкой её собственной
+рамки страницы (`pypdfium2`), если поверх рамки нет чужого текста и чужой картинки. Рамка округляется наружу, плотность =
+плотность источника — пикселей не меньше, чем у источника; размер в DOCX задаётся явно. Текст не трогается вовсе; при
+любом сбое — исходные байты и ERROR. На корпусе: 32 фото Rethinking перестают быть негативами, остальное — побайтно то же.
+
+**Срез B (только дизайн, ревью раунда 2).** Составная иллюстрация: «рисовать» и «удалять текст» разделены; удаление —
+только по уликам E1–E7 (spec FR-B2). Строится после ревью и решения Q-4.
 
 ## Technical Context
 
-**Language/Version**: Python 3.13.5 (WSL `.venv`), CI — 3.12 (`.github/workflows/ci.yml`).
-
-**Primary Dependencies**: `pdfminer.six` 20260107 (есть); **новая** `pypdfium2==5.15.2` (колесо `py3-none-manylinux_2_17_x86_64`,
-BSD-3/Apache-2.0); Pillow 12.3.0 (есть; PNG и `pHYs`); python-docx 1.2.0 (есть; `docPr/@descr`).
-
-**Storage**: нет новых артефактов; картинка области живёт в промежуточном DOCX моста, события — в `app.log`.
-
-**Testing**: pytest через `bash scripts/test.sh` под WSL; синтетический PDF, собранный байтами в тесте (research R16);
-тест корпуса `integration_local` на Rethinking; замерный скрипт на четырёх книгах — при приёмке.
-
-**Target Platform**: WSL Debian, x86_64; CI ubuntu-latest.
-
-**Project Type**: одно Python-приложение `src/docxaicorrector/`.
-
-**Performance Goals**: + ≤ 5 с на импорт Rethinking (замер 1,85 с на 33 области; детекция 0,1 с); обход путей — в уже
-идущем обходе страниц, без третьего прохода `pdfminer` (он стоил бы 5–16 с на книгу).
-
-**Constraints**: ни одной страницы без семени не трогать (по построению); текст не убирается без картинки; ни числа,
-ни строки из книг корпуса в коде и тестах; нет системного пакета; нет пользовательской ветки «деградации».
-
-**Scale/Scope**: 2 новых модуля (`figure_regions.py` ~250 строк, `figure_render.py` ~200), правки 3 модулей
-(`images.py`, `logical_import.py` — одна функция, `processing_runtime.py`), 3 новых тестовых файла + правки
-`tests/test_processing_runtime.py`, 1 замерный скрипт, 5 документов, 2 файла зависимостей, `setup-wsl.sh`.
-
-`NEEDS CLARIFICATION` нет; три инженерных вопроса к оркестратору — в спеке («Открытые вопросы» Q-1…Q-3); они не
-блокируют US1 (по умолчанию: US2 — включено отдельными задачами, рост — «мельче тела», сбой — страница как сегодня).
+**Language/Version**: Python 3.13.5 (WSL `.venv`), CI — 3.12.
+**Primary Dependencies**: `pdfminer.six` 20260107 (есть); **новая** `pypdfium2==5.15.2` (R1); Pillow 12.3.0; python-docx 1.2.0.
+**Storage**: нет новых артефактов; замены живут в промежуточном DOCX моста; события — `app.log`.
+**Testing**: pytest через `bash scripts/test.sh` под WSL; синтетический PDF, собранный тестом байтами (`tests/pdf_synthetic.py`);
+тест корпуса `integration_local` на Rethinking; замерный скрипт четырёх книг с sha1 — при приёмке.
+**Target Platform**: WSL Debian x86_64; CI ubuntu-latest.
+**Performance Goals**: + ≤ 5 с на импорт Rethinking (замер: 33 рамки ≈ 1,9 с); на книгах без кандидатов — 0 (документ
+pdfium не открывается).
+**Constraints**: текст не меняется (срез A); не меньше пикселей, чем у источника; нет системного пакета; нет
+пользовательской ветки деградации; `pdf_import/logical_import.py` — только чтение (его меняет другая ветка).
+**Scale/Scope**: 2 новых модуля (`page_render.py`, `image_frames.py`), правки `images.py`, `__init__.py`,
+`processing_runtime.py` (путь картинок), 3 новых тестовых файла + помощник, правки `tests/test_processing_runtime.py`,
+1 замерный скрипт, документы.
 
 ## Constitution Check
 
-### До дизайна
-
-- **I/II — PASS.** Замеры — `.venv` под WSL (`D:\Temp\claude\work-082\`, вне git); проверки фазы 2 — `scripts/test.sh`
-  через `wsl.exe -d Debian`; замер корпуса — скрипт репозитория.
-- **III — PASS, полный цикл**: два новых модуля, новая зависимость, новый вид картинки и поля событий; порядок изменения
-  модулей важен (опись → правило → отрисовка → склейка).
-- **IV — PASS.** Реальные документы — вход офлайн-замера, без модели; никаких «провалов прогона» спека не разбирает.
-- **V — PASS.** События, поля, уровни — `contracts/events.md`; артефактов нет; документ логирования обновляется задачей.
-- **VI — PASS.** Каждая задача называет свои файлы; `processing_runtime.py` трогают ровно T003, T007, T008, T016–T023, T029
-  (сводка `tasks.md`).
-- **VII — PASS с обязательствами.** Правило — геометрия, кегль, класс символа и роли импортёра; числа — величины
-  документа или существующие константы кода (таблица «Происхождение чисел» спеки). Форма подписи — существующая
-  константа импортёра `_CAPTION_PATTERN`, не новый список. Тесты — вымышленный текст. Правило, вычитающее текст
-  (убранные строки), несёт контрдоказательство: строки тела и полные строки внутри — отказ (G1/G2), доказано мутацией
-  на синтетике и замером на корпусе (испытание 2: без G2 19 страниц, без G1 37 страниц ушли бы в картинку).
-- **VIII — PASS.** Ссылки сверены 2026-11-13 на `9b5db10`; две посылки обследования 2026-11-12 перепроверены и
-  исправлены (research R2, R3, R6); ожидаемые числа — из симуляции производственными функциями этого дерева.
-
-### После дизайна
-
-PASS. Отклонения от брифа, обоснованные замером: разрешение — взвешенная медиана, не максимум (R7); второй вид
-семени — пространство краски, не обтравка (R6). Complexity Tracking не нужен.
+- **I/II — PASS.** Замеры — `.venv` под WSL; проверки — `scripts/test.sh` через `wsl.exe -d Debian`.
+- **III — PASS, полный цикл**: новые модули, зависимость, поля событий; порядок модулей важен (опись → решение →
+  отрисовка → мост).
+- **IV — PASS.** Корпус — вход офлайн-замера без модели.
+- **V — PASS.** События — `contracts/events.md`; документ логирования — задача T014.
+- **VI — PASS.** Задачи называют свои файлы; `processing_runtime.py` — только путь картинок (T003, T004, T009–T011).
+- **VII — PASS.** Триггер — свойство формата PDF без числа; отказ — пересечение площадей; разрешение — плотность самой
+  картинки; потолок — константы конвейера. Ни литерала книги. Тесты — вымышленные.
+- **VIII — PASS.** Каждое число спеки — из файла замера этого дерева (R18–R22); находки ревью проверены по коду и данным
+  (Changelog спеки).
 
 ## Project Structure
 
-### Документация (эта спека)
-
 ```text
-specs/082-composite-figure-region/
-├── spec.md
-├── plan.md                  # этот файл
-├── research.md              # R1–R17 с замерами
-├── data-model.md
-├── quickstart.md
-├── contracts/
-│   ├── events.md            # три новых события, изменённый итог извлечения
-│   └── import-output.md     # спаны, картинки, DOCX, зависимость
-├── checklists/requirements.md
-└── tasks.md
-```
+specs/082-composite-figure-region/   spec.md plan.md research.md data-model.md quickstart.md tasks.md
+                                     contracts/{events.md,import-output.md} checklists/requirements.md
 
-### Исходный код (затронуто / создано)
-
-```text
 src/docxaicorrector/pdf_import/
-├── images.py              # ИЗМ.: опись графики в том же обходе; PdfImageObject.description;
-│                          #       extract_pdf_images_and_graphics; итоговое событие после областей
-├── figure_regions.py      # НОВ.: чистое правило (FR-001…FR-006)
-├── figure_render.py       # НОВ.: pypdfium2, координаты, разрешение, PNG (FR-007…FR-009, FR-013)
-├── logical_import.py      # ИЗМ.: только measure_body_typography (обёртка над профилем)
-└── __init__.py            # ИЗМ.: экспорт новой точки входа вместо extract_pdf_images_with_pdfminer
+├── images.py          # ИЗМ.: опись (PdfDiscoveredImage, skip_reason, colour_space_family), PdfImageExtraction,
+│                      #       новые поля PdfImageObject, extract_pdf_images_and_inventory,
+│                      #       log_pdf_image_extraction_outcome; extract_pdf_images_with_pdfminer удалена
+├── page_render.py     # НОВ.: layout_cropbox, frame_geometry (чистые), render_frames (pypdfium2, замок, PNG)
+├── image_frames.py    # НОВ.: plan_frame_replacements (чистое), apply_frame_replacements (отрисовка, события)
+└── __init__.py        # ИЗМ.: экспорт новой точки входа
 src/docxaicorrector/processing/processing_runtime.py
-                           # ИЗМ.: _run_pdf_parse_stages (склейка), _PdfParseStagesResult (+2 поля),
-                           #       _append_pdf_image_to_docx/_append_image_bytes_to_docx (descr),
-                           #       pdf_text_layer_import_succeeded (+2 ключа)
-requirements.txt, pyproject.toml          # ИЗМ.: pypdfium2==5.15.2
-scripts/setup-wsl.sh                       # ИЗМ.: verify_runtime импортирует pdfminer, pypdfium2
-scripts/_list_log_events.py                # ИЗМ.: TARGETS += images.py, figure_render.py
-scripts/measure-composite-figure-regions.py  # НОВ.: замер корпуса (+ --save-docx)
-scripts/README.md                          # ИЗМ.: строка о скрипте
-tests/test_pdf_figure_regions.py           # НОВ.: правило на рамках (unit_contract)
-tests/test_pdf_figure_render.py            # НОВ.: синтетический PDF, координаты, PNG (unit_contract)
-tests/test_pdf_figure_regions_corpus.py    # НОВ.: Rethinking стр. 151 (integration_local)
-tests/test_processing_runtime.py           # ИЗМ.: подмены извлекателя; сквозной тест моста
-docs/LOGGING_AND_ARTIFACT_RETENTION.md, docs/WORKFLOW_AND_IMAGE_MODES.md, AGENTS.md (Прочее по runtime),
-docs/testing/TEST_TIER_INVENTORY.md        # ИЗМ.
+                       # ИЗМ.: _run_pdf_parse_stages (опись → план → замены → итоговое событие);
+                       #       _append_pdf_image_to_docx/_append_image_bytes_to_docx (явный размер, откат);
+                       #       pdf_text_layer_import_succeeded (+1 ключ)
+requirements.txt, pyproject.toml, scripts/setup-wsl.sh, scripts/_list_log_events.py, scripts/README.md
+scripts/measure-pdf-image-frames.py          # НОВ.: четыре книги до/после, sha1, побочные PNG
+tests/pdf_synthetic.py                       # НОВ.: помощник (не тестовый файл)
+tests/test_pdf_page_render.py                # НОВ. (Unit-Contract)
+tests/test_pdf_image_frames.py               # НОВ. (Unit-Contract)
+tests/test_pdf_image_frames_corpus.py        # НОВ. (Integration-Local)
+tests/test_processing_runtime.py             # ИЗМ.
+docs/LOGGING_AND_ARTIFACT_RETENTION.md, docs/WORKFLOW_AND_IMAGE_MODES.md, AGENTS.md,
+docs/testing/TEST_TIER_INVENTORY.md          # ИЗМ.
 ```
 
-## Дизайн по требованиям
+## Дизайн среза A
 
-### FR-001 — опись графики (`images.py`)
+- **Опись (`images.py`).** Обход `_iter_pdfminer_images` (`:129-143`) остаётся; для каждой `LTImage` — `PdfDiscoveredImage`
+  (ключ, рамка, семейство пространства через `resolve1` словаря потока, `skip_reason`); выданная `PdfImageObject` получает
+  `discovery_index` и `colour_space_family`. Итоговое событие уходит из извлекателя в `log_pdf_image_extraction_outcome`
+  (счётчики из описи + исход замен). Без совместимого псевдонима: `extract_pdf_images_with_pdfminer` вызывал только
+  `processing_runtime.py:529,581`; подмены в тестах переводятся.
+- **Решение (`image_frames.plan_frame_replacements`).** Для выданной картинки с семейством краски: пересечение
+  положительной площади с любым спаном страницы → `text_over_frame`; с любой другой обнаруженной картинкой страницы →
+  `image_over_frame`; иначе кандидат с `scale = max(px_w / w_pt, px_h / h_pt)` (пиксели — из заголовка файла картинки
+  через Pillow, без декодирования).
+- **Отрисовка (`page_render`).** `layout_cropbox`: CropBox переводится в пространство макета pdfminer той же матрицей,
+  которой pdfminer поворачивает страницу (`PDFPageInterpreter.process_page`). `frame_geometry`: пиксельная рамка
+  `floor/ceil` наружу в сетке `ceil(W·scale) × ceil(H·scale)`, пересечение с CropBox; пусто → `outside_crop_box`; больше
+  `MAX_IMAGE_DIMENSION_PX`/`MAX_IMAGE_MEGAPIXELS` → `exceeds_pixel_budget`. Отрисовка: `page.render(scale, crop=…)` с обрезкой
+  `(px − 0,5)/scale` (pypdfium2 берёт `ceil(c·scale)` — так целые пиксели точны при любой погрешности float),
+  `draw_annots=False`, `may_draw_forms=False`; PNG `L`, если каналы совпадают; `pHYs` = scale·72. Документ открывается
+  один раз на книгу и только при непустом плане; `threading.Lock` модуля.
+- **Применение (`image_frames.apply_frame_replacements`).** Для кандидата: геометрия, отрисовка (исключение →
+  `pdf_image_frame_render_failed`, картинка как есть), замена через `dataclasses.replace` (байты, mime, `display_*`,
+  `original_*`), событие `pdf_image_frame_rendered`; отказы — `pdf_image_frame_render_declined`.
+- **Мост (`processing_runtime.py`).** `_run_pdf_parse_stages` (`:580-592`): `extraction = extract_pdf_images_and_inventory(input_path)`
+  → `plan = plan_frame_replacements(extraction, spans)` → `images, outcome = apply_frame_replacements(input_path, extraction, plan)`
+  → `log_pdf_image_extraction_outcome(...)` → лимит картинок. Исключение извлечения — как сегодня (`:582-590`: WARNING и
+  импорт без картинок). Исключение в шаге замен (вне отрисовки одной картинки) книгу картинок не лишает: ловится, список
+  картинок — исходный, событие ERROR `pdf_image_frame_render_failed` (тест). Вставка:
+  `_append_image_bytes_to_docx(document, bytes, width_pt=None, height_pt=None)`; для замены — явный размер; сбой →
+  исходные байты прежним путём + ERROR `pdf_image_replacement_insert_failed`.
 
-Обход `_iter_pdfminer_images` (`:129-143`) обобщается до обхода графики: картинки — как сейчас (байты, mime, рамка), плюс
-для КАЖДОЙ картинки — `PdfPageGraphic` с `emittable`, `ink_space`, `source_px`, `discovery_index`; пути (`LTCurve`)
-— рамка и `stroke_half_width` (`linewidth / 2`, если `stroke`). Опись страницы сохраняется, только если на ней есть
-семя выбранных видов (data-model §1) — на корпусе 1 (или 33) страниц из 917. Публичная точка входа —
-`extract_pdf_images_and_graphics(pdf_path, *, seed_kinds) -> PdfImageExtraction`; `extract_pdf_images_with_pdfminer`
-удаляется вместе с экспортом (`__init__.py:14-27`) — вызывал его только `processing_runtime.py:529`, `:581`; тесты-подмены
-переводятся (T007). Без совместимого псевдонима (решение владельца 2026-11-08 «без compat aliases»).
+## Срез B
 
-### FR-002…FR-006 — правило (`figure_regions.py`)
-
-Порт `work-082/rule.py::detect_regions` в типизированный модуль: union-find по рамкам с отсечением по x (как в замере);
-допуск — медиана высоты строк страницы; рост до неподвижности; стражи; результат — `FigureRegionPlan`. Входы: опись
-(только страницы с семенем), ВСЕ спаны (индексы спанов — позиции в переданном списке), `BodyTypography`. Строки — спаны с
-непустым `_normalize_text` (как в импортёре). Модуль не импортирует `pdfminer` и `pypdfium2`.
-
-### FR-005 — типографика (`logical_import.py`)
-
-`measure_body_typography(spans)` = `_detect_repeated_page_furniture_keys` + `_build_heading_layout_profile` на
-нормализованных спанах — те же вызовы, что в начале `build_paragraph_units_from_text_spans` (`:149-160`); возвращает
-`BodyTypography` или `None`. Стоимость — один дополнительный расчёт профиля на книгу (секунды нет: профиль считается
-за один проход спанов) — замер в T005.
-
-### FR-007…FR-009, FR-013 — отрисовка (`figure_render.py`)
-
-`import pypdfium2` внутри функции; `threading.Lock` уровня модуля вокруг открытия документа и отрисовки. Для каждой
-области: `region_resolution_dpi` (FR-008), `region_crop` (FR-009; рамка + `render_pad_pt`, пересечение с `CropBox`,
-поворот 0/90/180/270), `page.render(scale=dpi/72, crop=..., draw_annots=False, may_draw_forms=False)`, PIL → если R=G=B
-попиксельно — `L`; PNG с `dpi=(dpi, dpi)`. Документ открывается один раз на книгу и только при непустом плане.
-Возврат — отрисованные и сбойные области раздельно.
-
-### FR-006, FR-010, FR-011, FR-014 — склейка (`processing_runtime.py::_run_pdf_parse_stages`, `:580-601`)
-
-После `extract_pdf_images_and_graphics`: `typography = measure_body_typography(spans)`; `plan = detect_figure_regions(...)`;
-`rendered, failed = render_figure_regions(input_path, plan)`; из спанов убираются `suppressed_span_indices` ТОЛЬКО
-отрисованных областей; из картинок — отдаваемые с `discovery_index` из их `absorbed_discovery_indices`; добавляются
-картинки областей; сортировка `(page, top, x0)`; `_enforce_pdf_image_count_cap` — после; итоговое событие (contracts).
-Исключение внутри шага областей целиком (не отрисовки одной области) не перехватывается: это дефект кода, и разбор
-падает как сегодня падает любая ошибка стадии (`:662-663`). Ветка «OCR» (`:565-569`): спаны после OCR — из
-`ocr_output_path`, картинки — из `input_path` (как сегодня); правило работает на этих спанах и графике `input_path`
-(рамки страниц совпадают — `ocrmypdf` не меняет геометрию; **[вывод]**, тест — T024).
-
-### FR-010 — DOCX (`processing_runtime.py:1057-1109`)
-
-`_append_image_bytes_to_docx(document, image_bytes, description=None)`: `shape = run.add_picture(...)`; при описании —
-`shape._inline.docPr.set("descr", description)`. `_append_pdf_image_to_docx` передаёт `getattr(image_object, "description", None)`.
-
-### FR-012 — события
-
-`images.py::log_pdf_image_extraction_outcome(extraction, *, plan, rendered, failed, filename)` эмитит итог (одна
-функция владеет именами событий извлечения); `pdf_figure_region_*` — из `figure_render.py` (отрисовка/сбой) и
-`figure_regions.py` не логирует (чистый) — отказы логирует склейка через ту же функцию `images.py`.
+Только дизайн (spec FR-B1…FR-B8, research R23–R24, Q-4). План и задачи пишутся после ревью раунда 2.
 
 ## Порядок реализации
 
-Один исполнитель, задачи по порядку (`tasks.md`); параллельность не нужна — модули зависят цепочкой.
-
 ```text
-Setup:        T001–T003   зависимость, кэш-независимая синтетика PDF-помощника
-Foundational: T004–T008   типографика, опись графики, новая точка входа, перевод подмен
-US1:          T009–T026   правило → отрисовка → склейка → DOCX → события → корпус
-US2:          T027–T031   семя «пространство краски» (отрезаемо)
-Polish:       T032–T040   документы, инвентарь тестов, замер корпуса, гарды, приёмка
+Setup:        T001–T003   зависимость; синтетический PDF; характеристика ДО правки
+Foundational: T004        опись и новая точка входа (поведение прежнее)
+Срез A:       T005–T013   геометрия → отрисовка → решение → применение → мост → DOCX → корпус → замер
+Polish:       T014–T021   документы, инвентарь, pyright, Changelog, прогоны; оркестратор — полный прогон и Codex
 ```
 
 ## Риски
 
 | Риск | Чем закрыт |
 |---|---|
-| Правило уводит в картинку полезный текст | G1/G2 + защита подписи; испытание 2 (каждая страница корпуса под картинкой) — 0 ложных; мутационные тесты; события с началом убранного текста; Alt Text |
-| Сдвиг картинки из-за `CropBox` | чистая функция координат + тест на синтетике с `CropBox` и пиксельной проверкой |
-| Картинка в DOCX не того размера | `pHYs`; тест EMU = рамка (SC-006) |
-| Регрессия на книгах без иллюстраций | по построению (нет семени — нет обработки); SC-002 замером |
-| PDFium в потоке тестов | замок модуля |
-| Колесо не ставится в CI | `py3-none-manylinux_2_17_x86_64`; первый CI-прогон ветки — проверка |
-| pyright-ратчет | новые модули типизированы; `test_typecheck.py` в задачах; `reportMissingImports` — warning (`pyrightconfig.json`) для job без `pdf-import` |
-| Срок разбора | + 1,9 с на корпусе; область — в том же ребёнке |
+| Замена хуже исходного | триггер только по семейству краски; отказ при чужом тексте/картинке; глазами все 32 пары (T013) |
+| Меньше пикселей | округление наружу, масштаб = плотность источника; тест + замер всех 32 |
+| Неверный размер в DOCX | явный `width/height`; тест дробной плотности и обрезки `CropBox` |
+| Сдвиг рамки (`CropBox`, поворот) | `layout_cropbox` + тест пикселей на синтетике с `CropBox` и `/Rotate 90` |
+| Сбой отрисовки / вставки | исходные байты + ERROR; тесты подменой |
+| Регрессия на книгах без кандидатов | документ не открывается; sha1 и абзацы четырёх книг (T013) |
+| PDFium в потоках тестового пути | замок модуля |
+| pyright-ратчет | типизация; `test_typecheck.py` (T017) |
 
 ## Сохраняемые контракты AGENTS.md
 
-- WSL — источник истины; проверки через `scripts/test.sh` и транспорт `wsl.exe -d Debian`; debug-пути помечаются.
-- Боковой worktree: `.venv` — симлинк; `git` — из Git Bash; тесты истории — в главном дереве.
-- LF; `git diff --check` перед коммитом.
-- Тема коммита называет спеку 082 только для работы по ней.
-- Логирование — `log_event`, имена из контракта, текст ≤ 120 знаков.
-- Перед «зелёным» — `git status --porcelain` пуст; полный прогон в главном дереве после слияния; приёмочное ревью Codex
-  по затронутым поверхностям (все модули с hunk'ами целиком + вызывающие и вызываемые) — за оркестратором.
-
-## Что не определено (сказано прямо)
-
-- Верность отрисовки проверена на 15 страницах корпуса против Ghostscript и глазами; эталона нет.
-- Поведение на PDF с поворотом и на сканах с текстовым слоем — только синтетика и испытание 2 (подложенная картинка),
-  настоящих таких книг в корпусе нет.
-- Вид схемы при битмапах ниже 100 dpi не мерился (в корпусе нет).
-- Q-1…Q-3 спеки — решения оркестратора.
+WSL — источник истины; `scripts/test.sh` через `wsl.exe -d Debian`; боковой worktree (`.venv` — симлинк, git — из Git
+Bash); LF и `git diff --check`; тема коммита называет спеку 082; `log_event`, текст ≤ 120 знаков; `git status
+--porcelain` пуст перед «зелёным»; полный прогон в главном дереве и приёмочное ревью Codex — за оркестратором.
