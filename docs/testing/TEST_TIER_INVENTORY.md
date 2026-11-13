@@ -131,6 +131,7 @@ This inventory is intentionally pragmatic:
 - `tests/test_spec_075_review_round1.py`
 - `tests/test_spec_077_epigraph_opening_narrated.py`
 - `tests/test_spec_079_notes_run_must_cite.py`
+- `tests/test_spec_083_gate_bibliography_form.py`
 - `tests/test_spec_image_followup.py`
 - `tests/test_spec_image_level1.py`
 - `tests/test_startup_performance_contract.py`
