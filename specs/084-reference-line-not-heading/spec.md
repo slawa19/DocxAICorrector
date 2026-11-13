@@ -19,11 +19,11 @@
 / `residual2.py` → `residual2.txt`, `spanlvl4.py` → `spanlvl4_base.txt`, `diff_imp3.txt`, `cmp3_audiobook.txt` /
 `cmp3_translate.txt`, `heads_new3.txt`, `mutation_results3.txt`)
 
-**Status**: **IMPLEMENTED (2026-11-13) — правило в ветке `084-reference-line-not-heading`, тесты
-`tests/test_pdf_reference_line_not_heading.py`; приёмочное ревью Codex в три круга (`D:\Temp\claude\076-data\codex_report_e.txt`,
-`codex_report_e_round2.txt`, `codex_report_e_round3.txt`, все «ПРИНЯТЬ ПОСЛЕ ПРАВОК») — P1 первого круга закрыт условием
-N, P1 второго — условием положения P, P1 третьего записан как остаток без нового условия (раздел «Решение и правило»,
-Changelog); слияние в `main` и полный прогон в главном дереве — за оркестратором.** Платный прогон не
+**Status**: **IMPLEMENTED (2026-11-13) — правило влито в `main`, тесты
+`tests/test_pdf_reference_line_not_heading.py`; приёмочное ревью Codex в три круга (все «ПРИНЯТЬ ПОСЛЕ ПРАВОК», запись —
+`docs/reviews/CODEX_REVIEW_084_2026-11-13.md`) — P1 первого круга закрыт условием N, P1 второго — условием положения P,
+P1 третьего записан как остаток без нового условия (раздел «Решение и правило», Changelog); полный прогон в главном
+дереве — 5798 passed, 40 skipped.** На момент слияния платный прогон не
 повторялся: что гейт больше не увидит эти строки заголовками, показано трассировкой без модели (раздел 5). Spec-only
 tier (Конституция III): объём ограничен одной измеренной причиной, проверка — детерминированные тесты и офлайн-замер на
 корпусе; `plan.md` и `tasks.md` не пишутся.
