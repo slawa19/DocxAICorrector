@@ -1,8 +1,8 @@
 """Spec 082 slice A on a real book: Rethinking Money stores its photographs as JPEGs in a one-ink
 Separation space, and every one of them was emitted as a negative before spec 082.
 
-Corpus counts below were measured 2026-11-13 (spec 082 research R19/R20) and are the expected results of
-this test, not parameters of the rule: the rule reads no page number and no count.
+Corpus counts below were measured 2026-11-13 (spec 082 research R20, R25) and are the expected results of
+this test, not parameters of the rule: the rule reads no page number, no count and no colour-space name.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ pytestmark = pytest.mark.integration_local
 
 _BOOK = Path(__file__).resolve().parent / "sources" / "book"
 
-# Pages of the 32 photographs replaced (research R20); the 12 Separation images of the composite figure on
-# page 151 are declined because labels and other images lie over their frames.
+# Pages of the 32 photographs replaced (research R20). The 22 images of the composite figure on page 151
+# (12 Separation, 10 ICCBased) are declined before rendering: labels or other images lie over every frame.
 _REPLACED_PAGES = [
     26, 38, 52, 72, 88, 94, 96, 103, 105, 110, 119, 120, 121, 126, 134, 140,
     142, 156, 159, 166, 174, 176, 178, 181, 184, 190, 192, 198, 202, 218, 230, 276,
@@ -42,7 +42,7 @@ def _book(pattern: str) -> Path:
     return Path(matches[0])
 
 
-def test_rethinking_money_photographs_are_replaced_and_the_composite_figure_is_declined(monkeypatch) -> None:
+def test_rethinking_money_negatives_are_replaced_and_nothing_else_is(monkeypatch) -> None:
     import docxaicorrector.pdf_import.image_frames as image_frames
 
     monkeypatch.setattr(image_frames, "log_event", lambda *args, **kwargs: None)
@@ -56,9 +56,8 @@ def test_rethinking_money_photographs_are_replaced_and_the_composite_figure_is_d
 
     replaced = [image for image in outcome.images if image.original_image_bytes is not None]
     assert [image.page_number for image in replaced] == _REPLACED_PAGES
-    assert outcome.failed == 0
+    assert (outcome.checked, outcome.replaced, outcome.declined, outcome.failed) == (33, 32, 22, 0)
     declines = list(plan.declines)
-    assert len(declines) == 12
     assert {decline.image.page_number for decline in declines} == {151}
     assert {decline.reason for decline in declines} <= {DECLINE_TEXT_OVER_FRAME, DECLINE_IMAGE_OVER_FRAME}
     for image in replaced:

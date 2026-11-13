@@ -123,6 +123,11 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     assert ".[dev]" in parity_script
     assert "import docxaicorrector" in parity_script
     assert "bash scripts/test.sh tests/test_typecheck.py -q" in parity_script
+    # ...and, like ci.yml's `tests` job, installs requirements.txt before the suite -- AFTER the
+    # pyright ratchet, which ci.yml runs in the `.[dev]`-only `editable-install` job (spec 082).
+    assert "pip install -r requirements.txt" in parity_script
+    assert parity_script.index("tests/test_typecheck.py") < parity_script.index("pip install -r requirements.txt")
+    assert parity_script.index("pip install -r requirements.txt") < parity_script.index("-m static_workflow")
     # The static tier is selected BY MARKER in both ci.yml and here. A hardcoded file
     # list used to live in both places, so the sixth file to carry `static_workflow`
     # would have run nowhere at all.
@@ -132,7 +137,10 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
         "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy"
         in parity_script
     )
-    assert "pip install -r requirements.txt" not in parity_script
+    # Until 2026-11-13 this line asserted the OPPOSITE ("requirements.txt is NOT installed",
+    # faa9bf7), while ci.yml's `tests` job installs requirements.txt: the parity container then lacked
+    # pdfminer.six and pypdfium2 that CI has (spec 082 acceptance review, finding 9).
+    assert "pip install -r requirements.txt" in (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert file_task["command"] == 'bash scripts/test.sh "${relativeFile}"'
     assert file_task.get("args", []) == []

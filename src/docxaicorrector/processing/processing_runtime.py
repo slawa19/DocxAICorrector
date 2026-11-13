@@ -589,7 +589,7 @@ def _run_pdf_parse_stages(
         )
         image_objects = []
     else:
-        image_objects = _replace_pdf_images_by_page_frames(input_path, image_extraction, spans)
+        image_objects = _replace_pdf_images_by_page_frames(input_path, image_extraction, spans, ocr_used=ocr_used)
         _enforce_pdf_image_count_cap(image_objects, filename=filename, max_image_count=max_image_count)
 
     return _PdfParseStagesResult(
@@ -602,18 +602,24 @@ def _run_pdf_parse_stages(
     )
 
 
-def _replace_pdf_images_by_page_frames(input_path: Path, image_extraction, spans) -> list:
-    """Spec 082 slice A: swap the bytes of emitted images that are not what the page shows for a render of
+def _replace_pdf_images_by_page_frames(input_path: Path, image_extraction, spans, *, ocr_used: bool = False) -> list:
+    """Spec 082 slice A: swap the bytes of emitted images that are negatives of their page for a render of
     their page frame, then write the one outcome event of image extraction.
 
     Text is not touched: ``spans`` are only read (a frame with text over it is declined). A failure of the
     step as a whole -- not of one render, which ``apply_frame_replacements`` already contains -- keeps the
     images exactly as the extractor emitted them; the book never loses its images to this step.
+
+    Not in the OCR branch: there the spans come from the OCR output while images and renders come from
+    the original PDF, and nothing proves the two share their geometry (acceptance review, finding 7).
     """
 
     from docxaicorrector.pdf_import.image_frames import apply_frame_replacements, plan_frame_replacements
     from docxaicorrector.pdf_import.images import log_pdf_image_extraction_outcome
 
+    if ocr_used:
+        log_pdf_image_extraction_outcome(image_extraction, pdf_path=input_path, frame_render_enabled=False)
+        return list(image_extraction.images)
     try:
         plan = plan_frame_replacements(image_extraction, spans)
         outcome = apply_frame_replacements(input_path, image_extraction, plan)
@@ -634,6 +640,7 @@ def _replace_pdf_images_by_page_frames(input_path: Path, image_extraction, spans
     log_pdf_image_extraction_outcome(
         image_extraction,
         pdf_path=input_path,
+        frame_render_checked=outcome.checked,
         frame_render_replaced=outcome.replaced,
         frame_render_declined=outcome.declined,
         frame_render_failed=outcome.failed,
@@ -943,9 +950,10 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
         )
         images_emitted = 0
         images_dropped = 0
+        delivery_counts: dict[str, int] = {}
         for item_type, _source_index, _index, payload in sorted(content_items, key=lambda item: (item[1], item[0] == "paragraph", item[2])):
             if item_type == "image":
-                if _append_pdf_image_to_docx(document, payload):
+                if _append_pdf_image_to_docx(document, payload, delivery_counts):
                     images_emitted += 1
                 else:
                     images_dropped += 1
@@ -966,9 +974,7 @@ def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tu
             image_count=len(image_objects),
             images_emitted=images_emitted,
             images_dropped=images_dropped,
-            images_replaced_by_frame_render=sum(
-                1 for image in image_objects if getattr(image, "original_image_bytes", None) is not None
-            ),
+            images_replaced_by_frame_render=delivery_counts.get("frame_render", 0),
             skipped_page_number_count=import_result.report.skipped_page_number_count,
             skipped_repeated_page_furniture_count=import_result.report.skipped_repeated_page_furniture_count,
             skipped_blank_page_notice_count=import_result.report.skipped_blank_page_notice_count,
@@ -1097,10 +1103,13 @@ def _set_pdf_run_font_size(run, font_size: float | None) -> None:
     run.font.size = Pt(font_size)
 
 
-def _append_pdf_image_to_docx(document, image_object) -> bool:
+def _append_pdf_image_to_docx(document, image_object, delivery_counts: dict[str, int] | None = None) -> bool:
+    """Insert one PDF image. ``delivery_counts["frame_render"]`` counts page-frame renders that actually
+    went into the DOCX (a render that fell back to the emitted bytes is not counted)."""
+
     original_image_bytes = getattr(image_object, "original_image_bytes", None)
     if isinstance(original_image_bytes, bytes) and original_image_bytes:
-        return _append_replaced_pdf_image_to_docx(document, image_object, original_image_bytes)
+        return _append_replaced_pdf_image_to_docx(document, image_object, original_image_bytes, delivery_counts)
     return _append_extracted_pdf_image_to_docx(
         document,
         getattr(image_object, "image_bytes", None),
@@ -1109,7 +1118,9 @@ def _append_pdf_image_to_docx(document, image_object) -> bool:
     )
 
 
-def _append_replaced_pdf_image_to_docx(document, image_object, original_image_bytes: bytes) -> bool:
+def _append_replaced_pdf_image_to_docx(
+    document, image_object, original_image_bytes: bytes, delivery_counts: dict[str, int] | None = None
+) -> bool:
     """Spec 082 FR-A6, FR-A9: a page-frame render goes in at the size of its rendered frame (python-docx
     would round the PNG's density to a whole dpi). If it cannot be inserted, the bytes the extractor
     emitted go in by the ordinary path instead -- the picture is never lost to the replacement."""
@@ -1121,6 +1132,8 @@ def _append_replaced_pdf_image_to_docx(document, image_object, original_image_by
             width_points=getattr(image_object, "display_width_points", None),
             height_points=getattr(image_object, "display_height_points", None),
         )
+        if delivery_counts is not None:
+            delivery_counts["frame_render"] = delivery_counts.get("frame_render", 0) + 1
         return True
     except Exception as exc:
         fallback_inserted = _append_extracted_pdf_image_to_docx(

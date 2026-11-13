@@ -3937,7 +3937,7 @@ def _synthetic_bridge(monkeypatch, kind: str):
 
     monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
     page = SyntheticPage(
-        images=[SyntheticImage(kind, 60, 300, 260, 400, pixels=(300, 150))],
+        images=[SyntheticImage(kind, 60, 300, 260, 400, pixels=(300, 150), pattern="corner")],
         texts=[
             SyntheticText(40, 520, 11, "An invented sentence above the picture."),
             SyntheticText(40, 200, 11, "Another invented sentence below the picture."),
@@ -3968,7 +3968,8 @@ def test_spec082_device_gray_jpeg_passes_the_bridge_byte_for_byte(monkeypatch) -
 def test_spec082_separation_jpeg_reaches_the_docx_as_the_page_shows_it(monkeypatch) -> None:
     import io as _io
 
-    from PIL import Image, ImageStat
+    import numpy
+    from PIL import Image
 
     events: list[tuple[int, str, dict[str, object]]] = []
     monkeypatch.setattr(
@@ -3981,10 +3982,13 @@ def test_spec082_separation_jpeg_reaches_the_docx_as_the_page_shows_it(monkeypat
     stored = Image.open(_io.BytesIO(_jpeg_stream_of(pdf_bytes))).convert("L")
     delivered = Image.open(_io.BytesIO(blob))
     assert delivered.format == "PNG"
-    # The stored file is the negative of the page: its mean and the delivered mean mirror each other.
-    stored_mean = ImageStat.Stat(stored).mean[0]
-    delivered_mean = ImageStat.Stat(delivered.convert("L")).mean[0]
-    assert abs(delivered_mean - (255 - stored_mean)) < 6
+    # The stored file is the negative of the page: spatially, the delivered picture anti-correlates with
+    # it (a dark block top-left in one, a light block top-left in the other). Mean brightness could not
+    # tell them apart (acceptance review, finding 6).
+    small = (48, 24)
+    a = numpy.asarray(stored.resize(small), dtype=float).ravel()
+    b = numpy.asarray(delivered.convert("L").resize(small), dtype=float).ravel()
+    assert numpy.corrcoef(a, b)[0, 1] < -0.9
     # The picture has the size of its rendered frame, given explicitly (FR-A6): 150 source px over the
     # 100 pt frame height is the denser axis, so the render runs at 1.5 px per pt.
     (shape,) = shapes
@@ -4088,3 +4092,68 @@ def test_spec082_replacement_size_is_explicit_even_at_fractional_density(width_p
     assert processing_runtime._append_pdf_image_to_docx(document, image) is True
     (shape,) = document.inline_shapes
     assert (shape.width, shape.height) == (round(width_points * 12700), round(height_points * 12700))
+
+
+def test_spec082_no_frame_replacement_in_the_ocr_branch(monkeypatch, tmp_path) -> None:
+    """Acceptance review finding 7: in the OCR branch the spans come from the OCR output and the images
+    from the original PDF; nothing proves they share geometry, so nothing is replaced there.
+    Mutation: dropping the OCR guard replaces the negative here."""
+    import shutil
+
+    import docxaicorrector.pdf_import.images as pdf_images
+    from docxaicorrector.pdf_import import text_layer_quality
+    from pdf_synthetic import SyntheticImage, SyntheticPage, write_pdf
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(pdf_images, "log_event", lambda level, event, message, **context: events.append((event, context)))
+    path = write_pdf(
+        tmp_path / "scan.pdf",
+        [SyntheticPage(images=[SyntheticImage("jpeg_separation", 60, 300, 260, 400, pixels=(300, 150), pattern="corner")])],
+    )
+    ocr_span = PdfTextSpan(page_number=1, text="An invented OCR line.", x0=40, top=50, x1=300, bottom=62, page_height=600, font_size=11)
+    monkeypatch.setattr(
+        text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda p: [ocr_span] if str(p).endswith(".ocr.pdf") else []
+    )
+    monkeypatch.setattr(
+        text_layer_quality,
+        "build_text_layer_quality_report",
+        lambda spans: SimpleNamespace(
+            decision="promising" if spans else "scanned_or_unsupported", decision_reasons=(), body_text_ratio=1.0 if spans else 0.0
+        ),
+    )
+    monkeypatch.setattr(
+        processing_runtime, "_run_pdf_ocr_to_text_layer_pdf", lambda *, input_path, output_path: shutil.copy(input_path, output_path)
+    )
+    result = processing_runtime._run_pdf_parse_stages(
+        input_path=path,
+        ocr_output_path=tmp_path / "scan.ocr.pdf",
+        filename="scan.pdf",
+        ocr_import_enabled=True,
+        max_page_count=10,
+        max_span_count=1000,
+        max_image_count=10,
+    )
+    assert result.ocr_used is True
+    assert [image.original_image_bytes for image in result.image_objects] == [None]
+    summary = next(context for event, context in events if event == "pdf_image_extraction_summary")
+    assert summary["frame_render_enabled"] is False and summary["frame_render_replaced"] == 0
+
+
+def test_spec082_success_event_counts_only_renders_that_reached_the_docx(monkeypatch) -> None:
+    """A render that fell back to the emitted bytes is not counted as delivered (review note on counters)."""
+    events: list[tuple[int, str, dict[str, object]]] = []
+    real_append = processing_runtime._append_image_bytes_to_docx
+
+    def failing_for_renders(document, image_bytes, *, width_points=None, height_points=None):
+        if width_points is not None:
+            raise ValueError("synthetic insertion failure")
+        return real_append(document, image_bytes)
+
+    monkeypatch.setattr(processing_runtime, "_append_image_bytes_to_docx", failing_for_renders)
+    monkeypatch.setattr(
+        processing_runtime, "log_event", lambda level, event, message, **context: events.append((level, event, context))
+    )
+    _synthetic_bridge(monkeypatch, "jpeg_separation")
+    success = next(context for _level, event, context in events if event == "pdf_text_layer_import_succeeded")
+    assert success["images_replaced_by_frame_render"] == 0
+    assert success["images_emitted"] == 1

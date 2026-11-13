@@ -41,6 +41,10 @@ class PdfImageObject:
     display_height_points: float | None = None
     original_image_bytes: bytes | None = None
     original_mime_type: str | None = None
+    # The matrix that placed the image's unit square, in pdfminer's layout space (page rotation
+    # included): the ``matrix`` of the ``LTFigure`` pdfminer opens for the image's ``Do``. ``None``
+    # when the walk could not see it.
+    placement_matrix: tuple[float, float, float, float, float, float] | None = None
 
 
 # Why a discovered image was not emitted (``PdfDiscoveredImage.skip_reason``).
@@ -98,8 +102,8 @@ def extract_pdf_images_and_inventory(pdf_path: str | Path) -> PdfImageExtraction
             )
             break
         page_height = _coerce_optional_float(getattr(page_layout, "height", None))
-        for discovery_index, image in enumerate(
-            _iter_pdfminer_images(page_layout, lt_image_type=LTImage, lt_figure_type=LTFigure)
+        for discovery_index, (image, placement_matrix) in enumerate(
+            _iter_pdfminer_images_with_placement(page_layout, lt_image_type=LTImage, lt_figure_type=LTFigure)
         ):
             top, bottom = _pdfminer_top_origin_bounds(
                 y0=float(getattr(image, "y0", 0.0) or 0.0),
@@ -145,6 +149,7 @@ def extract_pdf_images_and_inventory(pdf_path: str | Path) -> PdfImageExtraction
                     height_points=max(0.0, bottom - top),
                     discovery_index=discovery_index,
                     colour_space_family=family,
+                    placement_matrix=placement_matrix,
                 )
             )
     return PdfImageExtraction(
@@ -158,6 +163,8 @@ def log_pdf_image_extraction_outcome(
     extraction: PdfImageExtraction,
     *,
     pdf_path: str | Path,
+    frame_render_enabled: bool = True,
+    frame_render_checked: int = 0,
     frame_render_replaced: int = 0,
     frame_render_declined: int = 0,
     frame_render_failed: int = 0,
@@ -166,8 +173,9 @@ def log_pdf_image_extraction_outcome(
 
     ``discovered`` / ``emitted`` / ``skipped`` keep the meaning they had before spec 082 and are counted
     from the inventory's skip reasons, so they cannot drift from it: an image the extractor does not emit
-    is still reported as skipped. The frame-render counters say how many emitted images were replaced by
-    a render of their page frame, declined, or failed to render.
+    is still reported as skipped. The frame-render counters say how many emitted images were compared with
+    a render of their page frame, replaced by it, declined, or failed to render; ``frame_render_enabled``
+    is false where the step does not run (the OCR branch).
     """
 
     discovered_count = len(extraction.discovered)
@@ -176,6 +184,8 @@ def log_pdf_image_extraction_outcome(
     skipped_unknown_mime = sum(1 for item in extraction.discovered if item.skip_reason == SKIP_UNKNOWN_MIME)
     skipped_count = skipped_no_image_bytes + skipped_unknown_mime
     frame_counters = {
+        "frame_render_enabled": frame_render_enabled,
+        "frame_render_checked": frame_render_checked,
         "frame_render_replaced": frame_render_replaced,
         "frame_render_declined": frame_render_declined,
         "frame_render_failed": frame_render_failed,
@@ -237,21 +247,45 @@ def _colour_space_family(image: object) -> str | None:
     return name if isinstance(name, str) and name else None
 
 
-def _iter_pdfminer_images(element, *, lt_image_type: type, lt_figure_type: type) -> Iterable[object]:
+def _iter_pdfminer_images_with_placement(
+    element,
+    *,
+    lt_image_type: type,
+    lt_figure_type: type,
+    placement: tuple[float, float, float, float, float, float] | None = None,
+) -> Iterable[tuple[object, tuple[float, float, float, float, float, float] | None]]:
+    """Each ``LTImage`` with the matrix of the nearest enclosing ``LTFigure`` -- pdfminer wraps every
+    image ``Do`` in a figure whose matrix is the CTM at the ``Do`` (``PDFPageInterpreter.do_Do``)."""
+
     if isinstance(element, lt_image_type):
-        yield element
+        yield element, placement
         return
     if isinstance(element, lt_figure_type) or hasattr(element, "__iter__"):
+        if isinstance(element, lt_figure_type):
+            placement = _coerce_matrix(getattr(element, "matrix", None))
         try:
             children = list(element)
         except TypeError:
             return
         for child in children:
-            yield from _iter_pdfminer_images(
+            yield from _iter_pdfminer_images_with_placement(
                 child,
                 lt_image_type=lt_image_type,
                 lt_figure_type=lt_figure_type,
+                placement=placement,
             )
+
+
+def _coerce_matrix(value: object) -> tuple[float, float, float, float, float, float] | None:
+    if value is None:
+        return None
+    try:
+        numbers = [float(v) for v in value]  # type: ignore[union-attr]
+    except (TypeError, ValueError):
+        return None
+    if len(numbers) != 6:
+        return None
+    return (numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5])
 
 
 def _extract_pdfminer_image_file_bytes(image: object) -> bytes | None:

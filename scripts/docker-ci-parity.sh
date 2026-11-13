@@ -30,8 +30,14 @@ python -m pip install --upgrade pip
 pip install -e ".[dev]"
 python -c "import docxaicorrector"
 
-# Pyright ratchet — same wrapper CI uses.
+# Pyright ratchet — same wrapper CI uses, in the same `.[dev]`-only environment as ci.yml's
+# `editable-install` job (an extra package here would change what pyright resolves).
 bash scripts/test.sh tests/test_typecheck.py -q
+
+# ci.yml's `tests` job installs requirements.txt (pdfminer.six, pypdfium2 and the rest the suite
+# imports). Until spec 082 this script skipped it, so the parity container lacked the PDF
+# dependencies the CI tests job has.
+pip install -r requirements.txt
 
 # Full static tier — selected BY MARKER, exactly as ci.yml. This used to be a
 # hardcoded list of five files, which meant a sixth file carrying the marker ran
