@@ -55,6 +55,18 @@ _PACK_OF_NOTES = (
         for number in range(3, 40, 2)
     )
 )
+# Codex acceptance review of the batch, finding 2: every hidden entry ends on a full stop, a space
+# and a closing quote, and the sentence-end test stopped at that space.
+_PACK_OF_QUOTED_NOTES = (
+    _EPIGRAPH
+    + " 1 "
+    + _PROSE_ENTRY
+    + " "
+    + " ".join(
+        f"{number} K. Lane wrote of the coastal route: “It is closed in the winter months. ”"
+        for number in range(3, 40, 2)
+    )
+)
 
 # Each one breaks exactly one condition of the exemption; all are marked by spec 067.
 _STAYS_EXCLUDED = [
@@ -63,6 +75,7 @@ _STAYS_EXCLUDED = [
     pytest.param(_EPIGRAPH + " 1 " + _REFERENCE_ENTRY, id="the-entry-is-a-reference"),
     pytest.param(_EPIGRAPH + " 1 " + _PROSE_ENTRY + " 2 " + _REFERENCE_ENTRY, id="two-entries"),
     pytest.param(_PACK_OF_NOTES, id="a-pack-of-entries-numbered-1-3-5"),
+    pytest.param(_PACK_OF_QUOTED_NOTES, id="a-pack-whose-entries-end-in-a-spaced-closing-quote"),
     pytest.param(
         "*“The tide does not wait for the harbour master.”* – K. Tollan, *Harbour Songs* (1998) 1 " + _PROSE_ENTRY,
         id="a-signature-with-a-year",
@@ -157,6 +170,8 @@ def test_quotation_and_signature(text: str, expected: tuple[str, str] | None) ->
     [
         pytest.param("Harbour Press, 2004, p. 85. 3 J. Smith", 28, True, id="after-a-full-stop"),
         pytest.param("it was “late.” 3 Pilots", 15, True, id="after-a-closing-quote"),
+        pytest.param("it was “late. ” 3 Pilots", 16, True, id="a-space-before-the-closing-quote"),
+        pytest.param("he said ” 3 Pilots", 10, False, id="a-closing-quote-after-a-word"),
         pytest.param("the pilots of 3 Harbours", 14, False, id="inside-a-sentence"),
         pytest.param("3 Harbours", 0, False, id="at-the-start"),
     ],

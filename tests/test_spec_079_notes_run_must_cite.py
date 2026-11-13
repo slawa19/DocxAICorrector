@@ -6,18 +6,23 @@ was then excluded from the narration and translated under the apparatus policy. 
 more now also needs one piece, the lead or an entry, that is a reference by the per-piece test
 (citation form AND an anchor). The one-entry path of spec 067 is unchanged.
 
+The quality gate still reads a delivered paragraph of the numbered-chain form note by note (Codex
+acceptance review of the batch, finding 1): read whole, three four-digit numbers make it
+"bibliography" and untranslated English prose went uncounted.
+
 The texts are invented (Constitution VII).
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
-from docxaicorrector.core.models import DocumentBlock, ParagraphUnit
+from docxaicorrector.core.models import PARAGRAPH_STATUS_POLICY_KEPT_SOURCE, DocumentBlock, ParagraphUnit
 from docxaicorrector.document.semantic_blocks import build_editing_jobs
-from docxaicorrector.pipeline import output_validation
+from docxaicorrector.pipeline import output_validation, quality_gate
 
 # Numbered body text, every piece prose by form; the anchors are incidental.
 _STEPS_WITH_A_YEAR = (
@@ -180,3 +185,56 @@ def test_the_accepted_cost_a_run_of_commentary_only_is_read_as_body() -> None:
     assert output_validation.is_notes_run_paragraph(_COMMENTARY_ONLY_RUN) is False
     jobs = build_editing_jobs(_document(_COMMENTARY_ONLY_RUN), max_chars=3000, processing_operation="audiobook")
     assert _reasons(jobs)["p0002"] is None
+
+
+# --- Codex acceptance review of the batch, finding 1: the gate is not blinded ---------------
+_SURVEY_SENTENCE = (
+    "The pilots agreed that the old quay needed a second survey before the boats could moor there "
+    "again for the winter season. "
+)
+# A delivered paragraph the model left in English: three numbered entries, a year in each.
+_UNTRANSLATED_NUMBERED_PROSE = " ".join(
+    f"{number} {_SURVEY_SENTENCE * 4}The survey closed ({1990 + number})." for number in range(1, 4)
+)
+_ITS_SOURCE = _UNTRANSLATED_NUMBERED_PROSE.replace("agreed", "decided")
+_TRANSLATED_NUMBERED_PROSE = " ".join(
+    f"{number} " + "Лоцманы согласились, что старой пристани нужен второй осмотр, прежде чем лодки снова "
+    "встанут там на зиму. " * 4 + f"Осмотр закончился ({1990 + number})."
+    for number in range(1, 4)
+)
+
+
+def _entry(text: str, status: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        role="body", structural_role="body", text=text, controlled_fallback=False, paragraph_status=status,
+        paragraph_id="p0002",
+    )
+
+
+def test_the_gate_counts_untranslated_numbered_prose_that_is_no_notes_run() -> None:
+    text = _UNTRANSLATED_NUMBERED_PROSE
+    # The premises: not a notes run (spec 079); read WHOLE, the gate calls it bibliography (three
+    # four-digit numbers); the pair rule accepts the English answer, so only the gate can see it.
+    assert output_validation.is_notes_run_paragraph(text) is False
+    assert quality_gate._is_bibliography_or_url_dominant_text(text) is True
+    assert output_validation.classify_processed_block(_ITS_SOURCE, text) == "valid"
+
+    part = output_validation.notes_run_untranslated_part(text)
+    assert part is not None
+    count = quality_gate._untranslated_body_char_count(text)
+    assert count == len(part) >= len(text) - 6  # every entry is counted, only the numbers drop out
+    samples = quality_gate._collect_untranslated_body_samples(
+        final_markdown=text, assembly_entries=[_entry(text, "translated")]
+    )
+    assert [sample.char_count for sample in samples] == [count]
+
+
+def test_the_gate_reading_changes_nothing_else() -> None:
+    """Anti-vacuum: the same form translated is not counted, and a paragraph kept in the source by
+    policy is still skipped by its disposition."""
+    assert quality_gate._untranslated_body_char_count(_TRANSLATED_NUMBERED_PROSE) == 0
+    kept = quality_gate._collect_untranslated_body_samples(
+        final_markdown=_UNTRANSLATED_NUMBERED_PROSE,
+        assembly_entries=[_entry(_UNTRANSLATED_NUMBERED_PROSE, PARAGRAPH_STATUS_POLICY_KEPT_SOURCE)],
+    )
+    assert kept == []
