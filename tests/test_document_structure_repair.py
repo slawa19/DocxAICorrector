@@ -1,3 +1,5 @@
+import pytest
+
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.document.structure_repair import repair_pdf_derived_structure
 
@@ -308,3 +310,193 @@ def test_repair_pdf_derived_structure_keeps_body_prose_with_ellipsis_outside_toc
     assert [paragraph.structural_role for paragraph in repaired] == ["body", "body"]
     assert report.bounded_toc_regions == 0
     assert report.applied is False
+
+
+# --- Spec 080 round 2: the contents sweep stops where the contents end ---------------------------
+
+PNG_BYTES = __import__("base64").b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII="
+)
+
+
+def _effective_role(paragraph: ParagraphUnit) -> str:
+    return paragraph.heuristic_structural_role_hint or paragraph.structural_role
+
+
+def _contents_then_front_matter_document(tmp_path):
+    # The shape measured in a translated book (spec 080): a contents header, contents lines of two
+    # levels set in two sizes and without page numbers, then an image, an organisation line, a
+    # patron line and the title of the foreword (a heading by style), then the foreword's body.
+    from docx import Document
+    from docx.shared import Pt
+
+    def add(document, text, size, style=None):
+        paragraph = document.add_paragraph(style=style)
+        run = paragraph.add_run(text)
+        run.font.size = Pt(size)
+        return paragraph
+
+    document = Document()
+    add(document, "Contents", 23.5)
+    add(document, "Introduction: the lantern keepers", 14.0)
+    add(document, "Chapter I", 10.5)
+    add(document, "Why the tides matter", 14.0)
+    add(document, "Chapter II", 10.5)
+    add(document, "Ledgers and lanterns", 14.0)
+    add(document, "Acknowledgements", 14.0)
+    image_path = tmp_path / "seal.png"
+    image_path.write_bytes(PNG_BYTES)
+    document.add_paragraph().add_run().add_picture(str(image_path))
+    add(document, "THE HARBOUR SOCIETY — NORTH CHAPTER", 14.0, style="Heading 3")
+    add(document, "Honorary Patron Ilsa Varn of Keswick", 14.0)
+    add(document, "Keeping the Tide Honest", 16.0, style="Heading 2")
+    add(
+        document,
+        "We do not tell the truth about tides. Yet the tide is at the heart of every harbour, and every "
+        "harbour keeps a ledger of it by hand.",
+        14.0,
+    )
+    path = tmp_path / "contents.docx"
+    document.save(str(path))
+    return path
+
+
+def test_contents_sweep_does_not_run_over_the_image_and_front_matter_after_the_contents(tmp_path):
+    from docxaicorrector.document.extraction import extract_document_content_from_docx
+
+    with open(_contents_then_front_matter_document(tmp_path), "rb") as handle:
+        paragraphs, _ = extract_document_content_from_docx(handle)
+    by_text = {paragraph.text: paragraph for paragraph in paragraphs}
+
+    assert _effective_role(by_text["Contents"]) == "toc_header"
+    for line in (
+        "Introduction: the lantern keepers",
+        "Chapter I",
+        "Why the tides matter",
+        "Chapter II",
+        "Ledgers and lanterns",
+        "Acknowledgements",
+    ):
+        assert _effective_role(by_text[line]) == "toc_entry", line
+    image = next(paragraph for paragraph in paragraphs if paragraph.text.startswith("[[DOCX_IMAGE_"))
+    assert (image.role, _effective_role(image)) == ("image", "image")
+    for line in ("THE HARBOUR SOCIETY — NORTH CHAPTER", "Honorary Patron Ilsa Varn of Keswick", "Keeping the Tide Honest"):
+        assert _effective_role(by_text[line]) not in {"toc_header", "toc_entry"}, line
+    assert by_text["Keeping the Tide Honest"].role == "heading"
+
+
+def _unit(index: int, text: str, *, role: str = "body", structural_role: str = "body", heading_source=None) -> ParagraphUnit:
+    paragraph = _paragraph(index, text, role=role, structural_role=structural_role)
+    paragraph.heading_source = heading_source
+    return paragraph
+
+
+@pytest.mark.parametrize("role", ["image", "table", "caption"])
+def test_contents_sweep_stops_at_a_paragraph_that_is_not_a_line_of_text(role):
+    from docxaicorrector.document.structure_repair import _find_bounded_toc_regions
+
+    paragraphs = [
+        _unit(0, "Contents"),
+        _unit(1, "Chapter I"),
+        _unit(2, "Chapter II"),
+        _unit(3, "Harbour seal", role=role, structural_role=role),
+        _unit(4, "Afterword"),
+    ]
+
+    assert _find_bounded_toc_regions(paragraphs) == [(0, 2)]
+    assert (paragraphs[3].role, paragraphs[3].heuristic_structural_role_hint) == (role, None)
+    assert paragraphs[4].heuristic_structural_role_hint is None
+
+
+def test_contents_sweep_stops_at_a_heading_styled_by_the_source():
+    from docxaicorrector.document.structure_repair import _find_bounded_toc_regions
+
+    paragraphs = [
+        _unit(0, "Contents"),
+        _unit(1, "Chapter I"),
+        _unit(2, "Chapter II"),
+        _unit(3, "Keeping the Tide Honest", role="heading", structural_role="heading", heading_source="explicit"),
+        _unit(4, "Honorary Patron Ilsa Varn of Keswick"),
+    ]
+
+    assert _find_bounded_toc_regions(paragraphs) == [(0, 2)]
+    assert (paragraphs[3].role, paragraphs[3].heading_source, paragraphs[3].heuristic_structural_role_hint) == (
+        "heading",
+        "explicit",
+        None,
+    )
+    assert paragraphs[4].heuristic_structural_role_hint is None
+
+
+def test_contents_sweep_crosses_a_styled_heading_the_extraction_pass_put_into_the_contents():
+    # Chapter lines inside a contents list are often styled as headings; the extraction pass marks
+    # them `toc_entry`, and the sweep goes on over them as before.
+    from docxaicorrector.document.structure_repair import _find_bounded_toc_regions
+
+    paragraphs = [
+        _unit(0, "Contents"),
+        _unit(1, "Chapter I"),
+        _unit(2, "Chapter II", role="heading", structural_role="toc_entry", heading_source="explicit"),
+        _unit(3, "Chapter III"),
+    ]
+
+    assert _find_bounded_toc_regions(paragraphs) == [(0, 3)]
+
+
+def test_contents_sweep_crosses_a_line_only_guessed_to_be_a_heading():
+    # A short line the reader only guessed to be a heading is no evidence against the contents.
+    from docxaicorrector.document.structure_repair import _find_bounded_toc_regions
+
+    paragraphs = [
+        _unit(0, "Contents"),
+        _unit(1, "Chapter I"),
+        _unit(2, "Chapter II", role="heading", structural_role="heading", heading_source="heuristic"),
+        _unit(3, "Chapter III"),
+    ]
+
+    assert _find_bounded_toc_regions(paragraphs) == [(0, 3)]
+
+
+def test_short_lines_after_a_numbered_contents_list_stay_narrated():
+    # Codex acceptance review of spec 080 (P2): the extraction pass ends a contents list with page
+    # numbers at its last numbered entry; the sweep must not extend the region again over the short
+    # lines after it (an organisation name, an author line), which narration would then drop.
+    from docx import Document
+    from typing import cast
+
+    from docxaicorrector.document.extraction import extract_document_content_from_docx
+    from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_semantic_blocks
+
+    document = Document()
+    for text in (
+        "Contents",
+        "Introduction .... 1",
+        "Conclusion .... 29",
+        "The Harbour Society",
+        "Ilsa Varn",
+        "We do not tell the truth about tides. Yet the tide is at the heart of every harbour, and every "
+        "harbour keeps a ledger of it by hand.",
+    ):
+        document.add_paragraph(text)
+    from io import BytesIO
+
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+    # The phase preparation uses before any model has looked at the structure
+    # (`processing/preparation.py`, `downstream_structure_phase`): structure hints are binding there.
+    phase = "pre_ai_diagnostic"
+    blocks = build_semantic_blocks(paragraphs, max_chars=3000, structure_phase=phase)
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook", structure_phase=phase)
+    by_id = {paragraph.paragraph_id: paragraph.text for paragraph in paragraphs}
+    reasons = {
+        by_id[paragraph_id]: reason
+        for job in jobs
+        for paragraph_id, reason in zip(cast(list[str], job["paragraph_ids"]), cast(list, job["narration_exclusion_reasons"]))
+    }
+
+    assert reasons["Introduction .... 1"] == "toc"
+    assert reasons["Conclusion .... 29"] == "toc"
+    assert reasons["The Harbour Society"] is None
+    assert reasons["Ilsa Varn"] is None

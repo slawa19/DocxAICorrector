@@ -1352,3 +1352,217 @@ def test_build_ai_review_request_payload_sends_bare_model_id_for_qualified_selec
     assert openai_payload["model"] == "gpt-5.4-mini"
     assert anthropic_payload["model"] == "claude-sonnet-4-6"
     assert bare_payload["model"] == "gpt-5.4-mini"
+
+
+# --- Spec 080: a change of font size between two paragraphs is a structural boundary ------------
+
+
+def _sized_document(*paragraphs: tuple[str, float | None]):
+    document = make_document()
+    for text, size in paragraphs:
+        run = document.add_paragraph().add_run(text)
+        if size is not None:
+            from docx.shared import Pt
+
+            run.font.size = Pt(size)
+    return document
+
+
+def _non_space_characters(texts) -> list[str]:
+    return sorted(character for text in texts for character in text if not character.isspace())
+
+
+def _raw(raw_index: int, text: str, size: float | None) -> RawParagraph:
+    return RawParagraph(raw_index=raw_index, text=text, style_name="Normal", font_size_pt=size)
+
+
+def _evaluate(left: RawParagraph, right: RawParagraph) -> ParagraphBoundaryDecision:
+    return document_module._evaluate_paragraph_boundary(left, right)
+
+
+def test_epigraph_mark_and_chapter_opening_are_not_glued_across_the_mark():
+    # The shape that motivated spec 080: an epigraph with its attribution, its note mark set as a
+    # paragraph of its own in a much smaller size, then the chapter's first paragraph (which ends
+    # unfinished, so the chain rule would carry the medium mark -> body pair). The mark stays with
+    # the text it marks; the chapter opening is a paragraph of its own.
+    source = [
+        ("“Quiet harbours keep the oldest promises.” – Ilsa Varn", 14.0),
+        ("1", 5.5),
+        ("We have followed the lantern keepers through three winters and each of them kept", 14.0),
+        ("Every keeper writes the tide down by hand.", 14.0),
+    ]
+    paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(_sized_document(*source)))
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "“Quiet harbours keep the oldest promises.” – Ilsa Varn 1",
+        "We have followed the lantern keepers through three winters and each of them kept",
+        "Every keeper writes the tide down by hand.",
+    ]
+    decision = next(item for item in report.decisions if (item.left_raw_index, item.right_raw_index) == (1, 2))
+    assert decision.decision == "keep"
+    assert decision.confidence == "blocked"
+    assert "font_size_transition" in decision.reasons
+    assert _non_space_characters(paragraph.text for paragraph in paragraphs) == _non_space_characters(text for text, _ in source)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # a lead-in and a displayed quotation that starts in lower case
+        (("As the harbour master wrote in his ledger:", 14.5), ("every keeper must log the tide by hand", 11.0)),
+        # a caption set small and the body text that resumes after the figure
+        (("A ledger page from the northern harbour. Note the stamp “Kept by Hand.”", 8.0), ("for recording tides, which the keepers used", 10.5)),
+        # an epigraph attribution (it ends with its note number) and the chapter's first paragraph
+        (("Ilsa Varn, The Harbour Ledger, 19261", 11.0), ("the winter edition of the gazette was devoted to the keepers", 14.5)),
+    ],
+)
+def test_paragraphs_in_clearly_different_sizes_are_not_merged(left, right):
+    paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(_sized_document(left, right)))
+
+    assert [paragraph.text for paragraph in paragraphs] == [left[0], right[0]]
+    assert report.decisions[0].confidence == "blocked"
+    assert report.decisions[0].reasons == ("font_size_transition",)
+
+
+def test_same_pairs_in_one_size_still_merge():
+    # Anti-regression of spec 080: the refusal above is the size's doing, not the text's.
+    paragraphs, _, _ = extract_document_content_with_boundary_report(
+        _save_document(
+            _sized_document(
+                ("As the harbour master wrote in his ledger:", 14.5),
+                ("every keeper must log the tide by hand", 14.5),
+            )
+        )
+    )
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "As the harbour master wrote in his ledger: every keeper must log the tide by hand"
+    ]
+
+
+def test_note_mark_joins_the_text_it_marks():
+    # The mark is a superscript the importer set as a paragraph of its own: it belongs to the
+    # text before it, whatever that text's size.
+    paragraphs, _, report = extract_document_content_with_boundary_report(
+        _save_document(_sized_document(("– Ilsa Varn, keeper of the northern light", 14.0), ("27", 5.5)))
+    )
+
+    assert [paragraph.text for paragraph in paragraphs] == ["– Ilsa Varn, keeper of the northern light 27"]
+    assert report.decisions[0].decision == "merge"
+
+
+def test_sentence_continues_across_its_note_mark():
+    # A mark inside a sentence: the text after it continues the sentence, so all three are one.
+    # (The dash-led right side is longer than 120 characters: a shorter one is read as an
+    # attribution line, `is_likely_attribution_text`, and kept apart before size is looked at.)
+    paragraphs, _, _ = extract_document_content_with_boundary_report(
+        _save_document(
+            _sized_document(
+                ("The tolls were never set by the harbour board", 14.0),
+                ("33", 5.5),
+                ("– but rather by the keepers themselves, who wrote every toll into the ledger by hand and read it aloud at the winter meeting.", 14.0),
+            )
+        )
+    )
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "The tolls were never set by the harbour board 33 – but rather by the keepers themselves, who wrote every toll into the ledger by hand and read it aloud at the winter meeting."
+    ]
+
+
+def _narration_reasons(document) -> list[tuple[str, str | None]]:
+    """(paragraph text, narration exclusion reason) through the real extraction, semantic blocks and
+    audiobook jobs."""
+    from typing import cast as _cast
+
+    from docxaicorrector.document.extraction import extract_document_content_from_docx
+    from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_semantic_blocks
+
+    paragraphs, _ = extract_document_content_from_docx(_save_document(document))
+    # The phase preparation uses before any model has looked at the structure
+    # (`processing/preparation.py`, `downstream_structure_phase`): structure hints are binding there.
+    phase = "pre_ai_diagnostic"
+    blocks = build_semantic_blocks(paragraphs, max_chars=3000, structure_phase=phase)
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook", structure_phase=phase)
+    by_id = {paragraph.paragraph_id: paragraph.text for paragraph in paragraphs}
+    return [
+        (by_id[paragraph_id], reason)
+        for job in jobs
+        for paragraph_id, reason in zip(
+            _cast(list[str], job["paragraph_ids"]), _cast(list[str | None], job["narration_exclusion_reasons"])
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # a year set small at the end of an unfinished sentence
+        [("The harbour ledger was printed in", 14.0), ("1926", 5.5)],
+        # a year set small inside a sentence: it continues the text before it and the text after it
+        [("The ledger of", 14.0), ("1926", 5.5), ("was kept by hand in the north harbour.", 14.0)],
+        # a drop cap: one large letter, then the rest of the word in body size
+        [("T", 40.0), ("he harbour keepers wrote every tide down by hand.", 14.0)],
+    ],
+)
+def test_a_refused_merge_never_strands_a_piece_that_narration_drops(source):
+    # Spec 080, Codex acceptance review round 1 (P1): refusing a merge across a size change must not
+    # leave a piece without connected text of its own as a paragraph, which narration then drops
+    # as a `fragment` -- a year inside a sentence would leave the audiobook.
+    rows = _narration_reasons(_sized_document(*source))
+
+    assert [reason for _, reason in rows] == [None] * len(rows)
+    narrated = [text for text, reason in rows if reason is None]
+    assert _non_space_characters(narrated) == _non_space_characters(text for text, _ in source)
+
+
+def test_a_small_piece_after_a_finished_sentence_is_still_a_size_change():
+    # The piece belongs to the text before it only when that text is unfinished; after a full stop
+    # the change of size is evidence again (here a number set small on a line of its own).
+    decision = _evaluate(_raw(0, "The ledger was printed in the north.", 14.0), _raw(1, "1926", 5.5))
+
+    assert decision.confidence == "blocked"
+    assert "font_size_transition" in decision.reasons
+
+
+def test_unknown_size_leaves_the_decision_as_before():
+    left = _raw(0, "The vessel carried", None)
+    right = _raw(1, "the supplies to the next port.", 11.0)
+
+    for pair in ((left, right), (right, left)):
+        assert "font_size_transition" not in _evaluate(*pair).reasons
+    assert _evaluate(left, right).decision == "merge"
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "differs"),
+    [
+        (4.0, 4.5, False),  # the absolute floor: 10 % of 4 is 0.4, the tolerance is 0.5
+        (4.0, 4.6, True),
+        (10.0, 10.5, False),
+        (10.0, 11.0, False),  # 10 % of the smaller
+        (10.0, 11.5, True),
+        (14.0, 15.0, False),
+        (14.0, 15.5, True),
+        (14.0, 5.5, True),
+    ],
+)
+def test_size_tolerance_is_the_importers(first, second, differs):
+    decision = _evaluate(_raw(0, "The vessel carried", first), _raw(1, "the supplies to the next port.", second))
+
+    assert ("font_size_transition" in decision.reasons) is differs
+    assert (decision.decision == "merge") is not differs
+
+
+def test_size_match_agrees_with_the_pdf_importer():
+    # boundaries.py restates the importer's tolerance instead of importing the importer; this pins
+    # them to the same answers. The small sizes (3-4.6) are where the absolute 0.5 floor decides
+    # (10 % of the smaller is below 0.5), so a formula without the floor fails here.
+    from docxaicorrector.document import boundaries
+    from docxaicorrector.pdf_import import logical_import
+
+    sizes = [3.0, 3.5, 4.0, 4.5, 4.6, 5.5, 5.76, 7.5, 8.0, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 14.0, 14.4, 15.0,
+             15.5, 16.5, 20.5, 23.5]
+    for first in sizes:
+        for second in sizes:
+            assert boundaries.font_sizes_match(first, second) == logical_import._font_sizes_match(first, second)
