@@ -27,21 +27,26 @@ wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_proce
 wsl.exe -d Debian --cd "<дерево>" -- bash scripts/test.sh tests/test_pdf_image_frames_corpus.py -q
 ```
 
-Ожидаемо: 32 замены на страницах `research.md` R20, 12 отказов на стр. 151.
+Ожидаемо: 32 замены на страницах `research.md` R20, 22 отказа на стр. 151, 33 сравнения.
 
-## 4. Четыре книги — до/после (приёмка)
+## 4. Четыре книги — до/после (приёмка), с сохранением полных последовательностей
+
+База — отдельный worktree на коммите `main`, в который влита ветка (например `D:\Temp\claude\wt-082-base`):
 
 ```bash
-wsl.exe -d Debian --cd "<дерево>" -- bash -lc ". .venv/bin/activate && python -I scripts/measure-pdf-image-frames.py --out /mnt/d/Temp/claude/work-082/after"
+wsl.exe -d Debian --cd "<дерево>" -- bash -lc ". .venv/bin/activate && python -I scripts/measure-pdf-image-frames.py run --src /mnt/d/Temp/claude/wt-082-base/src --label base --commit <sha main> --out <dir> tests/sources/book/*.pdf"
+wsl.exe -d Debian --cd "<дерево>" -- bash -lc ". .venv/bin/activate && python -I scripts/measure-pdf-image-frames.py run --src src --label branch --commit <sha ветки> --out <dir> tests/sources/book/*.pdf"
+wsl.exe -d Debian --cd "<дерево>" -- bash -lc ". .venv/bin/activate && python -I scripts/measure-pdf-image-frames.py compare <dir>/base.json <dir>/branch.json --out <dir>/compare.json"
 ```
 
-Ожидаемо: Money, Creating, Value — абзацы и sha1 картинок те же; Rethinking — абзацы те же, картинки отличаются ровно в
-32 местах; в `after/` — пары «страница | выдано» для каждой замены, просмотреть глазами.
+`base.json`/`branch.json` содержат все абзацы (текст, стиль) и все картинки (sha1, байты, EMU) по порядку и происхождение
+прогона. Ожидаемо: Money, Creating, Value — 0 различий; Rethinking — 0 различий абзацев, картинки отличаются ровно в 32
+местах (страницы R20); в `<dir>/branch_side_by_side/` — тройки «было | стало | страница», просмотреть глазами.
 
 ## 5. Лог
 
-В `app.log` прогона: 32 `pdf_image_frame_rendered`, 12 `pdf_image_frame_render_declined` (стр. 151), итог
-`pdf_image_extraction_dropped_images` с `frame_render_replaced: 32`.
+В `app.log` прогона: 32 `pdf_image_frame_rendered` (у каждого `correlation` < 0), 22 `pdf_image_frame_render_declined`
+(стр. 151), итог `pdf_image_extraction_dropped_images` с `frame_render_checked: 33`, `frame_render_replaced: 32`.
 
 ## 6. Гарды
 

@@ -238,6 +238,19 @@ def test_render_frame_refuses_a_page_the_two_engines_measure_differently(tmp_pat
             render_frame(document, page_number=1, page_geometry=wrong, geometry=geometry)
 
 
+def test_render_frame_refuses_a_page_whose_rotation_the_engines_disagree_on(tmp_path) -> None:
+    """A square page, so only the rotation can tell the two geometries apart. Mutation: dropping the
+    rotation check renders the frame of the wrong orientation."""
+    path = write_pdf(tmp_path / "square_page.pdf", [SyntheticPage(width=400, height=400, paths=["0 g 100 200 50 40 re f"])])
+    real = read_page_geometry(path, {1})[1]
+    rotated = type(real)(mediabox=real.mediabox, cropbox=real.cropbox, rotation=90)
+    geometry = frame_geometry((90.0, 150.0, 160.0, 210.0), crop=rotated.layout_cropbox, scale=2.0)
+    assert geometry is not None
+    with open_pdf_for_rendering(path) as document:
+        with pytest.raises(PageGeometryMismatch):
+            render_frame(document, page_number=1, page_geometry=rotated, geometry=geometry)
+
+
 def test_read_page_geometry_reports_the_user_unit(tmp_path) -> None:
     path = write_pdf(tmp_path / "unit.pdf", [SyntheticPage(user_unit=2.0), SyntheticPage()])
     geometry = read_page_geometry(path, {1, 2})

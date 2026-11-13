@@ -49,6 +49,8 @@ class PdfImageObject:
     display_height_points: float | None = None
     original_image_bytes: bytes | None = None   # только у замены: исходные байты для отката (FR-A9)
     original_mime_type: str | None = None
+    placement_matrix: tuple[float, float, float, float, float, float] | None = None
+    # матрица LTFigure, в которую pdfminer завернул Do картинки, в пространстве макета (с поворотом страницы)
 ```
 
 Замена — та же картинка (`page_number`, рамка, `source_index`, `discovery_index` те же) с `image_bytes` = PNG
@@ -60,17 +62,24 @@ class PdfImageObject:
 ```python
 DECLINE_TEXT_OVER_FRAME = "text_over_frame"
 DECLINE_IMAGE_OVER_FRAME = "image_over_frame"
+DECLINE_UNSUPPORTED_PLACEMENT = "unsupported_placement"   # не прямой масштаб a 0 0 d, a, d > 0
+DECLINE_UNREADABLE_SOURCE = "unreadable_source"           # заголовок файла не читается или рамка пуста
+DECLINE_USER_UNIT = "user_unit"                           # /UserUnit != 1
+DECLINE_OUTSIDE_CROP_BOX = "outside_crop_box"             # рамка не целиком внутри CropBox
 DECLINE_EXCEEDS_PIXEL_BUDGET = "exceeds_pixel_budget"
-DECLINE_OUTSIDE_CROP_BOX = "outside_crop_box"
-DECLINE_UNREADABLE_SOURCE = "unreadable_source"   # заголовок файла не читается или рамка пуста
+DECLINE_PAGE_GEOMETRY_DISAGREES = "page_geometry_disagrees"
+DECLINE_FLAT_IMAGE = "flat_image"
 
 
-def colour_space_is_ink(family: str | None) -> bool: ...   # Separation | DeviceN
+def is_upright_scale(matrix) -> bool: ...
+def correlation_with_page(image_bytes: bytes, rendered) -> float | None: ...   # None — плоская
 
 
 @dataclass(frozen=True)
 class FrameCandidate:
     image: PdfImageObject
+    source_width_px: int
+    source_height_px: int
     scale: float                 # px на pt = плотность источника / 72
 
 
@@ -87,11 +96,21 @@ class FramePlan:
     declines: tuple[FrameDecline, ...]
 
 
+@dataclass(frozen=True)
+class FrameOutcome:
+    images: tuple[PdfImageObject, ...]
+    checked: int
+    replaced: int
+    declined: int
+    failed: int
+
+
 def plan_frame_replacements(extraction: PdfImageExtraction, spans: Sequence[PdfTextSpan]) -> FramePlan: ...
+def apply_frame_replacements(pdf_path, extraction, plan) -> FrameOutcome: ...
 ```
 
-Отказы по геометрии рамки (`exceeds_pixel_budget`, `outside_crop_box`) решаются при отрисовке, когда известны
-`MediaBox`/`CropBox`, — тоже `FrameDecline`.
+Отказы, которым нужна страница (`user_unit`, `outside_crop_box`, `exceeds_pixel_budget`, `page_geometry_disagrees`,
+`flat_image`), решаются при отрисовке — тоже `FrameDecline`.
 
 ### §4. Геометрия и отрисовка (`pdf_import/page_render.py`)
 
@@ -107,8 +126,8 @@ class FrameGeometry:
     frame_height_points: float
 
 
-def frame_geometry(box, *, crop, scale) -> FrameGeometry | None:   # crop = layout_cropbox(...)
-    """Чистая: рамка макета pdfminer -> пиксели в CropBox; округление НАРУЖУ; None — вне CropBox."""
+def frame_geometry(box, *, crop, scale) -> FrameGeometry | None:   # crop = PdfPageGeometry.layout_cropbox
+    """Чистая: рамка макета pdfminer -> пиксели в CropBox; округление НАРУЖУ; None — рамка не целиком внутри."""
 
 
 def layout_cropbox(mediabox, cropbox, rotation) -> tuple[float, float, float, float]:
@@ -116,9 +135,21 @@ def layout_cropbox(mediabox, cropbox, rotation) -> tuple[float, float, float, fl
 
 
 @dataclass(frozen=True)
-class RenderedFrame:
+class PdfPageGeometry:            # единственный источник границ — pdfminer (наследование разрешено)
+    mediabox: Box
+    cropbox: Box
+    rotation: int
+    user_unit: float = 1.0
+
+
+def read_page_geometry(pdf_path, page_numbers) -> dict[int, PdfPageGeometry]: ...
+def render_frame(document, *, page_number, page_geometry, geometry) -> "PIL.Image.Image":
+    """Сверяет размер и поворот страницы PDFium с pdfminer (иначе PageGeometryMismatch), рисует рамку."""
+
+
+@dataclass(frozen=True)
+class EncodedFrame:
     png_bytes: bytes
-    geometry: FrameGeometry
     grayscale: bool
 ```
 

@@ -92,7 +92,31 @@ Tier: полный цикл (Конституция III). Раунд 2 (посл
   `tests/test_pdf_text_layer_quality.py`, `tests/test_pdf_text_layer_logical_import.py`, гарды. — **Proof**: счёт
   `passed` дословно.
 - [ ] T020 Оркестратор: полный прогон в главном дереве после слияния, `git status --porcelain` пуст, CI ставит колесо.
-- [ ] T021 Оркестратор: приёмочное ревью Codex по затронутым поверхностям среза A.
+- [x] T021 Оркестратор: приёмочное ревью Codex по затронутым поверхностям среза A — «ПРИНЯТЬ ПОСЛЕ ПРАВОК»
+  (`D:\Temp\claude\076-data\codex_report_082a.txt`).
+
+## Правки по приёмочному ревью среза A (2026-11-13)
+
+Решения — spec Changelog «приёмочное ревью Codex, срез A», research R25–R27.
+
+- [x] T022 `git merge main` в ветку; воспроизвести находки тестами до правки — `tests/test_pdf_image_frames_review.py`
+  (12 падают на `84e262ec` + `main`). — **Proof**: `work-082/review_repro_before.txt`.
+- [x] T023 [IMG] Матрица размещения картинки в описи (`placement_matrix`). — **Proof**: тест описи.
+- [x] T024 `page_render.py`: границы — `read_page_geometry` (pdfminer), рамка только целиком внутри `CropBox`, сверка
+  размера и поворота PDFium, растр по числам PDFium. — **Proof**: `tests/test_pdf_page_render.py`.
+- [x] T025 `image_frames.py`: триггер — знак корреляции; отказы `unsupported_placement`, `user_unit`,
+  `page_geometry_disagrees`, `flat_image`. Замер распределения на корпусе до выбора (R25). — **Proof**:
+  `tests/test_pdf_image_frames.py`, `tests/test_pdf_image_frames_review.py`, тест корпуса.
+- [x] T026 [RT] Ветка OCR без замен; счётчик доставленных отрисовок. — **Proof**: `test_spec082_no_frame_replacement_in_the_ocr_branch`,
+  `test_spec082_success_event_counts_only_renders_that_reached_the_docx`.
+- [x] T027 Пространственные проверки на асимметричной картинке во всех тестах замены. — **Proof**: мутация N12 убита.
+- [x] T028 `scripts/measure-pdf-image-frames.py run/compare` с полными последовательностями и происхождением; замер «база
+  `main` | ветка» на четырёх книгах. — **Proof**: `work-082/after2/compare.json`.
+- [x] T029 `scripts/docker-ci-parity.sh` ставит `requirements.txt`; статический тест обновлён. — **Proof**:
+  `tests/test_script_contract_static.py`.
+- [x] T030 Мутации N1–N19, документы (контракт событий, `LOGGING_AND_ARTIFACT_RETENTION.md` §3.15/§7,
+  `WORKFLOW_AND_IMAGE_MODES.md`, `AGENTS.md`, инвентарь тестов), Changelog спеки. — **Proof**: `mutations_review.txt`;
+  гарды документов.
 
 ## Срез B
 
@@ -101,5 +125,5 @@ Tier: полный цикл (Конституция III). Раунд 2 (посл
 
 ## Сводка
 
-Срез A: 21 задача (Setup 3, Foundational 1, срез A 9, Polish 8). **[RT]**: T003, T004, T009–T011. **[IMG]**: T004.
-**[REQ]**: T001. **[DOC]**: T014–T016, T018.
+Срез A: 30 задач (Setup 3, Foundational 1, срез A 9, Polish 8, правки ревью 9). **[RT]**: T003, T004, T009–T011, T026.
+**[IMG]**: T004, T023. **[REQ]**: T001. **[DOC]**: T014–T016, T018, T030.
