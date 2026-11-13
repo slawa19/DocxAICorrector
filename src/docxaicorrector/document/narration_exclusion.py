@@ -119,10 +119,14 @@ def follows_a_sentence_end(text: str, offset: int) -> bool:
     notes run ("... p. 85. 3 J. Smith"). An abbreviation's full stop counts too ("e.g. 10 Units"):
     there is no list of abbreviations (Constitution VII). Spec 077 narrates a paragraph only when
     this is False for every note number of its entry, so such a stop can only leave a paragraph
-    excluded as it was before spec 077, never exclude one more."""
-    prefix = str(text or "")[: max(offset, 0)].rstrip()
+    excluded as it was before spec 077, never exclude one more.
+
+    White space BETWEEN the terminal and a closing mark is skipped too ("... next. ” 3 We"): the
+    loop once stopped at it and read such an opener as running text (Codex acceptance review of
+    the batch, finding 2)."""
+    prefix = str(text or "")[: max(offset, 0)]
     end = len(prefix)
-    while end > 0 and not prefix[end - 1].isspace() and _may_follow_a_terminal(prefix[end - 1]):
+    while end > 0 and _may_follow_a_terminal(prefix[end - 1]):
         end -= 1
     return end > 0 and _is_sentence_terminal(prefix[end - 1])
 
