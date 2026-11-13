@@ -35,6 +35,7 @@ import pytest
 
 import docxaicorrector.pdf_import.logical_import as logical_import
 from docxaicorrector.core.models import PARAGRAPH_REGION_PROSE, ParagraphUnit
+from docxaicorrector.document.narration_exclusion import resolve_narration_exclusion_reason
 from docxaicorrector.document.semantic_blocks import _resolve_notes_in_body_positions
 from docxaicorrector.pdf_import.logical_import import build_paragraph_units_from_text_spans
 from docxaicorrector.pdf_import.text_layer_quality import PdfTextSpan
@@ -354,6 +355,98 @@ def test_residual__heading_between_ragged_indented_paragraphs_is_demoted(monkeyp
 
     _rule_off(monkeypatch)
     assert _FULL_HEADING in _headings(spans)
+
+
+# --- recorded residual (Codex acceptance review, round 3) ------------------------------------
+#
+# The rule demotes a real heading exactly when H, P, N, R and C all hold for it: a heading set
+# in the size of the text around it, filling the measure, whose line above sits at the indent of
+# a run that shows the margin -> indent pair at least twice, in which no full line at the indent
+# runs on at the margin, and which reads as a citation together with the line under it. The
+# tests below DOCUMENT that outcome on the shapes the review reproduced, so that a change in it
+# is noticed; they are not the behaviour the rule aims at. Each also checks the harm class: the
+# demoted heading is a body paragraph of the prose region with its whole text, narrated (no
+# exclusion reason), not cut and not dropped -- structure is lost, text is not.
+
+_SECOND_HEADING = "The Loud Accounting of the Southern Harbours and Their Hasty Clerks Also"
+_QUOTATION_BLOCKS: list[tuple[str, float, float]] = [
+    (_FULL_HEADING, _LEFT, _FULL),
+    ("In 1874, the clerks of the northern ports began to keep a second ledger,", _LEFT + 16.0, 440.0),
+    ("as the guild had asked.", _LEFT + 16.0, 200.0),
+    (_SECOND_HEADING, _LEFT, _FULL),
+    ("In 1881, the southern ports followed the northern ones in the same habit,", _LEFT + 16.0, 440.0),
+    ("though not for long.", _LEFT + 16.0, 180.0),
+]
+
+
+def _quotation_page(
+    *, line_above: str | None = None, extra_above_first: float = 0.0, extra_above_second: float = 0.0
+) -> list[PdfTextSpan]:
+    """Prose, then two blocks "full-width heading -> indented quotation" on one pitch; optionally a
+    line at the indent directly above the first heading, and extra white space above a heading
+    (7.9 pt makes 9.9 pt of white at 10 pt type -- under one font size, so the lines stay
+    consecutive, and enough for the importer to type the heading at all)."""
+    spans = _prose(40.0)
+    top = spans[-1].top + _PITCH + 28.0
+    if line_above is not None:
+        spans.append(_span(line_above, top=top, x0=_LEFT + 16.0, x1=260.0))
+        top += _PITCH
+    for text, x0, x1 in _QUOTATION_BLOCKS:
+        if text == _FULL_HEADING:
+            top += extra_above_first
+        elif text == _SECOND_HEADING:
+            top += extra_above_second
+        spans.append(_span(text, top=top, x0=x0, x1=x1, bold=text in (_FULL_HEADING, _SECOND_HEADING)))
+        top += _PITCH
+    return spans
+
+
+def _assert_demoted_with_text_narrated(
+    spans: list[PdfTextSpan], heading: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paragraphs = _paragraphs(spans)
+    demoted = [paragraph for paragraph in paragraphs if paragraph.text == heading]
+    assert len(demoted) == 1 and demoted[0].role == "body"
+    marked = _resolve_notes_in_body_positions(paragraphs, [PARAGRAPH_REGION_PROSE] * len(paragraphs))
+    reason = resolve_narration_exclusion_reason(
+        structural_role=demoted[0].structural_role,
+        paragraph_role=demoted[0].role,
+        region=PARAGRAPH_REGION_PROSE,
+        back_matter_section=None,
+        in_notes_in_body=paragraphs.index(demoted[0]) in marked,
+        text=demoted[0].text or "",
+    )
+    assert reason is None
+    assert _nonspace([paragraph.text or "" for paragraph in paragraphs]) == _nonspace([span.text for span in spans])
+
+    _rule_off(monkeypatch)
+    on_main = [paragraph for paragraph in _paragraphs(spans) if paragraph.text == heading]
+    assert len(on_main) == 1 and (on_main[0].role, on_main[0].heading_level) == ("heading", 3)
+
+
+def test_residual__second_heading_after_a_quotation_is_demoted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The review's shape: the line above the second heading is the short last line of the first
+    # quotation, at the indent. No first-line-indent prose and no misjudged line is involved.
+    spans = _quotation_page(extra_above_second=7.9)
+
+    _assert_demoted_with_text_narrated(spans, _SECOND_HEADING, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "line_above",
+    [
+        "1. Keep the harbour books.",  # a one-line list item
+        "Figure 3. The harbour books.",  # a caption line set at the indent
+        "The lamp burns low, the water turns.",  # a line of verse
+        "as the old charter required.",  # the end of a quotation
+    ],
+)
+def test_residual__heading_after_a_line_at_the_indent_is_demoted(
+    line_above: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spans = _quotation_page(line_above=line_above, extra_above_first=7.9)
+
+    _assert_demoted_with_text_narrated(spans, _FULL_HEADING, monkeypatch)
 
 
 def test_condition_position__full_width_heading_over_ragged_indented_prose_stays_a_heading(
