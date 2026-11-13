@@ -254,6 +254,8 @@ def evaluate_paragraph_boundary(
         blocked_reasons.append("style_transition")
     if alignment_transition_implies_structure(left, right):
         blocked_reasons.append("alignment_transition")
+    if font_size_transition_implies_structure(left, right):
+        blocked_reasons.append("font_size_transition")
     if ends_with_strong_paragraph_terminator(left.text) and starts_with_new_sentence_signal(
         right.text,
         has_heading_text_signal=has_heading_text_signal,
@@ -373,6 +375,70 @@ def alignment_transition_implies_structure(left: RawParagraph, right: RawParagra
         return False
     structured_alignments = {"center", "right", "end"}
     return left.paragraph_alignment in structured_alignments or right.paragraph_alignment in structured_alignments
+
+
+def font_sizes_match(first: float | None, second: float | None) -> bool | None:
+    """Whether two paragraph font sizes are one size; ``None`` when either is unknown.
+
+    The tolerance is the PDF importer's (``pdf_import.logical_import._font_sizes_match``: the
+    larger may exceed the smaller by ``max(0.5, 10 %)``), which already decides there whether two
+    lines belong to one paragraph. It is restated here rather than imported: the document layer
+    does not depend on the PDF importer, and ``tests/test_paragraph_boundary_normalization.py``
+    pins the two to the same answers. The importer reads a missing size as "no match"; here a
+    missing size is no evidence either way, so the caller can leave its decision unchanged.
+    """
+    if not isinstance(first, (int, float)) or not isinstance(second, (int, float)):
+        return None
+    if first <= 0 or second <= 0:
+        return None
+    smaller, larger = min(first, second), max(first, second)
+    return larger - smaller <= max(0.5, smaller * 0.1)
+
+
+# The PDF importer's form of a standalone footnote marker
+# (``pdf_import.logical_import._STANDALONE_FOOTNOTE_MARKER_PATTERN``), restated for the same
+# reason as the size tolerance above and pinned to it by the same test file.
+_STANDALONE_NOTE_MARK_PATTERN = re.compile(r"^\d{1,3}$")
+
+
+def is_standalone_note_mark(text: str) -> bool:
+    return _STANDALONE_NOTE_MARK_PATTERN.match((text or "").strip()) is not None
+
+
+def font_size_transition_implies_structure(left: RawParagraph, right: RawParagraph) -> bool:
+    """Spec 080: two paragraphs set in clearly different sizes are two things, not one torn one.
+
+    A paragraph torn by a page, a column or a figure keeps its size on both sides; a change of
+    size between two adjacent paragraphs is the typesetter marking a change of kind -- an
+    epigraph or its attribution and the chapter's first paragraph, a lead-in and a displayed
+    quotation, a caption and the body, table-of-contents lines of two tiers. Unknown size on
+    either side is no evidence, and the boundary is then decided by the other signals as before.
+
+    One shape is set small for another reason: a note mark the importer left as a paragraph of
+    its own (the smaller side's whole text is a 1-3 digit number). It is a superscript inside a
+    line, not a different kind of text, so its size says nothing about structure: it belongs to
+    the text before it, and the text after it belongs to the same paragraph only when it
+    continues the sentence. So across such a mark the size is no evidence when the right side
+    starts as a continuation (``starts_with_continuation_signal`` -- for the mark itself, a
+    digit, always), and the other signals decide as before. The importer treats the same mark
+    the same way (``_consolidate_cross_role_continuations``: "transparent" between two halves of
+    a sentence).
+
+    Measured 2026-11-13 on the four corpus PDFs and the four translated DOCX (spec 080): of
+    15 744 boundaries, 2 106 cross a size change and 36 of those were merged. 29 are refused now
+    -- 28 joined two different things, one joined the two lines of an attribution across its
+    mark (the price: two paragraphs instead of one, no text lost); 7 join a mark to the text it
+    marks or a sentence across its mark and still join. On the four DOCX versions of the books
+    (``tests/sources/book/*.docx``) 3 merges crossed a size change and all 3 are refused, one of
+    them a cover title set in two sizes (spec 080, Non-goals).
+    """
+    match = font_sizes_match(left.font_size_pt, right.font_size_pt)
+    if match is not False:
+        return False
+    smaller = left if cast(float, left.font_size_pt) < cast(float, right.font_size_pt) else right
+    if is_standalone_note_mark(smaller.text) and starts_with_continuation_signal(right.text):
+        return False
+    return True
 
 
 def style_transition_implies_structure(left: RawParagraph, right: RawParagraph) -> bool:
