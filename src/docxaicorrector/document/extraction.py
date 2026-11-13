@@ -42,7 +42,7 @@ from docxaicorrector.document.layout_cleanup import (
     clean_paragraph_layout_artifacts,
     write_layout_cleanup_report_artifact as _write_layout_cleanup_report_artifact_impl,
 )
-from docxaicorrector.document.structure_repair import repair_pdf_derived_structure
+from docxaicorrector.document.structure_repair import _normalize_outline_text, repair_pdf_derived_structure
 from docxaicorrector.document.roles import (
     detect_explicit_list_kind,
     extract_explicit_heading_level,
@@ -807,10 +807,13 @@ def _should_expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[
 
 
 def _is_toc_header_line(text: str) -> bool:
-    return text.strip().lower() in _TOC_HEADER_LINE_VALUES
+    # Spec 085: read without emphasis markers -- the DOCX reader renders a bold header as
+    # "**Contents**", and two of the four book DOCX of the corpus carry it so (measured
+    # 2026-11-13); their contents lists were not recognised at all.
+    return text.replace("*", "").replace("_", "").strip().lower() in _TOC_HEADER_LINE_VALUES
 
 
-def _is_toc_candidate_text(text: str) -> bool:
+def _is_toc_candidate_text(text: str, *, length_limited: bool = True) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
@@ -818,10 +821,10 @@ def _is_toc_candidate_text(text: str) -> bool:
         return False
     if stripped.startswith("<table"):
         return False
-    if len(stripped) > 160:
+    if length_limited and len(stripped) > 160:
         return False
     word_count = len(_TOC_CANDIDATE_WORD_PATTERN.findall(stripped))
-    if word_count == 0 or word_count > 16:
+    if word_count == 0 or (length_limited and word_count > 16):
         return False
     if stripped.endswith((".", ";")):
         return False
@@ -861,10 +864,7 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
             index += 1
             continue
 
-        look_ahead = index + 1
-        while look_ahead < len(paragraphs) and _is_toc_candidate_paragraph(paragraphs[look_ahead]):
-            look_ahead += 1
-        look_ahead = _toc_region_end_at_last_page_number(paragraphs, start=index + 1, end=look_ahead)
+        look_ahead = _toc_region_end(paragraphs, header=index)
 
         # `index` is the header itself, so this is "header + at least 2 candidate entries",
         # not "at least 3 candidates" as this rule was described until spec 054.
@@ -879,12 +879,124 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
         index += 1
 
 
-def _is_toc_candidate_paragraph(paragraph: ParagraphUnit) -> bool:
+def _toc_region_end(paragraphs: list[ParagraphUnit], *, header: int) -> int:
+    """Spec 085: where the contents list under the header at ``header`` ends (exclusive index).
+
+    The list is read off the document's own evidence.
+
+    1. The walk: lines of the contents shape -- not a picture or a table, not ending as a
+       sentence (``_is_toc_candidate_text``). It stops before a heading that REPEATS one of the
+       lines already walked (``_repeats_contents_entry``: the body has begun where a listed section
+       begins) and before a second contents header, which opens a list of its own. The candidate
+       run is the walk's prefix of lines that are also short (at most 160 characters and 16 words),
+       the run the list was before this spec.
+    2. The end is set by evidence the lines carry. Two or more lines with a page number: the list
+       ends with the last of them (spec 067, ``_page_numbered_positions``). Otherwise two or more
+       lines that name, in document order, headings found after them
+       (``_lines_naming_later_headings``): the list ends with the last of them. Otherwise, with no
+       evidence either way, the candidate run stands. So a line longer than the shape limit (the
+       sub-section titles of a chapter typeset as one paragraph) is kept only when a later line
+       carries evidence, and a short line after the last evidence (a title-page line, the first
+       heading of the body) is left out.
+
+    Measured 2026-11-13 on 12 documents (spec 085): the candidate run ended too early in two (the
+    translated and the source PDF of one book whose contents lists each chapter's sub-sections as
+    one long paragraph) and too late in four (the body's first heading, or the title-page lines
+    after a list without page numbers, marked as contents); with this rule no non-contents
+    paragraph is marked, and every list ends at its last line by reading except a closing line
+    that names no heading (an advertisement page), which stays narrated.
+    """
+    start = header + 1
+    entry_texts: set[str] = set()
+    run_end: int | None = None
+    walk_end = start
+    while walk_end < len(paragraphs) and _continues_contents_list(paragraphs[walk_end], entry_texts):
+        if run_end is None and not _is_toc_candidate_paragraph(paragraphs[walk_end]):
+            run_end = walk_end
+        entry_texts.add(_contents_outline_text(paragraphs[walk_end].text))
+        walk_end += 1
+    if run_end is None:
+        run_end = walk_end
+
+    numbered = _page_numbered_positions(paragraphs, start=start, end=walk_end)
+    if len(numbered) >= 2:
+        return numbered[-1] + 1
+    named = _lines_naming_later_headings(paragraphs, start=start, end=walk_end)
+    if len(named) >= 2:
+        return named[-1] + 1
+    return run_end
+
+
+def _continues_contents_list(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
+    if not _is_toc_candidate_paragraph(paragraph, length_limited=False):
+        return False
+    if _is_toc_header_line(paragraph.text):
+        return False
+    return not _repeats_contents_entry(paragraph, entry_texts)
+
+
+def _repeats_contents_entry(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
+    """Spec 085: a heading whose text is one of the entries already read is that section itself:
+    the body has begun. Measured 2026-11-13: in five of 12 documents the first such heading is the
+    paragraph right after the last contents line; inside a contents list it occurs 0 times."""
+    return paragraph.role == "heading" and _contents_outline_text(paragraph.text) in entry_texts
+
+
+def _contents_outline_text(text: str) -> str:
+    """The outline text ``structure_repair`` compares contents entries by (its page reference
+    stripped, whitespace collapsed, case folded), read without emphasis markers: the bridge
+    renders the same title as ``**Preface**`` in one place and ``Preface`` in another."""
+    return _normalize_outline_text(str(text or "").replace("*", "").replace("_", ""))
+
+
+def _lines_naming_later_headings(paragraphs: list[ParagraphUnit], *, start: int, end: int) -> list[int]:
+    """Spec 085: the lines in ``[start, end)`` that name, in document order, a heading found after
+    them.
+
+    A contents entry names its section: the line, or a run of its words when the line holds
+    several titles (``"Ledgers and Tides The Mooring Problem"``), equals the outline text of a
+    heading further on (``_contents_outline_text``). A line counts when one of the headings it
+    names lies after the line itself and after the heading the previous counted line named -- a
+    contents list walks the body in order, so a title-page or foreword line after the list that
+    happens to repeat an earlier heading's words does not count, and neither does a list at the
+    end of a book, whose headings all stand before it. Measured 2026-11-13 on 12 documents: of
+    the twelve paragraphs after each list's last line, 0 count."""
+    headings: dict[str, list[int]] = {}
+    for position in range(start, len(paragraphs)):
+        candidate = paragraphs[position]
+        if candidate.role != "heading":
+            continue
+        outline = _contents_outline_text(candidate.text)
+        if outline:
+            headings.setdefault(outline, []).append(position)
+    if not headings:
+        return []
+    named: list[int] = []
+    last_named_heading = -1
+    for position in range(start, end):
+        words = _contents_outline_text(paragraphs[position].text).split()
+        next_heading: int | None = None
+        for first_word in range(len(words)):
+            for last_word in range(first_word + 1, len(words) + 1):
+                for heading_position in headings.get(" ".join(words[first_word:last_word]), ()):
+                    if heading_position > max(position, last_named_heading) and (
+                        next_heading is None or heading_position < next_heading
+                    ):
+                        next_heading = heading_position
+        if next_heading is not None:
+            named.append(position)
+            last_named_heading = next_heading
+    return named
+
+
+def _is_toc_candidate_paragraph(paragraph: ParagraphUnit, *, length_limited: bool = True) -> bool:
     if paragraph.role in {"image", "table"}:
         return False
     if paragraph.attached_to_asset_id is not None:
         return False
-    return _is_toc_candidate_text(paragraph.text) or _holds_consecutive_toc_entries(paragraph.text)
+    return _is_toc_candidate_text(paragraph.text, length_limited=length_limited) or _holds_consecutive_toc_entries(
+        paragraph.text
+    )
 
 
 # Spec 067 FR-007 follow-up: a page number that a contents line carries -- 1-4 digits, as the
@@ -917,22 +1029,17 @@ def _holds_consecutive_toc_entries(text: str) -> bool:
     return all(_is_toc_candidate_text(piece) for piece in pieces)
 
 
-def _toc_region_end_at_last_page_number(
-    paragraphs: list[ParagraphUnit], *, start: int, end: int
-) -> int:
-    """Spec 067 FR-007 follow-up: where a contents region carries page numbers, it ends with
-    the last line that carries one. A line after it that still has the short contents shape --
-    the title of the first section after the contents, its byline -- is not an
-    entry. A region whose entries carry no page numbers at all (fewer than two) is left as the
-    candidate run found it."""
-    numbered = [
+def _page_numbered_positions(paragraphs: list[ParagraphUnit], *, start: int, end: int) -> list[int]:
+    """Spec 067 FR-007 follow-up: the lines in ``[start, end)`` that carry a page number. Where
+    a contents list has two or more, it ends with the last of them (``_toc_region_end``, step 2):
+    a line after it that still has the short contents shape -- the title of the first section
+    after the contents, its byline -- is not an entry. Spec 085 folded the former
+    ``_toc_region_end_at_last_page_number`` into ``_toc_region_end``; the rule is unchanged."""
+    return [
         position
         for position in range(start, end)
         if _TOC_TRAILING_PAGE_NUMBER_PATTERN.search(paragraphs[position].text or "")
     ]
-    if len(numbered) < 2:
-        return end
-    return numbered[-1] + 1
 
 
 def _apply_or_hint_stage0_toc_role(paragraph: ParagraphUnit, *, structural_role: str) -> None:

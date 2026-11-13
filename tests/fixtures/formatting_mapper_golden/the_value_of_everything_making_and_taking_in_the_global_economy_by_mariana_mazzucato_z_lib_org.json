@@ -1317,9 +1317,7 @@
           "p0075",
           "p0076",
           "p0077",
-          "p0078",
-          "p0079",
-          "p0080"
+          "p0078"
         ],
         "rationale": [
           "toc_header_with_entries"
@@ -1346,8 +1344,8 @@
     "list_restoration_decisions": [],
     "mapped_count": 460,
     "mapping_strategy_counts": {
-      "exact_text": 12,
-      "local_gap_heading_fallback": 5,
+      "exact_text": 11,
+      "local_gap_heading_fallback": 6,
       "local_gap_toc_fallback": 3,
       "paragraph_id_rebuild_key": 12,
       "paragraph_id_registry": 369,
@@ -1461,9 +1459,7 @@
           "p0075",
           "p0076",
           "p0077",
-          "p0078",
-          "p0079",
-          "p0080"
+          "p0078"
         ],
         "reasons": [
           "toc_header_with_entries"
@@ -1474,8 +1470,8 @@
       }
     ],
     "relation_identity_population": {
-      "relation_id_missing_count": 431,
-      "relation_id_populated_count": 69,
+      "relation_id_missing_count": 433,
+      "relation_id_populated_count": 67,
       "source_count": 500
     },
     "source_count": 500,
@@ -3689,13 +3685,11 @@
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0079",
-        "relation_ids": [
-          "rel_0001"
-        ],
+        "relation_ids": [],
         "role": "body",
         "role_confidence": "heuristic",
         "source_index": 73,
-        "structural_role": "toc_entry",
+        "structural_role": "body",
         "text_preview": "follow penguin"
       },
       {
@@ -3704,26 +3698,24 @@
         "boundary_confidence": "explicit",
         "boundary_rationale": null,
         "boundary_source": "raw",
-        "heading_level": null,
+        "heading_level": 1,
         "list_abstract_num_id": null,
         "list_kind": null,
         "list_level": 0,
         "list_num_id": null,
         "list_numbering_format": null,
         "mapped_target_index": 80,
-        "mapping_strategy": "exact_text",
+        "mapping_strategy": "local_gap_heading_fallback",
         "origin_raw_indexes": [
           76
         ],
         "origin_raw_text_count": 1,
         "paragraph_id": "p0080",
-        "relation_ids": [
-          "rel_0001"
-        ],
-        "role": "body",
+        "relation_ids": [],
+        "role": "heading",
         "role_confidence": "explicit",
         "source_index": 74,
-        "structural_role": "toc_entry",
+        "structural_role": "heading",
         "text_preview": "preface: stories about wealth creation"
       },
       {
@@ -15280,9 +15272,9 @@
         "text_preview": "follow penguin"
       },
       {
-        "heading_level": null,
+        "heading_level": 1,
         "mapped": true,
-        "style_name": "Normal",
+        "style_name": "Heading 1",
         "target_index": 80,
         "text_preview": "preface: stories about wealth creation"
       },
