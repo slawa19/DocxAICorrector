@@ -2,13 +2,16 @@
 
 ``quality_gate_text_detectors._is_bibliography_or_url_dominant_text`` skipped any paragraph with three
 bibliographic hits -- a four-digit number counts as one -- so an English prose paragraph that mentions
-three years and came back untranslated was invisible to the gate. The hits now count as bibliography only
-when the paragraph is not prose by the share half of the repository's prose-form test
-(``output_validation.prose_form_word_counts`` / ``PROSE_FORM_MIN_RESIDUE_SHARE``).
+three years and came back untranslated was invisible to the gate. The hits now count as bibliography unless
+the paragraph is prose by the share half of the repository's prose-form test
+(``output_validation.prose_form_word_counts`` / ``PROSE_FORM_MIN_RESIDUE_SHARE``) AND one of its sentences
+is prose by that share with no reference mark of its own (acceptance review round 1: a list of references
+with plain sentence-case titles is prose by share, and counting it gave a false fatal verdict).
 
 Both directions are pinned: untranslated prose with years is counted and can block a translate run; a note
-made of references, kept in the source language as D1 asks, is still skipped; so is a reference with an
-address (that branch is unchanged on purpose -- spec 083 Non-goals). All texts are invented.
+made of references, kept in the source language as D1 asks, is still skipped, whatever the case of its titles;
+so is a reference with an address (that branch is unchanged on purpose -- spec 083 Non-goals). All texts are
+invented.
 """
 
 from __future__ import annotations
@@ -57,6 +60,60 @@ _REFERENCE_WITH_ADDRESS = (
     "Harbour Council of Kelbrook, ‘a report on the supply of mooring services by the northern guilds to the "
     "small and medium-sized fishing crews working within the outer harbour and along the river mouth’ (2012), "
     "a summary is online at www.harbourcouncil.example.org/reports/moorings.htm"
+)
+# Review round 1 -- reference lists whose titles are neither emphasised nor quoted and are written in sentence
+# case: prose by share, each entry with its own mark. They must stay skipped.
+# (a) author, title (year), publisher; ... -- the mark is the year in brackets.
+_PLAIN_TITLE_REFERENCES = (
+    "M. Ferrow, How small harbour towns pay for their ferries and keep the lights on during long winters of "
+    "falling trade (2009), Saltmarsh Books; T. Okonkwo, Why coastal guilds lend to fishing crews and protect the "
+    "jobs of the older pilots (2013), Quayside Press; L. Brandt, How the northern ports share their dues with the "
+    "villages that keep the channel clear for everyone (2016), Saltmarsh Books."
+)
+# (b) ..., publisher, year; ... -- the mark is the year in the date field after a comma.
+_DATE_FIELD_REFERENCES = (
+    "M. Ferrow, How small harbour towns pay for their ferries and keep the lights on during long winters of "
+    "falling trade, Saltmarsh Books, 2009; T. Okonkwo, Why coastal guilds lend to fishing crews and protect the "
+    "jobs of the older pilots, Quayside Press, 2013; L. Brandt, How the northern ports share their dues with the "
+    "villages that keep the channel clear, Saltmarsh Books, 2016."
+)
+# (c) ..., journal, Month year; ... -- the date field holds a month or a season before the year.
+_MONTH_FIELD_REFERENCES = (
+    "M. Ferrow, how small harbour towns pay for their ferries and keep the lights on during long winters, "
+    "Harbour Review, Spring 2009; T. Okonkwo, why coastal guilds lend to fishing crews and protect the jobs of "
+    "older pilots, Coastal Affairs, March 2013; L. Brandt, how the northern ports share their dues with the "
+    "villages along the channel, Harbour Review, Autumn 2016."
+)
+# (d) Name, I. (year) Title. Place: Publisher. -- entries as sentences; the place and publisher stand in a
+# sentence of their own, which is not prose by share.
+_SENTENCE_ENTRY_REFERENCES = (
+    "Ferrow, M. (2009) How small harbour towns pay for their ferries and keep the lights on during long winters. "
+    "Kelbrook: Saltmarsh Books. Okonkwo, T. (2013) Why coastal guilds lend to fishing crews and protect the jobs "
+    "of the older pilots. Kelbrook: Quayside Press. Brandt, L. (2016) How the northern ports share their dues "
+    "with the villages along the channel. Kelbrook: Saltmarsh Books."
+)
+# (e) Name, I. (year). Title. Publisher. -- the author-date style: the title is a sentence of its own,
+# right after the sentence that carries the year in brackets.
+_AUTHOR_DATE_REFERENCES = (
+    "Ferrow, M. (2009). How small harbour towns pay for their ferries and keep the lights on during long "
+    "winters. Saltmarsh Books. Okonkwo, T. (2013). Why coastal guilds lend to fishing crews and protect the jobs "
+    "of the older pilots. Quayside Press. Brandt, L. (2016). How the northern ports share their dues with the "
+    "villages along the channel. Saltmarsh Books."
+)
+# Prose whose three years include one in brackets: one sentence carries a mark, the others do not.
+_PROSE_WITH_ONE_BRACKETED_YEAR = (
+    "The harbour guild of Kelbrook rebuilt its northern quay in 1987, after a winter of storms had left half of "
+    "the old timber piles leaning into the channel. The council minutes of that spring (1988) record the cost, "
+    "and the pilots kept complaining for years that the entrance was too narrow for the larger boats. The work "
+    "to widen it was only finished in 2003, when the last of the old moorings was pulled out and sold."
+)
+# A reference followed by the author's annotation: D1 asks for the annotation to be translated.
+_ANNOTATED_REFERENCE = (
+    "M. Ferrow, How small harbour towns pay for their ferries (Kelbrook: Saltmarsh Books, 2009), pp. 12-40. "
+    "The book follows the accounts of three ferry companies over twenty years and shows that the winter "
+    "crossings were always paid for by the summer trade. It is the only study that looks at the ferries from "
+    "the side of the crews rather than the owners, and its last chapter on the 1998 strike and the settlement "
+    "of 2004 is still quoted."
 )
 
 
@@ -132,6 +189,105 @@ def test_a_commentary_note_left_in_the_source_language_is_counted() -> None:
     assert len(detectors._BIBLIOGRAPHY_LIKE_PATTERN.findall(text)) >= 3
     assert _reaches_whole_paragraph_path(text)
     assert _residue_share(text) >= output_validation.PROSE_FORM_MIN_RESIDUE_SHARE
+    assert quality_gate._untranslated_body_char_count(text) == len(text)
+
+
+def _premises_of_a_plain_title_list(text: str) -> None:
+    """What makes the review's case dangerous: on the whole-paragraph path, prose by share, three hits, and
+    nothing else (no address, no chain, not a citation by the per-note form) that would skip it."""
+    assert len(detectors._BIBLIOGRAPHY_LIKE_PATTERN.findall(text)) >= 3
+    assert detectors._URL_OR_DOMAIN_PATTERN.search(text) is None
+    assert _reaches_whole_paragraph_path(text)
+    assert output_validation.is_citation_form_paragraph(text) is False
+    assert _residue_share(text) >= output_validation.PROSE_FORM_MIN_RESIDUE_SHARE
+
+
+def test_references_with_plain_sentence_case_titles_do_not_block_a_correct_translation() -> None:
+    """Acceptance review round 1 (P2): such a list, kept in the source language, was counted whole, and six
+    of them -- or one long one -- gave the FATAL verdict on a correct translation."""
+    text = _PLAIN_TITLE_REFERENCES
+    _premises_of_a_plain_title_list(text)
+    assert detectors._is_bibliography_or_url_dominant_text(text) is True
+    assert quality_gate._untranslated_body_char_count(text) == 0
+    assert _collected(text) == []
+
+    translated = [_PROSE_WITH_YEARS_RU] * 200
+    report = _report(*(translated + [text] * 6))
+    assert report["untranslated_body_text_chars"] == 0
+    assert "untranslated_body_text_above_threshold" not in report["gate_reasons"]
+    long_list = " ".join([text[:-1] + ";"] * 6)[:-1] + "."
+    assert len(long_list) >= detectors._UNTRANSLATED_BODY_FAIL_MIN_CHARS
+    report = _report(*(translated + [long_list]))
+    assert report["untranslated_body_text_chars"] == 0
+    assert "untranslated_body_text_above_threshold" not in report["gate_reasons"]
+
+
+def test_a_year_in_the_date_field_marks_an_entry() -> None:
+    for text in (_DATE_FIELD_REFERENCES, _MONTH_FIELD_REFERENCES):
+        _premises_of_a_plain_title_list(text)
+        assert output_validation.has_hard_reference_mark(text) is False  # only the date field marks these entries
+        assert detectors._is_bibliography_or_url_dominant_text(text) is True
+        assert quality_gate._untranslated_body_char_count(text) == 0
+
+
+def test_a_place_and_publisher_sentence_is_not_running_text() -> None:
+    text = _SENTENCE_ENTRY_REFERENCES
+    _premises_of_a_plain_title_list(text)
+    assert detectors._is_bibliography_or_url_dominant_text(text) is True
+    assert quality_gate._untranslated_body_char_count(text) == 0
+
+
+def test_a_title_in_the_sentence_after_the_year_belongs_to_its_entry() -> None:
+    """Author-date entries: the title sentence follows the sentence with the year in brackets."""
+    text = _AUTHOR_DATE_REFERENCES
+    _premises_of_a_plain_title_list(text)
+    assert detectors._is_bibliography_or_url_dominant_text(text) is True
+    assert quality_gate._untranslated_body_char_count(text) == 0
+
+
+def test_a_reference_note_with_a_short_pointer_stays_skipped() -> None:
+    """The whole-paragraph share still comes first: a note of references with one short pointer sentence
+    ("See also ...") is not prose as a whole and stays skipped, as before spec 083 (on the corpus eight
+    reference notes have such a sentence)."""
+    text = "For the older work on the ferries and the dues, see the following. " + _REFERENCES_NOTE
+    assert _reaches_whole_paragraph_path(text)
+    assert _residue_share(text) < output_validation.PROSE_FORM_MIN_RESIDUE_SHARE
+    assert detectors._has_unmarked_running_sentence(text) is True
+    assert detectors._is_bibliography_or_url_dominant_text(text) is True
+    assert quality_gate._untranslated_body_char_count(text) == 0
+
+
+def test_a_sentence_of_names_is_not_running_text() -> None:
+    """A sentence is running text by the SHARE of its lowercase words, not by their number: an archive line
+    of names joined by "of", "the" and "and" is not prose and needs no mark."""
+    archive = (
+        "Unpublished Papers of the Harbour Council, the Northern Guild of Pilots, the Western Isles Trust and "
+        "the Saltmarsh Ferry Company, Kelbrook Record Office."
+    )
+    residue, total = output_validation.prose_form_word_counts(archive)
+    assert residue >= output_validation.PROSE_FORM_MIN_RESIDUE_WORDS
+    assert residue / total < output_validation.PROSE_FORM_MIN_RESIDUE_SHARE
+    text = _PLAIN_TITLE_REFERENCES + " " + archive
+    _premises_of_a_plain_title_list(text)
+    assert detectors._is_bibliography_or_url_dominant_text(text) is True
+    assert quality_gate._untranslated_body_char_count(text) == 0
+
+
+def test_one_bracketed_year_does_not_hide_the_other_sentences() -> None:
+    """The marks are read sentence by sentence: one sentence of prose that cites does not make the rest a list."""
+    text = _PROSE_WITH_ONE_BRACKETED_YEAR
+    assert output_validation.has_hard_reference_mark(text) is True
+    assert _reaches_whole_paragraph_path(text)
+    assert len(detectors._BIBLIOGRAPHY_LIKE_PATTERN.findall(text)) >= 3
+    assert quality_gate._untranslated_body_char_count(text) == len(text)
+
+
+def test_a_reference_does_not_shield_its_annotation() -> None:
+    """The sentence after a cited one is read with it, one step only: the second sentence of an annotation is
+    running text again, and D1 asks for it to be translated."""
+    text = _ANNOTATED_REFERENCE
+    assert _reaches_whole_paragraph_path(text)
+    assert len(detectors._BIBLIOGRAPHY_LIKE_PATTERN.findall(text)) >= 3
     assert quality_gate._untranslated_body_char_count(text) == len(text)
 
 

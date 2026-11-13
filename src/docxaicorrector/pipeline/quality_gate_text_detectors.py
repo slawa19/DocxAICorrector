@@ -99,19 +99,58 @@ def _reads_as_prose_by_share(text: str) -> bool:
     return bool(total) and residue / total >= PROSE_FORM_MIN_RESIDUE_SHARE
 
 
+# Spec 083: a sentence ends at ``.``, ``!`` or ``?`` followed by whitespace and a capital letter, an
+# opening quote, an opening parenthesis or an emphasis mark. Read only on text the gate counts (Latin letters >= 0.8),
+# so the Latin capitals add no language assumption to what is counted.
+_SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"“‘(*])")
+# Spec 083: a year in the DATE FIELD of a reference -- after a comma, alone or behind one capitalised
+# word (", 2009", ", March 2013", ", Spring 2009"). A year in running text follows a word, not a comma.
+_DATE_FIELD_YEAR_PATTERN = re.compile(r",\s*(?:[A-Z][^\W\d_]*\s+)?(?:1[5-9]\d\d|20\d\d)(?!\d)")
+
+
+def _carries_reference_mark(sentence: str) -> bool:
+    """Spec 083: does the sentence say where a work is found -- a year in brackets, a page or volume
+    locator, a web address (``output_validation.has_hard_reference_mark``, spec 077) or a year in the
+    date field (``_DATE_FIELD_YEAR_PATTERN``)?"""
+    from docxaicorrector.pipeline.output_validation import has_hard_reference_mark
+
+    return has_hard_reference_mark(sentence) or _DATE_FIELD_YEAR_PATTERN.search(sentence) is not None
+
+
+def _has_unmarked_running_sentence(text: str) -> bool:
+    """Spec 083: does ``text`` hold a sentence of running text that belongs to no cited entry?
+
+    A reference list keeps its running words inside entries, and every entry says where the work is
+    found (``_carries_reference_mark``). A sentence-case title is prose by share, but it sits in the
+    sentence that carries the mark, or -- in the author-date styles, ``Name, I. (2009). Title.
+    Publisher.`` -- in the sentence right after it; so a sentence counts as running text when it is
+    prose by share, carries no mark and does not directly follow a sentence that carries one (the
+    following is one step, it does not chain). A name, a place or a publisher left between full stops
+    is not prose by share. Prose that mentions years has sentences of running text that no mark
+    precedes: its years stand in the running text.
+    """
+    sentences = [sentence for sentence in _SENTENCE_BOUNDARY_PATTERN.split(text) if sentence.strip()]
+    marked = [_carries_reference_mark(sentence) for sentence in sentences]
+    return any(
+        _reads_as_prose_by_share(sentence) and not marked[index] and not (index > 0 and marked[index - 1])
+        for index, sentence in enumerate(sentences)
+    )
+
+
 def _is_bibliography_or_url_dominant_text(text: str) -> bool:
     """Should the whole-paragraph untranslated-body test skip ``text`` as bibliographic apparatus?
 
     Spec 083: three bibliographic hits (``_BIBLIOGRAPHY_LIKE_PATTERN``: a four-digit number, a year in
-    brackets, or a bibliographic word) are bibliography only when the paragraph is NOT prose by form
-    (``_reads_as_prose_by_share``). A bare count of four-digit numbers cannot tell a reference list
-    from a sentence that mentions three years, and an English prose paragraph left untranslated was
-    invisible to the gate. Measured 2026-11-13 on the four English corpus books read as if returned
-    untranslated: the count hid 108 prose paragraphs, and with the form condition 107 of them are
-    counted (the one left is a quotation set in italics line by line, which the share reads as title
-    spans), as are 13 notes of commentary; every note made of references stays skipped (highest share
-    among them 0.363, lowest among the counted prose 0.417). On the 7 078 delivered paragraphs of the
-    four translations no count changes. Numbers in spec 083.
+    brackets, or a bibliographic word) are bibliography unless the paragraph reads as prose by form:
+    it is prose by share (``_reads_as_prose_by_share``) AND at least one of its sentences is prose by
+    share with no reference mark of its own (``_has_unmarked_running_sentence``). A bare count of
+    four-digit numbers cannot tell a reference list from a sentence that mentions three years, and an
+    English prose paragraph left untranslated was invisible to the gate. The second condition is the
+    acceptance review's case: a list of references whose titles are neither emphasised nor quoted and
+    are written in sentence case is prose by share, and counting it would block a correct translation.
+    Measured 2026-11-13 on the four English corpus books read as if returned untranslated: of the 108 prose
+    paragraphs the count hid, 104 are counted, and 11 notes of commentary; no reference note is; on the
+    7 078 delivered paragraphs of the four translations no count changes. Tables in spec 083.
 
     The address branch and the numbered-lines branch are unchanged (spec 083 Non-goals).
     """
@@ -122,7 +161,9 @@ def _is_bibliography_or_url_dominant_text(text: str) -> bool:
         words = _LATIN_WORD_PATTERN.findall(stripped)
         return len(words) < 40
     bibliography_hits = len(_BIBLIOGRAPHY_LIKE_PATTERN.findall(stripped))
-    if bibliography_hits >= 3 and not _reads_as_prose_by_share(stripped):
+    if bibliography_hits >= 3 and not (
+        _reads_as_prose_by_share(stripped) and _has_unmarked_running_sentence(stripped)
+    ):
         return True
     lines = [line.strip() for line in stripped.splitlines() if line.strip()]
     if lines and sum(1 for line in lines if re.match(r"^\s*(?:\[\d+\]|\d+[.)])\s+", line)) / len(lines) >= 0.5:
