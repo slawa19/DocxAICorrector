@@ -158,11 +158,15 @@ def test_a_page_with_a_user_unit_is_declined(tmp_path) -> None:
     ("decode", "colourant", "stored_is_negative"),
     [("[1 0]", "Black", False), (None, "All", True)],
 )
-def test_an_ink_space_image_is_replaced_exactly_when_it_is_a_negative_of_its_page(tmp_path, decode, colourant, stored_is_negative) -> None:
-    """Finding 3: Decode [1 0] cancels the tint inversion; the stored file is already the page's picture and
-    keeps its bytes. /All paints every colourant: with the grey alternate the page shows 1 - tint, so the
-    stored file is a negative and is replaced. Premise and outcome are pinned independently (round 2 review:
-    the earlier form chose the expected outcome from the measured sign)."""
+def test_evidence_half_an_ink_space_image_right_as_stored_correlates_positively_and_keeps_its_bytes(
+    tmp_path, decode, colourant, stored_is_negative
+) -> None:
+    """The EVIDENCE half of the trigger (finding 3): Decode [1 0] cancels the tint inversion; the stored file
+    is already the page's picture -- POSITIVE correlation -- and keeps its bytes although its space is an ink
+    space. /All paints every colourant: with the grey alternate the page shows 1 - tint, so the stored file is
+    a negative and is replaced. Premise and outcome are pinned independently (round 2 review: the earlier form
+    chose the expected outcome from the measured sign). Mutation 'label only' (drop the evidence) replaces the
+    Decode-compensated image."""
     path = write_pdf(tmp_path / "premise.pdf", [SyntheticPage(images=[_photo(decode=decode, colourant=colourant)])])
     extraction, _plan, outcome = _run(path)
     (image,) = outcome.images
@@ -185,12 +189,15 @@ def test_a_flat_image_is_declined(tmp_path) -> None:
     assert outcome.images == extraction.images and outcome.replaced == 0
 
 
-def test_a_device_gray_negative_is_replaced_by_evidence_not_by_label(tmp_path) -> None:
-    """The evidence rule, not a colour-space label: a light-space image drawn with Decode [1 0] is a
-    negative of its page and is replaced too."""
+def test_cause_half_a_device_gray_negative_is_not_replaced(tmp_path) -> None:
+    """The CAUSE half of the trigger (acceptance round 3): a light-space image drawn with Decode [1 0] IS a
+    negative of its page -- the premise is asserted -- but its space is not an ink space, so nothing in the
+    PDF object explains the inversion and the image keeps its bytes. Negatives outside ink spaces are a
+    recorded Non-goal of spec 082. Mutation 'any colour space' (drop the cause) replaces it."""
     photo = SyntheticImage("jpeg_gray", 60, 300, 260, 400, pixels=(300, 150), pattern="corner", decode="[1 0]")
     path = write_pdf(tmp_path / "gray_negative.pdf", [SyntheticPage(images=[photo], texts=[SyntheticText(40, 520, 11, "An invented line.")])])
-    _extraction, _plan, outcome = _run(path)
+    extraction, _plan, outcome = _run(path)
     (image,) = outcome.images
-    assert image.original_image_bytes is not None
-    assert _correlation(_grey(image.image_bytes), _grey(image.original_image_bytes)) < -0.9
+    page = _grey(_page_view(path, 1, (image.x0, image.top, image.x1, image.bottom)))
+    assert _correlation(_grey(image.image_bytes), page) < -0.9
+    assert image is extraction.images[0] and image.original_image_bytes is None and outcome.replaced == 0

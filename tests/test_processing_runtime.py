@@ -3343,16 +3343,12 @@ class _FakeLTImage:
 
 
 def _patch_pdfminer_image_layout(monkeypatch, pages) -> None:
+    import pdfminer.high_level as high_level
     import pdfminer.layout as layout
-
-    from docxaicorrector.pdf_import import images as pdf_images
-    from docxaicorrector.pdf_import.paint_evidence import PageEvidence
 
     monkeypatch.setattr(layout, "LTImage", _FakeLTImage)
     monkeypatch.setattr(layout, "LTFigure", _FakeLTFigure)
-    monkeypatch.setattr(
-        pdf_images, "iter_pages_with_evidence", lambda path: [(page, PageEvidence(painted=[], images={})) for page in pages]
-    )
+    monkeypatch.setattr(high_level, "extract_pages", lambda path: pages)
 
 
 def test_extract_pdf_images_warns_when_discovered_exceeds_emitted(monkeypatch) -> None:
@@ -4064,6 +4060,82 @@ def test_spec082_failed_frame_step_keeps_every_emitted_image(monkeypatch) -> Non
     pdf_bytes, _document, blobs, _shapes = _synthetic_bridge(monkeypatch, "jpeg_separation")
     assert blobs == [_jpeg_stream_of(pdf_bytes)]
     assert any(level == logging.ERROR and event == "pdf_image_frame_render_failed" for level, event, _ in events)
+
+
+def _two_negatives_docx(monkeypatch):
+    import io as _io
+
+    from docx import Document
+
+    from docxaicorrector.pdf_import import text_layer_quality
+    from pdf_synthetic import SyntheticImage, SyntheticPage, SyntheticText, build_pdf
+
+    monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", _promising_report_stub)
+    page = SyntheticPage(
+        images=[
+            SyntheticImage("jpeg_separation", 60, 400, 260, 500, pixels=(300, 150), pattern="corner"),
+            SyntheticImage("jpeg_devicen", 60, 250, 260, 350, pixels=(300, 150), pattern="gradient"),
+        ],
+        texts=[
+            SyntheticText(40, 540, 11, "An invented sentence above the pictures."),
+            SyntheticText(40, 200, 11, "Another invented sentence below the pictures."),
+        ],
+    )
+    docx_bytes, _backend = processing_runtime._convert_pdf_text_layer_to_docx(filename="two.pdf", source_bytes=build_pdf([page]))
+    document = Document(_io.BytesIO(docx_bytes))
+    blobs = [rel.target_part.blob for rel in document.part.rels.values() if "image" in rel.reltype]
+    return [p.text for p in document.paragraphs], (len(document.inline_shapes), sorted(blobs))
+
+
+@pytest.mark.parametrize("stage", ["planning", "page_geometry", "frame_geometry", "render", "comparison", "encode", "insertion"])
+def test_spec082_no_failure_in_the_frame_step_changes_what_the_import_delivers(monkeypatch, stage) -> None:
+    """Acceptance round 3 (the lesson of its finding 1): a failure at ANY stage of the frame-replacement step
+    leaves the document exactly as the import delivers it without the step -- every paragraph and every
+    original picture -- and logs an ERROR. The baseline is the same bridge with the step switched off."""
+    import docxaicorrector.pdf_import.image_frames as image_frames
+
+    with monkeypatch.context() as off:
+        off.setattr(processing_runtime, "_replace_pdf_images_by_page_frames", lambda path, extraction, spans, ocr_used=False: list(extraction.images))
+        baseline_paragraphs, baseline_blobs = _two_negatives_docx(off)
+    assert baseline_blobs[0] == 2 and len(baseline_blobs[1]) == 2 and any(baseline_paragraphs)
+    with monkeypatch.context() as working:
+        _paragraphs, working_blobs = _two_negatives_docx(working)
+    assert working_blobs[1] != baseline_blobs[1]  # not vacuous: without a failure both pictures are replaced
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("invented failure at " + stage)
+
+    targets = {
+        "planning": (image_frames, "plan_frame_replacements"),
+        "page_geometry": (image_frames, "read_page_geometry"),
+        "frame_geometry": (image_frames, "frame_geometry"),
+        "render": (image_frames, "render_frame"),
+        "comparison": (image_frames, "correlation_with_page"),
+        "encode": (image_frames, "encode_frame_png"),
+    }
+    if stage == "insertion":
+        real_append = processing_runtime._append_image_bytes_to_docx
+
+        def failing_for_renders(document, image_bytes, *, width_points=None, height_points=None):
+            if width_points is not None:
+                raise RuntimeError("invented failure at insertion")
+            return real_append(document, image_bytes)
+
+        monkeypatch.setattr(processing_runtime, "_append_image_bytes_to_docx", failing_for_renders)
+    else:
+        module, name = targets[stage]
+        monkeypatch.setattr(module, name, boom)
+    events: list[tuple[int, str]] = []
+    for module in (processing_runtime, image_frames):
+        monkeypatch.setattr(module, "log_event", lambda level, event, message, **context: events.append((level, event)))
+
+    paragraphs, blobs = _two_negatives_docx(monkeypatch)
+    assert paragraphs == baseline_paragraphs
+    assert blobs == baseline_blobs
+    assert any(
+        level == logging.ERROR and event in {"pdf_image_frame_render_failed", "pdf_image_replacement_insert_failed"}
+        for level, event in events
+    ), events
 
 
 @pytest.mark.parametrize(("width_points", "height_points"), [(209.6833, 100.0), (123.456, 78.9)])

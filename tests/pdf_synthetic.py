@@ -103,12 +103,9 @@ def _pixels(image: SyntheticImage, channels: int) -> bytes:
     w, h = image.pixels
     if image.pattern == "corner":
         gray = bytes(30 if (x < w // 2 and y < h // 2) else 220 for y in range(h) for x in range(w))
-    elif image.pattern == "halves":
-        # Left half 64, right half 192: the two-level picture of the round-2 review's counterexample.
-        gray = bytes(64 if x < w // 2 else 192 for _y in range(h) for x in range(w))
     elif image.pattern == "halves_ramp":
-        # Left half 64, right half a left-to-right ramp 160..224 (mean 192): the same counterexample, with a
-        # right half that is a picture of its own and not flat.
+        # Left half 64, right half a left-to-right ramp 160..224 (mean 192): the round-2 review's two-level
+        # counterexample, with a right half that is a picture of its own and not flat.
         half = w // 2
         gray = bytes(64 if x < half else 160 + ((x - half) * 64) // max(1, w - half - 1) for _y in range(h) for x in range(w))
     else:
