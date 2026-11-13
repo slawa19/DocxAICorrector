@@ -3779,7 +3779,15 @@ def _has_leading_section_ordinal(span: PdfTextSpan) -> bool:
 #     (`_entry_text_ends_sentence`);
 #   * the unit does not open a new entry: no leading note number ("12.", "12)", "12 Text"),
 #     no bullet, no repeated-author dash run, no author form ("Surname, X." / "Surname,
-#     Firstname" within the first four words);
+#     Firstname" within the first four words). Spec 081: the author form and "12 Text" are
+#     guesses from wording, and a wrapped line carries them by accident ("Business Review,
+#     January 2014.", "27 May 2011."); when the unit's first line sits at the wrap indent of
+#     a hanging-indent run on its page (`_entry_line_sits_at_the_hanging_indent`), geometry
+#     overrules them. "12." / "12)", bullets and dash runs always open an entry. Measured on
+#     the four corpus PDFs (2026-11-13, cached spans): the join makes 486 joins with this and
+#     419 without (Rethinking Money 58 / 46, The Value of Everything 362 / 315, Money and
+#     Sustainability 7 / 7, Creating Wealth 59 / 51); every one of the 67 added joins was read
+#     and is the wrapped line of the entry above it (spec 081);
 #   * the predecessor's last line is FULL: the unit's first word, at that line's own average
 #     character width, would not have fit before the body column's right edge -- so the line
 #     broke because it ran out of room, not because the entry ended;
@@ -3808,6 +3816,16 @@ _ENTRY_AUTHOR_FORM_MAX_NAME_WORDS = 4
 # after a space or an opening bracket -- the shape of a locator abbreviation.
 _ENTRY_LOCATOR_TOKEN_PATTERN = re.compile(r"(?:^|[\s(\[])(?P<token>[^\W\d_]{1,3})\.\Z", re.UNICODE)
 _ENTRY_HARD_HYPHEN_TAIL_PATTERN = re.compile(rf"[^\W_][{_SOFT_WRAP_HYPHEN_CHARS}]\Z", re.UNICODE)
+# Spec 081: a number closed by a full stop or a bracket -- the explicit form of an entry number,
+# as against the "number, then a word" form a wrapped date also has ("27 May 2011.").
+_ENTRY_EXPLICIT_NUMBER_PATTERN = re.compile(r"^\d{1,3}[.)](?:\s|$)")
+# Spec 081: a hanging indent is a convention of the list, so it is read only where the list
+# shows it more than once: the entry under test plus at least one more entry of the same
+# unbroken run that begins at the same margin and wraps to the same indent. One step is just
+# the pair the line grouping already split; two is the least that makes the edge a REPEATED
+# one. Not tuned: every one of the 67 corpus joins it allows sits in a run of 5 to 17 entries
+# (2026-11-13), so any minimum from 1 to 5 makes the same joins there (spec 081).
+_HANGING_INDENT_MIN_RUN_ENTRIES = 2
 
 
 def _back_matter_anchor_kind(unit: ParagraphUnit) -> str | None:
@@ -3967,12 +3985,136 @@ def _entry_continuation_keeps_the_wrap_indent(
     return float(first_line.x0) >= float(last_line.x0) - 0.5 * font_size
 
 
+def _opens_with_explicit_entry_marker(text: str) -> bool:
+    """Spec 081: the openers of `_text_opens_back_matter_entry` that MARK an entry -- a number
+    closed by a full stop or a bracket ("12.", "12)"), a bullet, a repeated-author dash run.
+    The other two openers there are guesses from wording that a wrapped line can carry by
+    accident: the author form ("Business Review, January 2014.") and a number followed by a
+    word ("27 May 2011.")."""
+    stripped = text.lstrip()
+    return bool(
+        _ENTRY_EXPLICIT_NUMBER_PATTERN.match(stripped)
+        or _BULLET_PATTERN.match(stripped)
+        or stripped[:1] in "•●"
+        or _ENTRY_REPEATED_AUTHOR_DASH_PATTERN.match(stripped)
+    )
+
+
+def _hanging_indent_line_position(
+    span: PdfTextSpan, *, margin: float, indent: float, tolerance: float
+) -> str | None:
+    """'margin' or 'indent' when the line starts at one of the two edges (the nearer one, within
+    `tolerance`); None when it starts anywhere else."""
+    to_margin = abs(float(span.x0) - margin)
+    to_indent = abs(float(span.x0) - indent)
+    if min(to_margin, to_indent) > tolerance:
+        return None
+    return "margin" if to_margin < to_indent else "indent"
+
+
+def _hanging_indent_run_entry_count(
+    page_lines: list[PdfTextSpan],
+    head_first_line: PdfTextSpan,
+    tail_first_line: PdfTextSpan,
+) -> int:
+    """Spec 081: how many entries of an unbroken hanging-indent run hold the pair.
+
+    The run is the block of lines around `tail_first_line` on its page in which every line is
+    set in that line's size (`_font_sizes_match`), follows the line above with less than a
+    blank line between them (`_entry_lines_are_consecutive`), and starts at one of the pair's
+    two edges -- the margin where `head_first_line` starts, or the indent where
+    `tail_first_line` starts -- within half a font size, the tolerance
+    `_entry_continuation_keeps_the_wrap_indent` gives an edge. An entry of the run is a line at
+    the margin directly followed by a line at the indent. Zero when the block does not hold
+    the head's first line too."""
+    size = _span_font_size(tail_first_line)
+    if size is None:
+        return 0
+    index = next((k for k, line in enumerate(page_lines) if line is tail_first_line), None)
+    if index is None:
+        return 0
+    margin, indent, tolerance = float(head_first_line.x0), float(tail_first_line.x0), 0.5 * size
+
+    def belongs(line: PdfTextSpan) -> bool:
+        return _font_sizes_match(_span_font_size(line), size) and (
+            _hanging_indent_line_position(line, margin=margin, indent=indent, tolerance=tolerance)
+            is not None
+        )
+
+    start = index
+    while (
+        start > 0
+        and belongs(page_lines[start - 1])
+        and _entry_lines_are_consecutive(page_lines[start - 1], page_lines[start])
+    ):
+        start -= 1
+    end = index
+    while (
+        end + 1 < len(page_lines)
+        and belongs(page_lines[end + 1])
+        and _entry_lines_are_consecutive(page_lines[end], page_lines[end + 1])
+    ):
+        end += 1
+    block = page_lines[start : end + 1]
+    if not any(line is head_first_line for line in block):
+        return 0
+    positions = [
+        _hanging_indent_line_position(line, margin=margin, indent=indent, tolerance=tolerance)
+        for line in block
+    ]
+    return sum(
+        1
+        for upper, lower in zip(positions, positions[1:])
+        if upper == "margin" and lower == "indent"
+    )
+
+
+def _entry_line_sits_at_the_hanging_indent(
+    head: ParagraphUnit,
+    first_line: PdfTextSpan,
+    *,
+    spans_by_origin: dict[int, list[PdfTextSpan]],
+    lines_by_page: dict[int, list[PdfTextSpan]],
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """Spec 081: the tail's first line is a WRAPPED line of a list set with a hanging indent, so
+    its wording ("Business Review, January 2014.", "27 May 2011.") is not the start of a new
+    entry. Both are required:
+      * the tail's first line starts to the RIGHT of the head's FIRST line by at least the
+        first-line-indent step of the line grouping (0.45 of the body leading,
+        `_looks_like_body_paragraph_indent_boundary`): it sits under the entry, not where
+        entries begin. The head's first line, not its last: in text set with a first-line
+        indent (a dialogue, paragraphs of prose) a paragraph's last line is at the margin and
+        the next paragraph starts at the indent -- the same step, read from the wrong line;
+      * that margin / indent pair is a property of the run, not of this pair: the unbroken run
+        of lines on the tail's page that holds both first lines
+        (`_hanging_indent_run_entry_count`) has at least `_HANGING_INDENT_MIN_RUN_ENTRIES`
+        entries that begin at the margin and continue at the indent. A signature over a place
+        line, a two-line title, a single indented quotation or a lone sub-item under a full
+        line show the step once; a list set with a hanging indent shows it at every wrapped
+        entry. The run lies on one page, so nothing is compared across a page break, where
+        the edges of facing pages differ."""
+    head_first_line = _unit_line_span(head, 0, spans_by_origin)
+    if head_first_line is None:
+        return False
+    body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
+    if float(first_line.x0) - float(head_first_line.x0) < body_leading * 0.45:
+        return False
+    return (
+        _hanging_indent_run_entry_count(
+            lines_by_page.get(first_line.page_number, []), head_first_line, first_line
+        )
+        >= _HANGING_INDENT_MIN_RUN_ENTRIES
+    )
+
+
 def _is_torn_back_matter_entry_continuation(
     head: ParagraphUnit,
     tail: ParagraphUnit,
     *,
     spans_by_origin: dict[int, list[PdfTextSpan]],
     layout_profile: _PdfHeadingLayoutProfile,
+    lines_by_page: dict[int, list[PdfTextSpan]],
 ) -> bool:
     if head.role not in _BACK_MATTER_ENTRY_ROLES or tail.role not in _BACK_MATTER_ENTRY_ROLES:
         return False
@@ -3981,13 +4123,28 @@ def _is_torn_back_matter_entry_continuation(
     if head.structural_role not in _BACK_MATTER_ENTRY_ROLES or tail.structural_role not in _BACK_MATTER_ENTRY_ROLES:
         return False
     tail_texts = tail.origin_raw_texts or []
-    if not tail_texts or _text_opens_back_matter_entry(tail.text or ""):
+    if not tail_texts:
         return False
     if _entry_text_ends_sentence(head.text or "", next_text=tail_texts[0]):
         return False
     last_line = _unit_line_span(head, -1, spans_by_origin)
     first_line = _unit_line_span(tail, 0, spans_by_origin)
     if last_line is None or first_line is None:
+        return False
+    # Spec 081: a wrapped line can open like an entry by its wording alone (an author form, a
+    # number and a word); where the page's geometry shows it at the wrap indent of a hanging-
+    # indent run, the geometry decides. An explicit entry marker always starts an entry.
+    tail_text = tail.text or ""
+    if _text_opens_back_matter_entry(tail_text) and (
+        _opens_with_explicit_entry_marker(tail_text)
+        or not _entry_line_sits_at_the_hanging_indent(
+            head,
+            first_line,
+            spans_by_origin=spans_by_origin,
+            lines_by_page=lines_by_page,
+            layout_profile=layout_profile,
+        )
+    ):
         return False
     return (
         _entry_lines_are_consecutive(last_line, first_line)
@@ -4186,8 +4343,10 @@ def _join_torn_back_matter_entries(
     if not any(flags):
         return units
     spans_by_origin: dict[int, list[PdfTextSpan]] = {}
+    lines_by_page: dict[int, list[PdfTextSpan]] = {}
     for span in ordered_spans:
         spans_by_origin.setdefault(_span_origin_index(span), []).append(span)
+        lines_by_page.setdefault(span.page_number, []).append(span)
     result: list[ParagraphUnit] = []
     previous_in_region = False
     for unit, in_region in zip(units, flags):
@@ -4200,6 +4359,7 @@ def _join_torn_back_matter_entries(
                 unit,
                 spans_by_origin=spans_by_origin,
                 layout_profile=layout_profile,
+                lines_by_page=lines_by_page,
             )
         ):
             result[-1] = _merge_torn_back_matter_entry(
