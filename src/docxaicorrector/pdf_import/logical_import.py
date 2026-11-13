@@ -1593,7 +1593,7 @@ def _opens_a_wrapped_citation_entry(
     heading, but it reads the one line; an entry that wraps before its year or address
     ("Surname, A. *A Title of Some Length* (City: Publisher" + "Press 1999)") passes it, and
     the indent of a hanging-indent list together with title-cased words is enough for the
-    style clusters to call that line a heading. All four are required, each read off the page:
+    style clusters to call that line a heading. All five are required, each read off the page:
       * the next line wraps to the hanging indent of a run (`_line_wraps_to_the_hanging_indent`,
         the spec 081 test): it starts right of `span` by the first-line-indent step, and the
         unbroken run of same-size lines on the page shows that margin / indent pair at least
@@ -1606,19 +1606,27 @@ def _opens_a_wrapped_citation_entry(
       * `span` ran out of room for the next line's first word (`_entry_line_ran_out_of_room`):
         a short line at the margin over the indent -- an author set as a label above his works
         -- ended for a reason of its own;
-      * the line and the next line read together as a citation by the same invariant.
+      * the line and the next line read together as a citation by the same invariant;
+      * P, position (Codex acceptance review, round 2): the line directly above `span` is a
+        line of the same run AT THE INDENT -- the wrapped line of the entry before
+        (`_follows_a_wrapped_line_of_the_run`). A heading stands above what it heads, so
+        nothing of the list or prose under it precedes it; a reference entry mistaken for a
+        heading stands inside its list, between entries. N reads prose by what its lines do and
+        a ragged right edge defeats it; P asks where the line stands.
     The deterministic heading paths (a chapter label, a numbered section heading) never reach
     this: it is asked only on the typographic path. The run is looked up on `span`'s page, so
     nothing is compared across a page break, where the edges of facing pages differ. Measured
     2026-11-13 on the four corpus PDFs with the classifier as it stood before this rule: of 677
-    lines typed heading by typography, 3 hold all four -- the first lines of three entries of
-    one reference list in Creating Wealth -- and they are the only lines for which the run test
-    holds at all (spec 084)."""
+    lines typed heading by typography, 3 hold H, N, R and C -- the first lines of three entries
+    of one reference list in Creating Wealth -- and 2 of them hold P as well: the third follows
+    the list's centred sub-heading, not an entry, and stays as it was (spec 084)."""
     if next_span is None:
         return False
     if not _line_wraps_to_the_hanging_indent(
         span, next_span, page_lines=page_lines, layout_profile=layout_profile
     ):
+        return False
+    if not _follows_a_wrapped_line_of_the_run(span, next_span, page_lines=page_lines):
         return False
     if _run_returns_running_text_to_the_margin(
         span, next_span, page_lines=page_lines, layout_profile=layout_profile
@@ -4228,6 +4236,22 @@ def _run_returns_running_text_to_the_margin(
         )
         for (upper_line, upper), (lower_line, lower) in zip(run, run[1:])
     )
+
+
+def _follows_a_wrapped_line_of_the_run(
+    entry_first_line: PdfTextSpan,
+    line: PdfTextSpan,
+    *,
+    page_lines: list[PdfTextSpan],
+) -> bool:
+    """Spec 084 (Codex acceptance review, round 2): the line directly above `entry_first_line`
+    belongs to the same run (`_hanging_indent_run`: the same size, less than a blank line
+    above, at one of the run's two edges) and stands at the indent -- the wrapped line of the
+    entry before. So `entry_first_line` is not the first thing of the run: entries precede it
+    as well as follow it."""
+    run = _hanging_indent_run(page_lines, entry_first_line, line)
+    position = next((k for k, (member, _) in enumerate(run) if member is entry_first_line), None)
+    return position is not None and position > 0 and run[position - 1][1] == "indent"
 
 
 def _is_torn_back_matter_entry_continuation(
