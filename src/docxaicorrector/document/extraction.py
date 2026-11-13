@@ -1,6 +1,5 @@
 import inspect
 import re
-import unicodedata
 import zipfile
 from dataclasses import replace
 from io import BytesIO
@@ -43,8 +42,6 @@ from docxaicorrector.document.layout_cleanup import (
     clean_paragraph_layout_artifacts,
     write_layout_cleanup_report_artifact as _write_layout_cleanup_report_artifact_impl,
 )
-from docxaicorrector.document.narration_exclusion import _may_follow_a_terminal as _may_follow_a_sentence_terminal
-from docxaicorrector.document.narration_exclusion import ends_as_a_sentence
 from docxaicorrector.document.structure_repair import _normalize_outline_text, repair_pdf_derived_structure
 from docxaicorrector.document.roles import (
     detect_explicit_list_kind,
@@ -816,7 +813,7 @@ def _is_toc_header_line(text: str) -> bool:
     return text.replace("*", "").replace("_", "").strip().lower() in _TOC_HEADER_LINE_VALUES
 
 
-def _is_toc_candidate_text(text: str, *, length_limited: bool = True) -> bool:
+def _is_toc_candidate_text(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
@@ -824,10 +821,10 @@ def _is_toc_candidate_text(text: str, *, length_limited: bool = True) -> bool:
         return False
     if stripped.startswith("<table"):
         return False
-    if length_limited and len(stripped) > 160:
+    if len(stripped) > 160:
         return False
     word_count = len(_TOC_CANDIDATE_WORD_PATTERN.findall(stripped))
-    if word_count == 0 or (length_limited and word_count > 16):
+    if word_count == 0 or word_count > 16:
         return False
     if stripped.endswith((".", ";")):
         return False
@@ -860,6 +857,7 @@ def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -
 
 
 def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
+    run_bounds = _contents_run_bounds(paragraphs)
     index = 0
     while index < len(paragraphs):
         paragraph = paragraphs[index]
@@ -868,6 +866,9 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
             continue
 
         look_ahead = _toc_region_end(paragraphs, header=index)
+        # Spec 085: a header inside a region of the run before this spec ends no later than that
+        # region did, so the rule only ever returns paragraphs to narration there.
+        look_ahead = min([look_ahead, *(end for header, end in run_bounds if header <= index < end)])
 
         # `index` is the header itself, so this is "header + at least 2 candidate entries",
         # not "at least 3 candidates" as this rule was described until spec 054.
@@ -882,127 +883,83 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
         index += 1
 
 
+def _contents_run_bounds(paragraphs: list[ParagraphUnit]) -> list[tuple[int, int]]:
+    """Spec 085: the contents regions as the pass marked them before this spec -- a header written
+    without emphasis markers, the run of lines of the contents shape after it, cut at its last
+    line with a page number when it has two or more -- as ``(header, end)``. They bound the
+    regions of ``_toc_region_end`` (``_annotate_toc_region_candidates``): wherever that run
+    recognised a list, the list now ends no later. A header seen only since this spec (one set in
+    emphasis markers) has no such bound."""
+    bounds: list[tuple[int, int]] = []
+    index = 0
+    while index < len(paragraphs):
+        if paragraphs[index].text.strip().lower() not in _TOC_HEADER_LINE_VALUES:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(paragraphs) and _is_toc_candidate_paragraph(paragraphs[end]):
+            end += 1
+        numbered = _page_numbered_positions(paragraphs, start=index + 1, end=end)
+        if len(numbered) >= 2:
+            end = numbered[-1] + 1
+        if end - index >= 3:
+            bounds.append((index, end))
+            index = end
+            continue
+        index += 1
+    return bounds
+
+
 def _toc_region_end(paragraphs: list[ParagraphUnit], *, header: int) -> int:
     """Spec 085: where the contents list under the header at ``header`` ends (exclusive index).
 
-    The list is read off the document's own evidence.
+    1. The walk is main's: lines of the contents shape (``_is_toc_candidate_paragraph``: not a
+       picture or a table, not ending in ``.``/``;``, at most 160 characters and 16 words). It now
+       also stops before a heading that REPEATS one of the lines already walked
+       (``_repeats_contents_entry``: the body has begun where a listed section begins) and before a
+       second contents header, which opens a list of its own.
+    2. The end is set by evidence the walked lines carry. Two or more lines with a page number: the
+       list ends with the last of them (spec 067, ``_page_numbered_positions``, as on main).
+       Otherwise two or more lines that name, in document order, headings found after them
+       (``_lines_naming_later_headings``): the list ends with the last of them -- a short line after
+       the last evidence (a title-page line, the first heading of the body) is left out. Otherwise
+       the walk stands.
 
-    1. The walk: lines of the contents shape (``_is_toc_candidate_paragraph``: not a picture or a
-       table, not ending in ``.``/``;``, at most 160 characters and 16 words). A line ending so, a
-       picture or a table ends it, as before this spec. It also stops before a heading that
-       REPEATS one of the lines already walked (``_repeats_contents_entry``: the body has begun
-       where a listed section begins) and before a second contents header, which opens a list of
-       its own. A line that fails the shape ONLY by its length goes on in the walk: when later
-       headings account for it as a run of SEVERAL section titles typeset as one paragraph
-       (``_names_later_headings``) it is a line like any other; when they do not
-       (``_is_unaccounted_long_line``) it is held provisionally -- unless it ends with a full stop
-       or an ellipsis past any closing mark (``_ends_with_a_full_stop``), which ends the walk.
-    2. The end is set by evidence the lines carry. Two or more lines with a page number, read only
-       where main read them -- on lines of the contents shape up to the first long line of any
-       kind: the list ends with the last of them (spec 067, ``_page_numbered_positions``).
-       Otherwise two or more lines that later headings account for, in document order
-       (``_lines_naming_later_headings``): the list ends with the last of them. A provisional line
-       is inside only when BRACKETED -- an accounted-for line stands before it AND after it: with
-       no evidence before the first provisional line the list ends in front of it, and a
-       provisional line after the last evidence is left out by the end. Otherwise, with no
-       evidence, the walk up to the first provisional line stands.
-
-    Codex acceptance review (2026-11-13, two rounds): the first version matched any run of a
-    line's words against a heading, so one word ("Notes") made prose or a real heading an entry;
-    the page-number rule ran on through a long dedication, and later through a long heading equal
-    to a later heading, to a copyright year; and evidence AFTER a long heading and prose was taken
-    as a bracket. All closed as above. The accepted residual: a long front-matter paragraph not
-    ending with a full stop (a dedication without one, a sentence on "?" or "!") that stands
-    BETWEEN two accounted-for lines is taken into the list.
-
-    Measured 2026-11-13 on 12 documents (spec 085): the run of main ended too early in two (the
-    translated and the source PDF of one book whose contents lists each chapter's sub-sections as
-    one long paragraph) and too late in four (the body's first heading, or the title-page lines
-    after a list without page numbers, marked as contents). With this rule no non-contents
-    paragraph is marked; see the spec for the per-document results.
+    Under a header the run before this spec recognised, the list never ends later than that run's:
+    the walk is a prefix of the run, the evidence ends lie inside the walk, and page numbers counted
+    on a prefix end no later than on the whole run. A header lying INSIDE such a region (a second
+    "Contents" line the run swallowed) is bounded by that region (``_contents_run_bounds``). A
+    line longer than the contents shape is never carried: carrying such
+    lines (runs of sub-section titles typeset as one paragraph) was tried and rejected, because
+    every form of evidence for them also took prose or a real heading in some shape that main
+    narrates (Codex acceptance reviews, three rounds; owner's decision of 2026-11-13: only the
+    part that cannot drop text ships).
     """
     start = header + 1
-    headings = _later_heading_positions(paragraphs, start=start)
     entry_texts: set[str] = set()
-    first_long: int | None = None
-    first_unaccounted: int | None = None
     walk_end = start
     while walk_end < len(paragraphs) and _continues_contents_list(paragraphs[walk_end], entry_texts):
-        paragraph = paragraphs[walk_end]
-        if not _is_toc_candidate_paragraph(paragraph):
-            if first_long is None:
-                first_long = walk_end
-            if _is_unaccounted_long_line(paragraphs, walk_end, headings=headings):
-                # A long line that ends with a full stop or an ellipsis, past any closing quote,
-                # bracket or emphasis, is a finished sentence and is never carried.
-                if _ends_with_a_full_stop(paragraph.text):
-                    break
-                if first_unaccounted is None:
-                    first_unaccounted = walk_end
-        entry_texts.add(_contents_outline_text(paragraph.text))
+        entry_texts.add(_contents_outline_text(paragraphs[walk_end].text))
         walk_end += 1
-    # The walk as far as its lines are settled without bracketing: up to the first long line that
-    # the headings do not account for.
-    settled_end = walk_end if first_unaccounted is None else first_unaccounted
 
-    # Page numbers are read only where main read them: on lines of the contents shape, up to the
-    # first long line of any kind (Codex acceptance review, round 2).
-    numbered = _page_numbered_positions(paragraphs, start=start, end=walk_end if first_long is None else first_long)
+    numbered = _page_numbered_positions(paragraphs, start=start, end=walk_end)
     if len(numbered) >= 2:
         return numbered[-1] + 1
+    headings = _later_heading_positions(paragraphs, start=start)
     named = _lines_naming_later_headings(paragraphs, start=start, end=walk_end, headings=headings)
     if len(named) >= 2:
-        if first_unaccounted is not None and named[0] > first_unaccounted:
-            # Bracketing, left side: no accounted-for line stands before the first provisional
-            # line, so nothing says the list is still contents there.
-            return settled_end
-        # Bracketing, right side: the list ends with its last accounted-for line, so a provisional
-        # line after it is left out.
         return named[-1] + 1
-    return settled_end
+    return walk_end
 
 
 def _continues_contents_list(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
-    """The walk goes on over lines of the contents shape with the length limit lifted (a line
-    ending in ``.``/``;``, a picture or a table still ends it), and stops before a second contents
-    header and before a heading that repeats a line already walked."""
-    if not _is_toc_candidate_paragraph(paragraph, length_limited=False):
+    """Main's contents shape, and two stops of spec 085: a second contents header and a heading
+    that repeats a line already walked."""
+    if not _is_toc_candidate_paragraph(paragraph):
         return False
     if _is_toc_header_line(paragraph.text):
         return False
     return not _repeats_contents_entry(paragraph, entry_texts)
-
-
-def _ends_with_a_full_stop(text: str) -> bool:
-    """Spec 085 (Codex acceptance review, round 2, P2): ``text`` ends as a sentence by the
-    narration's own test (``narration_exclusion.ends_as_a_sentence``: the last mark past any closing
-    quote, bracket or emphasis is a sentence terminal of any script) and that mark is not a question
-    or exclamation mark. A section title never takes a full stop but may well take ``?`` or ``!``:
-    measured 2026-11-13, 22 of the 335 contents lines of the corpus end in one of them, two of them
-    long lines of sub-section titles ("… GDP Facit Saltus!"), while none ends in a full stop past a
-    closing mark."""
-    if not ends_as_a_sentence(text):
-        return False
-    value = str(text or "")
-    end = len(value)
-    while end > 0 and _may_follow_a_sentence_terminal(value[end - 1]):
-        end -= 1
-    name = unicodedata.name(value[end - 1], "") if end > 0 else ""
-    return "QUESTION MARK" not in name and "EXCLAMATION MARK" not in name
-
-
-def _is_unaccounted_long_line(
-    paragraphs: list[ParagraphUnit], position: int, *, headings: Mapping[str, list[int]]
-) -> bool:
-    """A line that fails the contents shape only by its length and that later headings do not
-    account for as a run of SEVERAL titles (``_names_later_headings``, ``several_titles``): one
-    title that long is what a half-title or the body's own heading looks like (Codex acceptance
-    review, round 2). Spec 085: such a line is held provisionally -- inside the list only when
-    accounted-for lines bracket it on both sides (``_toc_region_end``)."""
-    paragraph = paragraphs[position]
-    if _is_toc_candidate_paragraph(paragraph):
-        return False
-    return _names_later_headings(paragraph.text, after=position, headings=headings, several_titles=True) is None
 
 
 def _repeats_contents_entry(paragraph: ParagraphUnit, entry_texts: set[str]) -> bool:
@@ -1015,7 +972,7 @@ def _repeats_contents_entry(paragraph: ParagraphUnit, entry_texts: set[str]) -> 
 def _contents_outline_text(text: str) -> str:
     """The outline text ``structure_repair`` compares contents entries by (its page reference
     stripped, whitespace collapsed, case folded), read without emphasis markers: the bridge
-    renders the same title as ``**Preface**`` in one place and ``Preface`` in another."""
+    renders the same title bold in one place and plain in another."""
     return _normalize_outline_text(str(text or "").replace("*", "").replace("_", ""))
 
 
@@ -1038,24 +995,19 @@ def _later_heading_positions(paragraphs: list[ParagraphUnit], *, start: int) -> 
 _CONTENTS_ENTRY_ORDINAL_PATTERN = re.compile(r"^\d{1,3}[.)]?\s+(?=\S)")
 
 
-def _names_later_headings(
-    text: str, *, after: int, headings: Mapping[str, list[int]], several_titles: bool = False
-) -> int | None:
-    """Spec 085 (Codex acceptance review, P1): the position of the last heading that ACCOUNTS FOR
-    the line, or ``None``.
+def _names_later_headings(text: str, *, after: int, headings: Mapping[str, list[int]]) -> int | None:
+    """Spec 085: the position of the last heading that ACCOUNTS FOR the line, or ``None``.
 
     Later headings account for a line when the line (``_contents_outline_text``, a leading list
     ordinal set aside) is the text of one heading after ``after``, or splits with nothing left over
-    into the texts of several headings that follow one another after ``after`` in document order --
-    a run of section titles typeset as one paragraph (``"Ledgers and Tides The Mooring Problem"``).
-    With ``several_titles`` only the second form counts (a line longer than the contents shape).
+    into the texts of several headings that follow one another after ``after`` in document order.
     A heading's text merely occurring inside the line (one word "Notes" in a sentence) is not
-    enough: that is how prose and a real heading were taken into the contents before the review."""
+    enough (Codex acceptance review, round 1)."""
     outline = _contents_outline_text(text)
     for candidate in (outline, _CONTENTS_ENTRY_ORDINAL_PATTERN.sub("", outline, count=1)):
         words = candidate.split()
         if words:
-            last = _last_heading_of_full_split(words, 0, after, headings, {}, several_titles=several_titles)
+            last = _last_heading_of_full_split(words, 0, after, headings, {})
             if last is not None:
                 return last
     return None
@@ -1067,8 +1019,6 @@ def _last_heading_of_full_split(
     after: int,
     headings: Mapping[str, list[int]],
     memo: dict[tuple[int, int], int | None],
-    *,
-    several_titles: bool = False,
 ) -> int | None:
     if first_word == len(words):
         return after
@@ -1076,8 +1026,7 @@ def _last_heading_of_full_split(
     if key in memo:
         return memo[key]
     result: int | None = None
-    longest_piece_end = len(words) - 1 if several_titles and first_word == 0 else len(words)
-    for last_word in range(longest_piece_end, first_word, -1):
+    for last_word in range(len(words), first_word, -1):
         positions = headings.get(" ".join(words[first_word:last_word]), ())
         heading_position = next((position for position in positions if position > after), None)
         if heading_position is None:
@@ -1103,10 +1052,7 @@ def _lines_naming_later_headings(
     last_named_heading = -1
     for position in range(start, end):
         last = _names_later_headings(
-            paragraphs[position].text,
-            after=max(position, last_named_heading),
-            headings=headings,
-            several_titles=not _is_toc_candidate_paragraph(paragraphs[position]),
+            paragraphs[position].text, after=max(position, last_named_heading), headings=headings
         )
         if last is not None:
             named.append(position)
@@ -1114,14 +1060,12 @@ def _lines_naming_later_headings(
     return named
 
 
-def _is_toc_candidate_paragraph(paragraph: ParagraphUnit, *, length_limited: bool = True) -> bool:
+def _is_toc_candidate_paragraph(paragraph: ParagraphUnit) -> bool:
     if paragraph.role in {"image", "table"}:
         return False
     if paragraph.attached_to_asset_id is not None:
         return False
-    return _is_toc_candidate_text(paragraph.text, length_limited=length_limited) or _holds_consecutive_toc_entries(
-        paragraph.text
-    )
+    return _is_toc_candidate_text(paragraph.text) or _holds_consecutive_toc_entries(paragraph.text)
 
 
 # Spec 067 FR-007 follow-up: a page number that a contents line carries -- 1-4 digits, as the

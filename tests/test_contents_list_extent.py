@@ -1,13 +1,14 @@
 """Spec 085: where a contents list ends (``extraction._toc_region_end``).
 
-Every condition of the rule has a test here that fails when the condition is removed (mutation
-results in ``specs/085-contents-list-extent/spec.md``). All text is invented.
+What ships is the part that cannot drop text: compared with the pass before this spec, a region
+only ever ends EARLIER where that pass recognised the header, and only a header set in emphasis
+markers adds a region. Every condition of the rule has a test here that fails when the condition
+is removed (mutation results in ``specs/085-contents-list-extent/spec.md``). All text is invented.
 """
 
+import random
 from io import BytesIO
 from typing import cast
-
-import pytest
 
 from docx import Document
 from docx.document import Document as DocxDocument
@@ -83,19 +84,14 @@ def _two_level_contents_book() -> list[ParagraphUnit]:
     ]
 
 
-def test_a_long_line_of_sub_section_titles_stays_in_the_contents() -> None:
-    # The defect: the run ended at the first line longer than the contents shape, and the rest of
-    # the list was narrated. Each long line splits, with nothing left over, into the titles of
-    # headings that follow in order (mutation: keep the length limit -> the list ends before
-    # LONG_ONE).
+def test_a_line_longer_than_the_contents_shape_is_never_carried() -> None:
+    # Owner's decision of 2026-11-13: a run of sub-section titles typeset as one paragraph ends the
+    # list as it did before this spec, even when later headings account for every title in it --
+    # carrying long lines took prose or a real heading in shapes the earlier pass narrates.
     assert _marked(_two_level_contents_book()) == [
         "Contents",
         "Preface: Tales of the Tide Keepers",
         "1. A Short History of Harbours",
-        LONG_ONE,
-        "2. Lanterns and Their Keepers",
-        LONG_TWO,
-        "Notes",
     ]
 
 
@@ -249,8 +245,7 @@ def test_a_contents_list_at_the_end_of_the_book_is_left_as_the_run_found_it() ->
 
 
 def test_without_evidence_a_long_line_still_ends_the_list() -> None:
-    # No page numbers and no later headings: nothing accounts for the long line, so the length
-    # limit still ends the list.
+    # No page numbers and no later headings: the walk stands, and the length limit ends it.
     paragraphs = [
         _unit("Contents"),
         _unit("The Tide Ledger"),
@@ -258,145 +253,6 @@ def test_without_evidence_a_long_line_still_ends_the_list() -> None:
         _unit(LONG_ONE),
         _sentence("The ledger"),
     ]
-
-    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
-
-
-def _bracket_book(middle: list[ParagraphUnit], tail: list[ParagraphUnit]) -> list[ParagraphUnit]:
-    """Contents / two entries / ``middle`` / ``tail`` / a sentence / the entries' headings."""
-    return [
-        _unit("Contents"),
-        _unit("The Tide Ledger"),
-        _unit("Keepers of the Lamp"),
-        *middle,
-        *tail,
-        _sentence("The ledger"),
-        _heading("The Tide Ledger", 1),
-        _heading("Keepers of the Lamp", 1),
-        _heading("The Merchants: Cargo and Coin", 3),
-        _heading("The Pilots: The Answer Lies in the Channel", 3),
-        _heading("Low Water", 1),
-    ]
-
-
-def test_a_long_line_bracketed_by_evidence_is_in_the_list() -> None:
-    # Spec 085 round 3. Two of the long line's three titles have headings, so the headings do not
-    # account for it; an entry after it does name a later heading. Bracketed by evidence, it is in
-    # the list (mutations: unaccounted long lines end the walk, or the evidence is counted only
-    # before the first of them -> the long line and "Low Water" are narrated).
-    paragraphs = _bracket_book([_unit(LONG_ONE)], [_unit("Low Water")])
-
-    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp", LONG_ONE, "Low Water"]
-
-
-# A front-matter paragraph with no sentence end, longer than the contents shape allows.
-UNTERMINATED_DEDICATION = (
-    "For the keepers of the northern lights who stood their watch through every winter storm and "
-    "never once let the lamp go dark"
-)
-
-
-def test_residual_an_unterminated_long_paragraph_between_two_entries_is_taken() -> None:
-    # The accepted residual of the bracketing rule (spec 085, Known limits), pinned so that a
-    # change to it is seen: nothing in the paragraph's form tells it from a run of titles, and it
-    # stands between two lines that name later headings in order.
-    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION)], [_unit("Low Water")])
-
-    assert UNTERMINATED_DEDICATION in _marked(paragraphs)
-
-
-def test_an_unterminated_long_paragraph_after_the_last_entry_stays_outside() -> None:
-    # No evidence follows it: not bracketed (mutation: provisional lines kept to the walk's end
-    # when no evidence decides -> marked).
-    paragraphs = _bracket_book([], [_unit(UNTERMINATED_DEDICATION), _unit("Ilsa Varn")])
-
-    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
-
-
-def test_a_long_paragraph_ending_as_a_sentence_ends_the_walk_even_between_entries() -> None:
-    # A sentence is never carried, whatever follows it (mutation: the walk passes sentences ->
-    # the paragraph and "Low Water" are marked).
-    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ".")], [_unit("Low Water")])
-
-    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
-
-
-@pytest.mark.parametrize("ending", [".”", ".)", ".*", ".**", "…", "。"])
-def test_a_long_line_ending_with_a_full_stop_past_closing_marks_is_never_carried(ending: str) -> None:
-    # Codex acceptance review, round 2 (P2): a long provisional line whose last mark, past any
-    # closing quote, bracket or emphasis, is a full stop or an ellipsis of any script ends as a
-    # sentence (``narration_exclusion.ends_as_a_sentence``) and ends the walk (mutation: only a
-    # bare "." or ";" ends it -> the paragraph and "Low Water" are marked).
-    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ending)], [_unit("Low Water")])
-
-    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
-
-
-def test_a_long_line_ending_with_a_semicolon_ends_the_walk_as_before() -> None:
-    # The shape test of main still ends the walk on ";" for a long line, whatever its evidence
-    # (mutation: the shape's ending test applied to short lines only -> the line is carried).
-    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ";")], [_unit("Low Water")])
-
-    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
-
-
-def test_a_long_line_equal_to_one_later_heading_is_held_provisionally_in_the_walk() -> None:
-    # A long line that one later heading matches whole is NOT accounted for in the walk: it is held
-    # provisionally, so with no evidence before it the list ends in front of it (mutation: one
-    # title accounts for a long line in the walk -> it and the two entries after it are marked).
-    paragraphs = [
-        _unit("Contents"),
-        _unit("Part One"),
-        _unit("Part Two"),
-        _unit(UNTERMINATED_DEDICATION),
-        _unit("The Tide Ledger"),
-        _unit("Keepers of the Lamp"),
-        _sentence("The ledger"),
-        _heading("The Tide Ledger", 1),
-        _heading("Keepers of the Lamp", 1),
-        _heading(UNTERMINATED_DEDICATION, 2),
-    ]
-
-    assert _marked(paragraphs) == ["Contents", "Part One", "Part Two"]
-
-
-@pytest.mark.parametrize("ending", ["?", "!", "!**", "?”"])
-def test_residual_a_long_line_ending_in_a_question_or_exclamation_mark_is_carried(ending: str) -> None:
-    # A section title takes "?" or "!" but never a full stop, and runs of sub-section titles end
-    # so on the corpus ("… Facit Saltus!"); between two accounted-for lines such a line is taken,
-    # prose or not -- the accepted residual, pinned so a change to it is seen (mutation: "?"/"!"
-    # end the walk -> the line and "Low Water" are left out).
-    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ending)], [_unit("Low Water")])
-
-    assert UNTERMINATED_DEDICATION + ending in _marked(paragraphs)
-
-
-def test_a_long_line_with_evidence_only_after_it_is_not_bracketed() -> None:
-    # Bracketing needs evidence on BOTH sides (Codex acceptance review, round 2, P1): here the
-    # lines before the long one name no later heading, the two after it do (mutation: evidence
-    # after it is enough -> the long line and the two entries after it are marked).
-    paragraphs = [
-        _unit("Contents"),
-        _unit("Part One"),
-        _unit("Part Two"),
-        _unit(UNTERMINATED_DEDICATION),
-        _unit("The Tide Ledger"),
-        _unit("Keepers of the Lamp"),
-        _sentence("The ledger"),
-        _heading("The Tide Ledger", 1),
-        _heading("Keepers of the Lamp", 1),
-    ]
-
-    assert _marked(paragraphs) == ["Contents", "Part One", "Part Two"]
-
-
-def test_a_long_body_heading_right_after_the_list_stays_outside() -> None:
-    # A heading of the body longer than the contents shape, not one of the entries: held
-    # provisionally, then left out by the end rule -- nothing after it accounts for a later heading.
-    paragraphs = _bracket_book(
-        [],
-        [_heading("Notes on the Lives and Work of the Harbour Keepers Along the Entire Coast During the Winter", 2)],
-    )
 
     assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
 
@@ -612,6 +468,21 @@ def test_emphasis_markers_do_not_hide_a_repeated_heading_or_a_header() -> None:
     assert _marked(paragraphs) == ["**Contents**", "**Preface** *by Ilsa Varn*", "Keepers of the Lamp"]
 
 
+def test_a_list_under_a_header_in_emphasis_markers_ends_at_its_last_page_number() -> None:
+    # The earlier pass did not read this header, so nothing bounds its region but the rule itself:
+    # the page-number end of spec 067 still applies (mutation: no page-number end -> the byline
+    # after the list is marked).
+    paragraphs = [
+        _unit("**Contents**"),
+        _unit("The Tide Ledger ........ 1"),
+        _unit("Keepers of the Lamp ........ 29"),
+        _unit("Ilsa Varn"),
+        _sentence("The ledger"),
+    ]
+
+    assert _marked(paragraphs) == ["**Contents**", "The Tide Ledger ........ 1", "Keepers of the Lamp ........ 29"]
+
+
 def _narration_reasons(document: DocxDocument) -> list[tuple[str, str | None]]:
     """(text, narration exclusion reason) of every paragraph, in document order, through the real
     extraction, semantic blocks and audiobook jobs (the phase preparation uses before any model
@@ -629,36 +500,6 @@ def _narration_reasons(document: DocxDocument) -> list[tuple[str, str | None]]:
         for job in jobs
         for paragraph_id, reason in zip(cast(list[str], job["paragraph_ids"]), cast(list, job["narration_exclusion_reasons"]))
     ]
-
-
-def test_narration_drops_the_whole_two_level_list_and_keeps_the_body_heading() -> None:
-    document = Document()
-    document.add_paragraph("Contents")
-    for text in ("Preface: Tales of the Tide Keepers", "1. A Short History of Harbours", LONG_ONE, "Epilogue: Low Water"):
-        document.add_paragraph(text)
-    document.add_heading("Preface: Tales of the Tide Keepers", level=2)
-    document.add_paragraph("The first tide table was kept by hand in a ledger that every harbour master signed.")
-    document.add_heading("A Short History of Harbours", level=1)
-    document.add_heading("The Merchants: Cargo and Coin", level=3)
-    document.add_paragraph("The cargo was weighed twice, once at the quay and once at the warehouse door.")
-    document.add_heading("The Pilots: The Answer Lies in the Channel", level=3)
-    document.add_paragraph("The channel shifted every winter, and the pilots redrew it every spring.")
-    document.add_heading("The Engineers: Value in Stone and Timber Along the Quay", level=3)
-    document.add_paragraph("The engineers built the quay of stone first and of timber later.")
-    document.add_heading("Epilogue: Low Water", level=1)
-    document.add_paragraph("At low water the whole harbour floor could be walked from quay to quay.")
-
-    reasons = _narration_reasons(document)
-
-    assert reasons[:6] == [
-        ("Contents", "toc"),
-        ("Preface: Tales of the Tide Keepers", "toc"),
-        ("1. A Short History of Harbours", "toc"),
-        (LONG_ONE, "toc"),
-        ("Epilogue: Low Water", "toc"),
-        ("Preface: Tales of the Tide Keepers", None),
-    ]
-    assert all(reason is None for _, reason in reasons[6:])
 
 
 def test_narration_keeps_the_title_page_lines_after_a_list_without_page_numbers() -> None:
@@ -748,8 +589,8 @@ def test_a_long_heading_holding_one_word_of_a_later_heading_stays_narrated() -> 
 
 
 def test_a_year_in_the_front_matter_is_not_a_page_number_of_the_contents() -> None:
-    # Codex finding 2: with the length limit lifted, the walk ran through a long dedication to a
-    # copyright line whose year read as a page number, and the numbered list "ended" there.
+    # Codex round 1, finding 2: on an earlier version of this branch the walk ran through a long
+    # dedication to a copyright line whose year read as a page number. Main shape ends the walk at it.
     reasons = dict(
         _narration_reasons(
             _codex_book(
@@ -801,9 +642,9 @@ def _foreword_before_the_evidence(entries_before: tuple[str, ...]) -> DocxDocume
 
 
 def test_a_foreword_with_evidence_only_after_it_stays_narrated() -> None:
-    # Codex round 2, finding 2: both accounted-for lines stand AFTER the long heading and the prose;
-    # nothing before them accounts for a later heading. Not bracketed (mutation: evidence after the
-    # provisional line is enough -> the heading and the prose get "toc").
+    # Codex round 2, finding 2: both lines naming later headings stand AFTER the long heading and
+    # the prose. On an earlier version of this branch both were excluded; the walk now ends at the
+    # long heading, as before this spec.
     for entries_before in (("Part One", "Part Two"), ()):
         reasons = dict(_narration_reasons(_foreword_before_the_evidence(entries_before)))
 
@@ -831,10 +672,9 @@ def _half_title_after_a_numbered_list(*, numbered: bool = True) -> DocxDocument:
 
 
 def test_a_long_heading_equal_to_a_later_heading_does_not_carry_the_page_numbers_on() -> None:
-    # Codex round 2, finding 3: a long heading set again later (a half-title) is accounted for by
-    # that single heading; the page-number walk ran through it to a copyright year. Page numbers
-    # are read only on lines of the contents shape and stop at the first long line of any kind
-    # (mutation: page numbers past a long line -> heading and copyright get "toc").
+    # Codex round 2, finding 3: a long heading set again later (a half-title); on an earlier version
+    # of this branch the page-number walk ran through it to a copyright year. The walk now ends at
+    # the long heading, as before this spec.
     reasons = _narration_reasons(_half_title_after_a_numbered_list())
 
     assert reasons[:5] == [
@@ -847,10 +687,8 @@ def test_a_long_heading_equal_to_a_later_heading_does_not_carry_the_page_numbers
 
 
 def test_a_long_line_equal_to_one_later_heading_is_no_contents_evidence() -> None:
-    # The mirror of finding 3 without page numbers: one heading's text, longer than the contents
-    # shape, is what a half-title or the body's own heading looks like; a long contents line is
-    # evidence only as a run of SEVERAL titles (mutation: one title accounts for a long line ->
-    # the half-title becomes the list's last evidence and is marked).
+    # The mirror of round 2's finding 3 without page numbers: the half-title is longer than the
+    # contents shape, so the walk ends at it and it cannot become the list's last evidence.
     reasons = _narration_reasons(_half_title_after_a_numbered_list(numbered=False))
 
     assert reasons[:4] == [
@@ -859,3 +697,160 @@ def test_a_long_line_equal_to_one_later_heading_is_no_contents_evidence() -> Non
         ("Tides", "toc"),
         (CODEX_LONG_HEADING, None),
     ]
+
+
+# Codex acceptance review of spec 085, round 3 (2026-11-13).
+SPLIT_HEADING_HEAD = "Notes on the Lives and Work of the Harbour Keepers"
+SPLIT_HEADING_TAIL = "Along the Entire Coast During the Long Winter"
+
+
+def _long_heading_split_later(entries_before: tuple[str, ...]) -> DocxDocument:
+    # A long real heading that splits, with nothing left over, into two headings set later.
+    return _docx(
+        [
+            ("Contents", 1, None),
+            *[(entry, None, None) for entry in entries_before],
+            (CODEX_LONG_HEADING, 2, None),
+            ("Copyright Harbour Society 2026", None, 8),
+            ("The account begins.", None, None),
+            ("Harbours", 1, None),
+            ("The chapter on harbours begins with the tide tables of the quay.", None, None),
+            ("Tides", 1, None),
+            ("The chapter on tides begins with the tide tables of the quay.", None, None),
+            (SPLIT_HEADING_HEAD, 1, None),
+            ("The keepers kept their own notes through the winter.", None, None),
+            (SPLIT_HEADING_TAIL, 1, None),
+            ("The coast froze from the first week of the year.", None, None),
+        ]
+    )
+
+
+def test_a_long_heading_that_later_headings_account_for_stays_narrated() -> None:
+    # Codex round 3, finding 2: on the earlier branch the heading counted as "accounted for" and,
+    # with nothing else as evidence, the copyright line after it was excluded with it.
+    for entries_before in (("Part One", "Part Two"), ("Harbours", "Tides")):
+        reasons = dict(_narration_reasons(_long_heading_split_later(entries_before)))
+
+        assert reasons[CODEX_LONG_HEADING] is None, entries_before
+        assert reasons["Copyright Harbour Society 2026"] is None, entries_before
+
+
+READERS_LETTER = (
+    "Dear keepers, after all these winters of storms and quiet nights, will any of you tell us at "
+    "last why the northern lamp was never allowed to go dark?"
+)
+
+
+def test_a_readers_letter_and_its_signature_stay_narrated() -> None:
+    # Codex round 3: a letter ending in a long question, then a signature equal to a later heading
+    # (a biography section of that name), after a list of chapters.
+    reasons = dict(
+        _narration_reasons(
+            _docx(
+                [
+                    ("Contents", 1, None),
+                    ("Harbours", None, None),
+                    ("Tides", None, 14),
+                    (READERS_LETTER, None, 9),
+                    ("Ilsa Varn", None, 12),
+                    ("The account begins.", None, None),
+                    ("Harbours", 1, None),
+                    ("The chapter on harbours begins with the tide tables of the quay.", None, None),
+                    ("Tides", 1, None),
+                    ("The chapter on tides begins with the tide tables of the quay.", None, None),
+                    ("Ilsa Varn", 1, None),
+                    ("She kept the northern lamp for forty years.", None, None),
+                ]
+            )
+        )
+    )
+
+    assert reasons[READERS_LETTER] is None
+    assert reasons["Ilsa Varn"] is None
+
+
+def test_a_header_inside_a_region_of_the_earlier_pass_ends_no_later_than_that_region() -> None:
+    # A second "Contents" line inside a numbered list (a running head kept on the list's second
+    # page). The earlier pass took it as an entry and cut the list at its last page number; the
+    # list the second header opens has only one numbered line, so without the bound its walk would
+    # run on over the byline after it. Bounded, that list is too short to be one and is read aloud
+    # -- the safe direction (mutations: no bound, or a bound without the page-number cut -> the
+    # byline is marked).
+    paragraphs = [
+        _unit("Contents"),
+        _unit("The Tide Ledger 1"),
+        _unit("Keepers of the Lamp 29"),
+        _unit("Contents"),
+        _unit("Low Water 61"),
+        _unit("Ilsa Varn"),
+        _sentence("The ledger"),
+    ]
+
+    marked = _marked(paragraphs)
+
+    assert "Ilsa Varn" not in marked
+    assert marked == ["Contents", "The Tide Ledger 1", "Keepers of the Lamp 29"]
+
+
+def _marked_before_this_spec(paragraphs: list[ParagraphUnit]) -> set[int]:
+    """The contents pass as it was before spec 085 (main @ 1712332), re-stated for the property
+    test below: plain header, run of the contents shape, cut at the last page-numbered line."""
+    marked: set[int] = set()
+    index = 0
+    while index < len(paragraphs):
+        if paragraphs[index].text.strip().lower() not in {"contents", "содержание"}:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(paragraphs) and extraction._is_toc_candidate_paragraph(paragraphs[end]):
+            end += 1
+        numbered = extraction._page_numbered_positions(paragraphs, start=index + 1, end=end)
+        if len(numbered) >= 2:
+            end = numbered[-1] + 1
+        if end - index >= 3:
+            marked.update(range(index, end))
+            index = end
+            continue
+        index += 1
+    return marked
+
+
+_PALETTE = (
+    lambda: _unit("Contents"),
+    lambda: _unit("**Contents**"),
+    lambda: _unit("The Tide Ledger"),
+    lambda: _unit("Keepers of the Lamp"),
+    lambda: _unit("Low Water 12"),
+    lambda: _unit("Spring Tides .... 40"),
+    lambda: _unit("Ilsa Varn"),
+    lambda: _unit("2026"),
+    lambda: _unit(LONG_ONE),
+    lambda: _unit(CODEX_LONG_HEADING),
+    lambda: _sentence("The ledger"),
+    lambda: _image(),
+    lambda: _heading("The Tide Ledger", 1),
+    lambda: _heading("Keepers of the Lamp", 1),
+    lambda: _heading("Low Water", 1),
+    lambda: _heading(CODEX_LONG_HEADING, 2),
+    lambda: _heading("Ilsa Varn", 2),
+)
+
+
+def test_property_where_the_earlier_pass_saw_a_list_the_region_never_grows() -> None:
+    # Over 3000 seeded random documents built from contents lines, page-numbered lines, title-page
+    # lines, long lines, sentences, pictures and headings: every paragraph marked now and not
+    # before lies under a header set in emphasis markers that the earlier pass did not read; no
+    # other paragraph enters a region.
+    generator = random.Random(85)
+    for _ in range(3000):
+        paragraphs = [generator.choice(_PALETTE)() for _ in range(generator.randint(3, 14))]
+        before = _marked_before_this_spec([_unit(p.text, role=p.role) for p in paragraphs])
+        extraction._annotate_toc_region_candidates(paragraphs)
+        now = {position for position, paragraph in enumerate(paragraphs) if paragraph.structural_role in TOC}
+        for position in sorted(now - before):
+            header = max(
+                index for index in range(position + 1) if paragraphs[index].structural_role == "toc_header"
+            )
+            assert paragraphs[header].text.strip() != paragraphs[header].text.replace("*", "").strip(), [
+                p.text for p in paragraphs
+            ]
