@@ -680,9 +680,8 @@ def has_hard_reference_mark(text: str) -> bool:
     """Spec 077: does ``text`` carry a year in brackets, a page or volume locator, or a web address --
     the citation anchors above that say WHERE a work is found? An emphasised span, a quoted phrase
     and the author form are not counted: a signature under an epigraph names a person, and may set
-    the name in italics or as "Surname, I.". Read by the narration (spec 077) and, since spec 083,
-    by the translation gate's bibliography test (``quality_gate_text_detectors``);
-    ``has_citation_anchor`` and the translation policy are unchanged."""
+    the name in italics or as "Surname, I.". Read only by the narration (spec 077);
+    ``has_citation_anchor`` and everything translation reads are unchanged."""
     body = str(text or "")
     return any(
         pattern.search(body) is not None
@@ -866,11 +865,10 @@ def notes_run_untranslated_part(text: str) -> str | None:
     Spec 079 (Codex acceptance review, finding 1): this reads the numbered-chain FORM
     (``_numbered_chain_parts``), not the narrower notes run. Taken apart note by note, a chain
     only ever loses its reference pieces, so the reading is never blinder than the whole-paragraph
-    path; and the whole-paragraph path, as it stood then, called three four-digit numbers
-    bibliography (``quality_gate_text_detectors._is_bibliography_or_url_dominant_text``), which
-    made numbered English prose the 079 rule no longer calls notes -- three entries, a year each
-    -- invisible to the gate (2 396 untranslated characters counted as 0). Since spec 083 that
-    shortcut holds only for a paragraph that is not prose by form. "Is this a run of notes" is a question
+    path; and the whole-paragraph path calls three four-digit numbers bibliography
+    (``quality_gate_text_detectors._is_bibliography_or_url_dominant_text``), which made numbered
+    English prose the 079 rule no longer calls notes -- three entries, a year each -- invisible to
+    the gate (2 396 untranslated characters counted as 0). "Is this a run of notes" is a question
     of narration and translation policy; "can the gate read it piece by piece" is this one.
     """
     parts = _numbered_chain_parts(text)
