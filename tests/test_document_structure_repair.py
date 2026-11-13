@@ -455,3 +455,48 @@ def test_contents_sweep_crosses_a_line_only_guessed_to_be_a_heading():
     ]
 
     assert _find_bounded_toc_regions(paragraphs) == [(0, 3)]
+
+
+def test_short_lines_after_a_numbered_contents_list_stay_narrated():
+    # Codex acceptance review of spec 080 (P2): the extraction pass ends a contents list with page
+    # numbers at its last numbered entry; the sweep must not extend the region again over the short
+    # lines after it (an organisation name, an author line), which narration would then drop.
+    from docx import Document
+    from typing import cast
+
+    from docxaicorrector.document.extraction import extract_document_content_from_docx
+    from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_semantic_blocks
+
+    document = Document()
+    for text in (
+        "Contents",
+        "Introduction .... 1",
+        "Conclusion .... 29",
+        "The Harbour Society",
+        "Ilsa Varn",
+        "We do not tell the truth about tides. Yet the tide is at the heart of every harbour, and every "
+        "harbour keeps a ledger of it by hand.",
+    ):
+        document.add_paragraph(text)
+    from io import BytesIO
+
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+    # The phase preparation uses before any model has looked at the structure
+    # (`processing/preparation.py`, `downstream_structure_phase`): structure hints are binding there.
+    phase = "pre_ai_diagnostic"
+    blocks = build_semantic_blocks(paragraphs, max_chars=3000, structure_phase=phase)
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook", structure_phase=phase)
+    by_id = {paragraph.paragraph_id: paragraph.text for paragraph in paragraphs}
+    reasons = {
+        by_id[paragraph_id]: reason
+        for job in jobs
+        for paragraph_id, reason in zip(cast(list[str], job["paragraph_ids"]), cast(list, job["narration_exclusion_reasons"]))
+    }
+
+    assert reasons["Introduction .... 1"] == "toc"
+    assert reasons["Conclusion .... 29"] == "toc"
+    assert reasons["The Harbour Society"] is None
+    assert reasons["Ilsa Varn"] is None

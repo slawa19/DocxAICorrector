@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from docxaicorrector.document.narration_exclusion import ends_as_a_sentence, is_fragment_without_connected_text
 from docxaicorrector.document.roles import HEADING_STYLE_PATTERN, is_caption_style, is_likely_caption_text
 from docxaicorrector.core.models import ParagraphBoundaryDecision, ParagraphBoundaryNormalizationReport, RawBlock, RawParagraph
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
@@ -395,16 +396,6 @@ def font_sizes_match(first: float | None, second: float | None) -> bool | None:
     return larger - smaller <= max(0.5, smaller * 0.1)
 
 
-# The PDF importer's form of a standalone footnote marker
-# (``pdf_import.logical_import._STANDALONE_FOOTNOTE_MARKER_PATTERN``), restated for the same
-# reason as the size tolerance above and pinned to it by the same test file.
-_STANDALONE_NOTE_MARK_PATTERN = re.compile(r"^\d{1,3}$")
-
-
-def is_standalone_note_mark(text: str) -> bool:
-    return _STANDALONE_NOTE_MARK_PATTERN.match((text or "").strip()) is not None
-
-
 def font_size_transition_implies_structure(left: RawParagraph, right: RawParagraph) -> bool:
     """Spec 080: two paragraphs set in clearly different sizes are two things, not one torn one.
 
@@ -414,29 +405,35 @@ def font_size_transition_implies_structure(left: RawParagraph, right: RawParagra
     quotation, a caption and the body, table-of-contents lines of two tiers. Unknown size on
     either side is no evidence, and the boundary is then decided by the other signals as before.
 
-    One shape is set small for another reason: a note mark the importer left as a paragraph of
-    its own (the smaller side's whole text is a 1-3 digit number). It is a superscript inside a
-    line, not a different kind of text, so its size says nothing about structure: it belongs to
-    the text before it, and the text after it belongs to the same paragraph only when it
-    continues the sentence. So across such a mark the size is no evidence when the right side
-    starts as a continuation (``starts_with_continuation_signal`` -- for the mark itself, a
-    digit, always), and the other signals decide as before. The importer treats the same mark
-    the same way (``_consolidate_cross_role_continuations``: "transparent" between two halves of
-    a sentence).
+    A piece with no connected text of its own -- a note mark the importer left as a paragraph,
+    a year set small, a drop cap; the form is narration's own fragment test,
+    ``narration_exclusion.is_fragment_without_connected_text`` -- is set in another size for
+    another reason: it is part of a line of text, not a different kind of text. Refusing to join
+    it would strand it as a paragraph that narration then drops as a ``fragment`` (Codex
+    acceptance review of spec 080, P1). So the size is no evidence:
 
-    Measured 2026-11-13 on the four corpus PDFs and the four translated DOCX (spec 080): of
-    15 744 boundaries, 2 106 cross a size change and 36 of those were merged. 29 are refused now
-    -- 28 joined two different things, one joined the two lines of an attribution across its
-    mark (the price: two paragraphs instead of one, no text lost); 7 join a mark to the text it
-    marks or a sentence across its mark and still join. On the four DOCX versions of the books
-    (``tests/sources/book/*.docx``) 3 merges crossed a size change and all 3 are refused, one of
-    them a cover title set in two sizes (spec 080, Non-goals).
+    * when the RIGHT side is such a piece and the left side does not end as a sentence
+      (``narration_exclusion.ends_as_a_sentence``): the piece belongs to the text before it;
+    * when the LEFT side is such a piece and the right side continues the sentence
+      (``starts_with_continuation_signal``): the text after it belongs to the same sentence.
+
+    A piece between an epigraph and a chapter's first paragraph therefore joins the epigraph and
+    the chapter opening (a new sentence, capital first) stays apart. The other signals then
+    decide as before. The importer treats a note mark the same way
+    (``_consolidate_cross_role_continuations``: "transparent" between two halves of a sentence).
+
+    Measured 2026-11-13 on 4 corpus PDFs, 4 translated DOCX and 4 book DOCX (spec 080): of the
+    merges across a size change on ``main`` 31 are refused -- 30 joined two different things,
+    one joined the two lines of an attribution across its mark (the price: two paragraphs
+    instead of one, no text lost) -- and 8 still join: a mark to the text it marks, a sentence
+    across its mark, two pieces of a diagram label.
     """
     match = font_sizes_match(left.font_size_pt, right.font_size_pt)
     if match is not False:
         return False
-    smaller = left if cast(float, left.font_size_pt) < cast(float, right.font_size_pt) else right
-    if is_standalone_note_mark(smaller.text) and starts_with_continuation_signal(right.text):
+    if is_fragment_without_connected_text(right.text) and not ends_as_a_sentence(left.text):
+        return False
+    if is_fragment_without_connected_text(left.text) and starts_with_continuation_signal(right.text):
         return False
     return True
 

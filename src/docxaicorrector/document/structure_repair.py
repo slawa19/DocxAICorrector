@@ -217,9 +217,10 @@ def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit]) -> list[tuple
             index += 1
             continue
         look_ahead = index + 1
+        bounded_by_extraction = _effective_structural_role(paragraph) == "toc_header"
         while (
             look_ahead < len(paragraphs)
-            and not _ends_contents_sweep(paragraphs[look_ahead])
+            and not _ends_contents_sweep(paragraphs[look_ahead], bounded_by_extraction=bounded_by_extraction)
             and _is_toc_candidate_text(
                 paragraphs[look_ahead].text,
                 allow_plain_entry=look_ahead > index + 1,
@@ -243,8 +244,16 @@ def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit]) -> list[tuple
 _NON_CONTENTS_BLOCK_ROLES = frozenset({"image", "table", "caption"})
 
 
-def _ends_contents_sweep(paragraph: ParagraphUnit) -> bool:
-    """Spec 080 round 2: where the text-only contents sweep above must stop.
+def _ends_contents_sweep(paragraph: ParagraphUnit, *, bounded_by_extraction: bool) -> bool:
+    """Spec 080 rounds 2-3: where the text-only contents sweep above must stop.
+
+    Round 3 (Codex acceptance review, P2): when the extraction pass has already marked this
+    contents list (its header carries ``toc_header``), that pass has decided where the list ends
+    -- including the cut at the last line with a page number
+    (``extraction._toc_region_end_at_last_page_number``) -- and the sweep does not go past the
+    last paragraph it marked. Before, after "Contents / Introduction .... 1 / Conclusion .... 29"
+    the sweep took the organisation name and the author line that followed and narration dropped
+    them. The checks below remain for a list the extraction pass did not mark.
 
     The sweep accepts any short line after the first entry (``allow_plain_entry``), so on its
     own it ran past the end of a contents list without page numbers: in the translated Money and
@@ -268,6 +277,8 @@ def _ends_contents_sweep(paragraph: ParagraphUnit) -> bool:
     """
     if _effective_structural_role(paragraph) in {"toc_header", "toc_entry"}:
         return False
+    if bounded_by_extraction:
+        return True
     if paragraph.role in _NON_CONTENTS_BLOCK_ROLES:
         return True
     return paragraph.role == "heading" and paragraph.heading_source == "explicit"

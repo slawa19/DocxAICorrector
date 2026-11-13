@@ -1470,10 +1470,56 @@ def test_sentence_continues_across_its_note_mark():
     ]
 
 
-def test_a_longer_number_is_not_a_note_mark():
-    # Four digits (a year) is not the importer's standalone-marker form (1-3 digits), so its size
-    # change is evidence like any other.
-    decision = _evaluate(_raw(0, "the ledger was printed in", 14.0), _raw(1, "1926", 5.5))
+def _narration_reasons(document) -> list[tuple[str, str | None]]:
+    """(paragraph text, narration exclusion reason) through the real extraction, semantic blocks and
+    audiobook jobs."""
+    from typing import cast as _cast
+
+    from docxaicorrector.document.extraction import extract_document_content_from_docx
+    from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_semantic_blocks
+
+    paragraphs, _ = extract_document_content_from_docx(_save_document(document))
+    # The phase preparation uses before any model has looked at the structure
+    # (`processing/preparation.py`, `downstream_structure_phase`): structure hints are binding there.
+    phase = "pre_ai_diagnostic"
+    blocks = build_semantic_blocks(paragraphs, max_chars=3000, structure_phase=phase)
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook", structure_phase=phase)
+    by_id = {paragraph.paragraph_id: paragraph.text for paragraph in paragraphs}
+    return [
+        (by_id[paragraph_id], reason)
+        for job in jobs
+        for paragraph_id, reason in zip(
+            _cast(list[str], job["paragraph_ids"]), _cast(list[str | None], job["narration_exclusion_reasons"])
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # a year set small at the end of an unfinished sentence
+        [("The harbour ledger was printed in", 14.0), ("1926", 5.5)],
+        # a year set small inside a sentence: it continues the text before it and the text after it
+        [("The ledger of", 14.0), ("1926", 5.5), ("was kept by hand in the north harbour.", 14.0)],
+        # a drop cap: one large letter, then the rest of the word in body size
+        [("T", 40.0), ("he harbour keepers wrote every tide down by hand.", 14.0)],
+    ],
+)
+def test_a_refused_merge_never_strands_a_piece_that_narration_drops(source):
+    # Spec 080, Codex acceptance review round 1 (P1): refusing a merge across a size change must not
+    # leave a piece without connected text of its own as a paragraph, which narration then drops
+    # as a `fragment` -- a year inside a sentence would leave the audiobook.
+    rows = _narration_reasons(_sized_document(*source))
+
+    assert [reason for _, reason in rows] == [None] * len(rows)
+    narrated = [text for text, reason in rows if reason is None]
+    assert _non_space_characters(narrated) == _non_space_characters(text for text, _ in source)
+
+
+def test_a_small_piece_after_a_finished_sentence_is_still_a_size_change():
+    # The piece belongs to the text before it only when that text is unfinished; after a full stop
+    # the change of size is evidence again (here a number set small on a line of its own).
+    decision = _evaluate(_raw(0, "The ledger was printed in the north.", 14.0), _raw(1, "1926", 5.5))
 
     assert decision.confidence == "blocked"
     assert "font_size_transition" in decision.reasons
@@ -1491,7 +1537,9 @@ def test_unknown_size_leaves_the_decision_as_before():
 @pytest.mark.parametrize(
     ("first", "second", "differs"),
     [
-        (10.0, 10.5, False),  # 0.5 is the absolute floor of the tolerance
+        (4.0, 4.5, False),  # the absolute floor: 10 % of 4 is 0.4, the tolerance is 0.5
+        (4.0, 4.6, True),
+        (10.0, 10.5, False),
         (10.0, 11.0, False),  # 10 % of the smaller
         (10.0, 11.5, True),
         (14.0, 15.0, False),
@@ -1506,17 +1554,15 @@ def test_size_tolerance_is_the_importers(first, second, differs):
     assert (decision.decision == "merge") is not differs
 
 
-def test_size_match_and_mark_form_agree_with_the_pdf_importer():
-    # boundaries.py restates the importer's two notions instead of importing the importer; this
-    # pins them to the same answers.
+def test_size_match_agrees_with_the_pdf_importer():
+    # boundaries.py restates the importer's tolerance instead of importing the importer; this pins
+    # them to the same answers. The small sizes (3-4.6) are where the absolute 0.5 floor decides
+    # (10 % of the smaller is below 0.5), so a formula without the floor fails here.
     from docxaicorrector.document import boundaries
     from docxaicorrector.pdf_import import logical_import
 
-    sizes = [4.0, 5.5, 5.76, 7.5, 8.0, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 14.0, 14.4, 15.0, 15.5, 16.5, 20.5, 23.5]
+    sizes = [3.0, 3.5, 4.0, 4.5, 4.6, 5.5, 5.76, 7.5, 8.0, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 14.0, 14.4, 15.0,
+             15.5, 16.5, 20.5, 23.5]
     for first in sizes:
         for second in sizes:
             assert boundaries.font_sizes_match(first, second) == logical_import._font_sizes_match(first, second)
-    for text in ("1", "12", "123", "1234", "a1", " 7 ", "1.", "", "¹"):
-        assert boundaries.is_standalone_note_mark(text) == bool(
-            logical_import._STANDALONE_FOOTNOTE_MARKER_PATTERN.match(text.strip())
-        )
