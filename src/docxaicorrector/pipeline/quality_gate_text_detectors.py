@@ -9,8 +9,7 @@ resolving for callers and the test namespace.
 
 The module imports nothing from the package at load time. Spec 083 added one import inside
 ``_reads_as_prose_by_share`` (the prose-form test lives in ``output_validation``, which imports
-this module), so the bibliography shortcut reads the same form definition as the rest of the
-pipeline.
+this module) for its review-only finding; the fatal untranslated-body test is unchanged.
 """
 
 import re
@@ -78,92 +77,7 @@ def _latin_letter_ratio(text: str) -> float:
     return len(latin_letters) / len(letters)
 
 
-def _reads_as_prose_by_share(text: str) -> bool:
-    """Spec 083: is ``text`` prose by FORM -- at least ``PROSE_FORM_MIN_RESIDUE_SHARE`` of its words
-    with a letter are lowercase running words left outside reference material?
-
-    The share half of the repository's one prose-form test (``output_validation.prose_form_word_counts``,
-    spec 064 FR-006): title spans of title length, parentheticals and brackets, address-shaped tokens,
-    tokens with a digit and short abbreviations are reference material; what is left in lowercase is the
-    running text of a sentence. A bibliography is names, capitalised titles, places, publishers and
-    numbers, so its share stays low; a sentence is mostly lowercase words. Script-neutral: a lowercase
-    letter of any cased script counts, and text with no cased letters has no residue and is not prose by
-    this test (the old behaviour).
-
-    Imported inside the function: ``output_validation`` imports this module (``_latin_letter_ratio``),
-    so a module-level import would be a cycle -- the arrangement ``paragraph_break_detection`` uses.
-    """
-    from docxaicorrector.pipeline.output_validation import PROSE_FORM_MIN_RESIDUE_SHARE, prose_form_word_counts
-
-    residue, total = prose_form_word_counts(text)
-    return bool(total) and residue / total >= PROSE_FORM_MIN_RESIDUE_SHARE
-
-
-# Spec 083: a sentence ends at ``.``, ``!`` or ``?`` followed by whitespace and a capital letter, an
-# opening quote, an opening parenthesis or an emphasis mark. Read only on text the gate counts (Latin letters >= 0.8),
-# so the Latin capitals add no language assumption to what is counted.
-_SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"“‘(*])")
-# Spec 083: a year in the DATE FIELD of a reference -- after a comma, alone or behind one capitalised
-# word (", 2009", ", March 2013", ", Spring 2009"). A year in running text follows a word, not a comma.
-_DATE_FIELD_YEAR_PATTERN = re.compile(r",\s*(?:[A-Z][^\W\d_]*\s+)?(?:1[5-9]\d\d|20\d\d)(?!\d)")
-# Spec 083 (review round 2): a year that stands as a sentence of its own -- right after a full stop and
-# closed by one, optionally with a one-letter suffix or as a range ("Rowan, A. 2009. Title.", "Rowan,
-# Alice. 2009a.", "2009-2011."). Running prose puts a year inside a sentence, after a word.
-_YEAR_ALONE = r"(?:1[5-9]\d\d|20\d\d)[a-z]?"
-_YEAR_SENTENCE_PATTERN = re.compile(rf"[.!?]\s+{_YEAR_ALONE}(?:\s*[–-]\s*{_YEAR_ALONE})?\.(?=\s|$)")
-
-
-def _carries_reference_mark(sentence: str) -> bool:
-    """Spec 083: does the sentence say where a work is found -- a year in brackets, a page or volume
-    locator, a web address (``output_validation.has_hard_reference_mark``, spec 077), a year in the
-    date field (``_DATE_FIELD_YEAR_PATTERN``) or a year standing as a sentence of its own
-    (``_YEAR_SENTENCE_PATTERN``, the author-date layout ``Name, I. 2009. Title. Place: Publisher.``)?"""
-    from docxaicorrector.pipeline.output_validation import has_hard_reference_mark
-
-    return (
-        has_hard_reference_mark(sentence)
-        or _DATE_FIELD_YEAR_PATTERN.search(sentence) is not None
-        or _YEAR_SENTENCE_PATTERN.search(sentence) is not None
-    )
-
-
-def _has_unmarked_running_sentence(text: str) -> bool:
-    """Spec 083: does ``text`` hold a sentence of running text that belongs to no cited entry?
-
-    A reference list keeps its running words inside entries, and every entry says where the work is
-    found (``_carries_reference_mark``). A sentence-case title is prose by share, but it sits in the
-    sentence that carries the mark, or -- in the author-date styles, ``Name, I. (2009). Title.
-    Publisher.`` -- in the sentence right after it; so a sentence counts as running text when it is
-    prose by share, carries no mark and does not directly follow a sentence that carries one (the
-    following is one step, it does not chain). A name, a place or a publisher left between full stops
-    is not prose by share. Prose that mentions years has sentences of running text that no mark
-    precedes: its years stand in the running text.
-    """
-    sentences = [sentence for sentence in _SENTENCE_BOUNDARY_PATTERN.split(text) if sentence.strip()]
-    marked = [_carries_reference_mark(sentence) for sentence in sentences]
-    return any(
-        _reads_as_prose_by_share(sentence) and not marked[index] and not (index > 0 and marked[index - 1])
-        for index, sentence in enumerate(sentences)
-    )
-
-
 def _is_bibliography_or_url_dominant_text(text: str) -> bool:
-    """Should the whole-paragraph untranslated-body test skip ``text`` as bibliographic apparatus?
-
-    Spec 083: three bibliographic hits (``_BIBLIOGRAPHY_LIKE_PATTERN``: a four-digit number, a year in
-    brackets, or a bibliographic word) are bibliography unless the paragraph reads as prose by form:
-    it is prose by share (``_reads_as_prose_by_share``) AND at least one of its sentences is prose by
-    share with no reference mark of its own (``_has_unmarked_running_sentence``). A bare count of
-    four-digit numbers cannot tell a reference list from a sentence that mentions three years, and an
-    English prose paragraph left untranslated was invisible to the gate. The second condition is the
-    acceptance review's case: a list of references whose titles are neither emphasised nor quoted and
-    are written in sentence case is prose by share, and counting it would block a correct translation.
-    Measured 2026-11-13 on the four English corpus books read as if returned untranslated: of the 108 prose
-    paragraphs the count hid, 104 are counted, and 11 notes of commentary; no reference note is; on the
-    7 078 delivered paragraphs of the four translations no count changes. Tables in spec 083.
-
-    The address branch and the numbered-lines branch are unchanged (spec 083 Non-goals).
-    """
     stripped = _strip_structural_markdown_prefix(text)
     if not stripped:
         return False
@@ -171,9 +85,7 @@ def _is_bibliography_or_url_dominant_text(text: str) -> bool:
         words = _LATIN_WORD_PATTERN.findall(stripped)
         return len(words) < 40
     bibliography_hits = len(_BIBLIOGRAPHY_LIKE_PATTERN.findall(stripped))
-    if bibliography_hits >= 3 and not (
-        _reads_as_prose_by_share(stripped) and _has_unmarked_running_sentence(stripped)
-    ):
+    if bibliography_hits >= 3:
         return True
     lines = [line.strip() for line in stripped.splitlines() if line.strip()]
     if lines and sum(1 for line in lines if re.match(r"^\s*(?:\[\d+\]|\d+[.)])\s+", line)) / len(lines) >= 0.5:
@@ -200,6 +112,52 @@ def _is_untranslated_body_text(text: str) -> bool:
     if len(_LATIN_WORD_PATTERN.findall(stripped)) < _UNTRANSLATED_BODY_MIN_LATIN_WORDS:
         return False
     return True
+
+
+def _reads_as_prose_by_share(text: str) -> bool:
+    """Spec 083: is ``text`` prose by FORM -- at least ``PROSE_FORM_MIN_RESIDUE_SHARE`` of its words
+    with a letter are lowercase running words left outside reference material?
+
+    The share half of the repository's one prose-form test (``output_validation.prose_form_word_counts``,
+    spec 064 FR-006). Script-neutral: a lowercase letter of any cased script counts; text with no
+    word that carries a letter is not prose by this test.
+
+    Imported inside the function: ``output_validation`` imports this module (``_latin_letter_ratio``),
+    so a module-level import would be a cycle -- the arrangement ``paragraph_break_detection`` uses.
+    """
+    from docxaicorrector.pipeline.output_validation import PROSE_FORM_MIN_RESIDUE_SHARE, prose_form_word_counts
+
+    residue, total = prose_form_word_counts(text)
+    return bool(total) and residue / total >= PROSE_FORM_MIN_RESIDUE_SHARE
+
+
+def _is_possibly_untranslated_prose_behind_bibliography_hits(text: str) -> bool:
+    """Spec 083: a paragraph the three-hits shortcut of ``_is_bibliography_or_url_dominant_text``
+    skips, that would otherwise be counted as untranslated body, and that is prose by form.
+
+    REVIEW material only -- it never feeds the fatal count. A bare count of four-digit numbers
+    cannot tell a reference list from a sentence that mentions three years, and the form cannot
+    prove it either: a correctly kept reference list whose titles are plain sentence-case text is
+    prose by share too (spec 083, acceptance reviews of rounds 1 and 2). So the shortcut stays as it
+    was for the verdict, and what it hides is listed for a person to check. All of:
+
+    * no address (the address branch decides such a paragraph before the hits are counted);
+    * three or more bibliographic hits (the shortcut that skips it);
+    * the floors the whole-paragraph test applies (length, Latin share, Latin words);
+    * prose by share (``_reads_as_prose_by_share``).
+    """
+    stripped = _strip_structural_markdown_prefix(text)
+    if len(stripped) < _UNTRANSLATED_BODY_MIN_CHARS:
+        return False
+    if _URL_OR_DOMAIN_PATTERN.search(stripped):
+        return False
+    if len(_BIBLIOGRAPHY_LIKE_PATTERN.findall(stripped)) < 3:
+        return False
+    if _latin_letter_ratio(stripped) < 0.8:
+        return False
+    if len(_LATIN_WORD_PATTERN.findall(stripped)) < _UNTRANSLATED_BODY_MIN_LATIN_WORDS:
+        return False
+    return _reads_as_prose_by_share(stripped)
 
 
 def _is_standalone_numeric_continuation_sample(sample: object) -> bool:
