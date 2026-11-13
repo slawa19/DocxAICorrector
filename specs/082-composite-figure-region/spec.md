@@ -304,3 +304,49 @@ Rethinking Money, стр. 151, «Figure 7.1 Terra Diagram»: 283 растров�
   Также исправлено: утверждение об испытании 2 как «0 ложных» снято (в прежней редакции его единственное срабатывание
   удаляло внешние строки); испытание 1 — 179 принятых областей из 181; фраза «таблица допустима по брифу» удалена.
   Статус: `IN PROGRESS` (срез A), срез B — DRAFT; строка `docs/WHERE_WE_ARE.md` — за оркестратором.
+- **2026-11-13, срез A построен (фаза 2а, ветка `082-composite-figure`).** Код (пути от `src/docxaicorrector/`):
+  опись и новая точка входа — `pdf_import/images.py:20-155` (`PdfImageObject` + поля `:33-43`, `PdfDiscoveredImage`
+  `:52-63`, `extract_pdf_images_and_inventory` `:72-155`), итоговое событие — `log_pdf_image_extraction_outcome`
+  `:157-209`, семейство пространства — `_colour_space_family` `:212-237`; правило — `pdf_import/image_frames.py`
+  (`plan_frame_replacements` `:103-148`, `apply_frame_replacements` `:163-243`); геометрия и отрисовка —
+  `pdf_import/page_render.py` (`layout_cropbox` `:87-96`, `frame_geometry` `:99-124`, `pdfium_crop_amounts` `:127-141`,
+  `render_frame` `:164-189`); мост — `processing/processing_runtime.py:592` и `_replace_pdf_images_by_page_frames`
+  `:605-640`, вставка — `_append_replaced_pdf_image_to_docx` `:1112-1142`, `_append_image_bytes_to_docx` `:1188-…`,
+  событие успеха `:969`. `extract_pdf_images_with_pdfminer` удалена (вызывал только мост), подмены в
+  `tests/test_processing_runtime.py` переведены.
+  **Замер четырёх книг** (`scripts/measure-pdf-image-frames.py`, вывод `D:\Temp\claude\work-082\after\report.json`): абзацы
+  (текст, стиль) до/после — Money 1390/1390, Creating 1765/1765, Rethinking 2651/2651, Value 1992/1992, все побайтно
+  равны; картинки (sha1 по порядку) — Money 43, Creating 62, Value 42 без единого отличия; Rethinking 55, отличаются ровно
+  32 на страницах R20 (sha1 до → после, 12 знаков): 26 `0917b6e4496a`→`e6109a9d5382`, 38 `4e927208b560`→`49314c2ff0cd`,
+  52 `c7451ab22359`→`0925e75001e4`, 72 `3bca902e28a5`→`a3302b06476e`, 88 `4dc15535aad1`→`46304a5ac7d6`, 94
+  `d3b5c7dae829`→`ef9031b6a975`, 96 `6410fc1a81d6`→`9423016b6ad8`, 103 `917c14f6ee8d`→`111df52cbfeb`, 105
+  `9b2b8d0136f3`→`ada486323fca`, 110 `caa0d5bb0c1e`→`657399599e94`, 119 `170f32d0be27`→`1e8ec9f4ea59`, 120
+  `5e2eaed2a4c5`→`01a5f6ff285d`, 121 `8c9e37779e60`→`2a4b8219f69f`, 126 `f209fcc96db0`→`c11e60c8bdc1`, 134
+  `ad26dfd03857`→`1da36f907162`, 140 `55f8fa42f99b`→`5b6f1397a3e2`, 142 `625be88c55bc`→`9130fee47f18`, 156
+  `3654ba928b4a`→`8ed460e83fa5`, 159 `ab9c3e209177`→`ea611aa3c7a4`, 166 `1b925fee2840`→`6e67bb8489f1`, 174
+  `3a71734e076a`→`58a886beaf5d`, 176 `b6d034b1c1f6`→`497e2d429390`, 178 `7769ed17727d`→`392cbca2b1f4`, 181
+  `a78e5deffefb`→`d7a0cb1f017c`, 184 `02fe53c73c73`→`66fccd47ae82`, 190 `6ac57d0ece4e`→`8c946be19a66`, 192
+  `5fd49d87f0b7`→`1872e0cc66e1`, 198 `9ece5dae2710`→`25eed443e523`, 202 `88020ed308ce`→`e9d10e2d5044`, 218
+  `fc9ebd25a318`→`5658c4559d57`, 230 `920b0c75be4f`→`ee29d1743253`, 276 `320d8873a71d`→`2d6576f04626`. Время моста
+  (в процессе, с отрисовкой и без) — Rethinking 13,8 → 14,9 с; остальные — в пределах шума (±0,5 с).
+  **Изменение размера в DOCX (замер, не было в спеке):** до спеки эти 32 фото вставлялись по плотности JPEG-файла (72 dpi
+  по умолчанию → 428 px = 5,94″, шире набора страницы); теперь — размером своей рамки (205,5 pt = 2,85″). Пример стр. 26:
+  EMU 5435600×2857500 → 2619335×1376674. Остальные картинки корпуса по-прежнему вставляются по плотности своего файла.
+  **Глазами** (Read, тройки «было | стало | страница» в `after\`): стр. 26, 94, 96, 121, 142, 159, 178, 192, 202, 230, 276 —
+  «стало» совпадает со страницей, «было» — негатив. **Тест корпуса** (`tests/test_pdf_image_frames_corpus.py`): 32 замены
+  на страницах R20, 12 отказов на стр. 151 (текст или другая картинка поверх рамки), у каждой замены пикселей ≥ источника.
+  **Мутации** (`D:\Temp\claude\work-082\mutate_sliceA.py`, вывод `mutations_sliceA.txt`), каждая поймана своим тестом:
+  M1 «любое пространство — краска» → `test_an_image_in_a_light_space_is_never_touched[DeviceGray]`; M2 «только
+  Separation» → `test_an_ink_space_image_is_a_candidate[DeviceN]`; M3 без отказа по тексту →
+  `test_text_over_the_frame_declines_the_replacement`; M4 без отказа по картинке →
+  `test_another_image_over_the_frame_declines_…`; M5 касание как пересечение → `test_text_that_only_touches_the_frame_edge_…`;
+  M6 без бюджета → `test_a_render_over_the_pixel_budget_is_declined_rather_than_shrunk`; M7 округление вместо наружу →
+  `test_frame_geometry_rounds_outward_…`; M8 `CropBox` вместо `MediaBox` → `test_layout_cropbox_without_rotation_…`; M9 обрезка
+  не по полупикселю → `test_pdfium_crop_amounts_give_exactly_the_geometry_pixels`; M10 без явного размера →
+  `test_spec082_replacement_size_is_explicit_even_at_fractional_density`; M11 без отката к выданным байтам →
+  `test_spec082_failed_insertion_of_the_render_falls_back_to_the_emitted_bytes`; M12 сбой отрисовки не сдержан →
+  `test_a_render_that_raises_keeps_the_emitted_bytes_and_logs_an_error`. Добавлена пятая причина отказа
+  `unreadable_source` (заголовок файла картинки не читается или рамка пуста; на корпусе 0). Характеристический тест T003
+  написан уже после правки кода (на базе он не запускался: главное дерево трогать нельзя); его утверждение — «JPEG
+  `DeviceGray` проходит мост байт в байт» — совпадает с поведением до спеки по построению (такие картинки правило не
+  трогает) и по замеру трёх книг выше.

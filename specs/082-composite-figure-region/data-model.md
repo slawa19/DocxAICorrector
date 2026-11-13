@@ -62,6 +62,7 @@ DECLINE_TEXT_OVER_FRAME = "text_over_frame"
 DECLINE_IMAGE_OVER_FRAME = "image_over_frame"
 DECLINE_EXCEEDS_PIXEL_BUDGET = "exceeds_pixel_budget"
 DECLINE_OUTSIDE_CROP_BOX = "outside_crop_box"
+DECLINE_UNREADABLE_SOURCE = "unreadable_source"   # заголовок файла не читается или рамка пуста
 
 
 def colour_space_is_ink(family: str | None) -> bool: ...   # Separation | DeviceN
@@ -106,7 +107,7 @@ class FrameGeometry:
     frame_height_points: float
 
 
-def frame_geometry(box, *, layout_cropbox, scale) -> FrameGeometry | None:
+def frame_geometry(box, *, crop, scale) -> FrameGeometry | None:   # crop = layout_cropbox(...)
     """Чистая: рамка макета pdfminer -> пиксели в CropBox; округление НАРУЖУ; None — вне CropBox."""
 
 

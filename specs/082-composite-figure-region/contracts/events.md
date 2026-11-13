@@ -24,8 +24,8 @@
 ## `pdf_image_frame_render_declined` — INFO, одно на картинку-кандидата без замены
 
 `pdf_path`, `page_number`, `discovery_index`, `box`, `colour_space`, `reason` (`text_over_frame` | `image_over_frame` |
-`exceeds_pixel_budget` | `outside_crop_box`), `detail` (≤ 120 знаков: начало строки поверх рамки или ключ другой
-картинки). INFO: отказ — штатный исход, картинка остаётся как сегодня.
+`exceeds_pixel_budget` | `outside_crop_box` | `unreadable_source` — заголовок файла картинки не читается или рамка пуста),
+`detail` (≤ 120 знаков: начало строки поверх рамки или ключ другой картинки). INFO: отказ — штатный исход, картинка остаётся как сегодня.
 
 ## `pdf_image_frame_render_failed` — ERROR, одно на картинку, отрисовка которой бросила исключение
 

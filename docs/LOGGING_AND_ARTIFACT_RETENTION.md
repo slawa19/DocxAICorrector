@@ -227,7 +227,7 @@ context-ключей добавляется для события, когда е
 - `src/docxaicorrector/image/analysis.py`: `image_analysis_skipped_over_budget`, `image_document_pixel_budget_exceeded`, `image_encoded_byte_budget_exceeded`, `image_pixel_budget_decompression_bomb`, `image_pixel_budget_exceeded`.
 - `src/docxaicorrector/image/generation.py`: `image_generation_skipped_over_budget`.
 - `src/docxaicorrector/image/pipeline.py`: `image_compare_variant_failed`, `image_document_pixel_budget_skip`, `image_fallback_applied`, `image_processing_budget_exhausted`, `image_processing_skipped_unsupported_source`, `image_validation_advisory_accept`, `semantic_candidate_attempt_failed`, `semantic_candidate_budget_exhausted`, `semantic_candidate_evaluated`, `semantic_candidate_resolved_to_safe_fallback`.
-- `src/docxaicorrector/pdf_import/images.py`: `pdf_image_extraction_dropped_images`, `pdf_image_extraction_page_budget_exceeded`, `pdf_image_extraction_summary`.
+- `src/docxaicorrector/pdf_import/images.py`: `pdf_image_extraction_page_budget_exceeded`. (`pdf_image_extraction_summary` и `pdf_image_extraction_dropped_images` описаны в §3.15.)
 - `src/docxaicorrector/pipeline/block_execution.py`: `block_controlled_fallback`, `block_untranslated_prose_delivered`, `controlled_fallback_registry_build_failed`, `toc_prompt_routing_selected`, `toc_validation_rejected`.
 - `src/docxaicorrector/pipeline/block_failures.py`: `toc_validation_failed_terminal`.
 - `src/docxaicorrector/pipeline/job_results.py`: `job_result_registry_save_failed`.
@@ -387,6 +387,37 @@ Notice экрана результата: `result.audiobook_studio_limits_exceed
 `scripts/_list_log_events.py` уже сканирует `late_phases.py` и `_ui.py`, поэтому новые события он видит без правок списка.
 Гард: `tests/test_spec_075_results_folder.py`.
 
+### 3.15 Спека 082: картинки PDF — такими, какими их видит читатель страницы
+
+Импорт PDF по текстовому слою заменяет байты выданной картинки, цветовое пространство которой — краска (`Separation`,
+`DeviceN`: отсчёты — доли краски, файл «как есть» — негатив), PNG-отрисовкой её собственной рамки страницы (pypdfium2),
+если поверх рамки нет чужого текста и чужой картинки. Текст не меняется. События отрисовки пишет дочерний процесс разбора
+(в прогоне раннера — в `runs/<run_id>/app.log` через `DOCX_AI_RUN_LOG_FILE`, §1.1); текст книги — только начало ≤ 120
+знаков. Контракт — `specs/082-composite-figure-region/contracts/events.md`.
+
+- `pdf_image_extraction_summary` (INFO) / `pdf_image_extraction_dropped_images` (WARNING, когда хоть одна обнаруженная
+  картинка не выдана) — `src/docxaicorrector/pdf_import/images.py` (`log_pdf_image_extraction_outcome`), один раз на книгу,
+  после шага замен. Context: `{pdf_path, discovered, emitted, pages_truncated, frame_render_replaced,
+  frame_render_declined, frame_render_failed}`, у WARNING ещё `{skipped, skipped_no_image_bytes, skipped_unknown_mime}`.
+  `discovered/emitted/skipped` имеют прежний смысл (до спеки 082 событие эмитил сам извлекатель).
+- `pdf_image_frame_rendered` — `src/docxaicorrector/pdf_import/image_frames.py`, INFO, одно на заменённую картинку.
+  Context: `{pdf_path, page_number, discovery_index, box, colour_space, source_width_px, source_height_px, width_px,
+  height_px, scale_dpi, bytes, grayscale}`; пикселей отрисовки не меньше, чем у источника.
+- `pdf_image_frame_render_declined` — там же, INFO: картинка-кандидат осталась как выдана. Context: `{pdf_path,
+  page_number, discovery_index, box, colour_space, reason, detail}`; `reason` ∈ `text_over_frame`, `image_over_frame`,
+  `exceeds_pixel_budget`, `outside_crop_box`, `unreadable_source`.
+- `pdf_image_frame_render_failed` — там же и `src/docxaicorrector/processing/processing_runtime.py`
+  (`_replace_pdf_images_by_page_frames`, сбой шага целиком; тогда `page_number`, `discovery_index`, `box` — `null`), ERROR:
+  картинка сохраняет выданные байты. Context: `{pdf_path, page_number, discovery_index, box, error_type, error_message}`.
+- `pdf_image_replacement_insert_failed` — `src/docxaicorrector/processing/processing_runtime.py`
+  (`_append_replaced_pdf_image_to_docx`), ERROR: PNG-замену не удалось вставить в DOCX, вставлены выданные байты прежним
+  путём. Context: `{source_index, page_number, error_type, error_message, fallback_inserted}`.
+- `pdf_text_layer_import_succeeded` получил ключ `images_replaced_by_frame_render`.
+
+Гарды: `tests/test_pdf_image_frames.py`, `tests/test_pdf_page_render.py`, `tests/test_processing_runtime.py`
+(`test_spec082_*`), `tests/test_pdf_image_frames_corpus.py`. `scripts/_list_log_events.py` сканирует
+`src/docxaicorrector/pdf_import/images.py` и `src/docxaicorrector/pdf_import/image_frames.py`.
+
 ## 4. Rules for adding new log events (AI agent checklist)
 
 При любой новой production-ветке с netrivial runtime-эффектом ИИ-агент обязан:
@@ -544,6 +575,7 @@ Root workspace is not an artifact drop zone. Runtime/debug/manual investigation 
 
 ## 7. Changelog этого документа
 
+- 2026-11-13: спека 082 срез A — картинки PDF как на странице. Новый §3.15 описывает `pdf_image_extraction_summary` и `pdf_image_extraction_dropped_images` (из §3.8; теперь эмитятся один раз после шага замен и несут счётчики `frame_render_*`) и регистрирует `pdf_image_frame_rendered`, `pdf_image_frame_render_declined`, `pdf_image_frame_render_failed`, `pdf_image_replacement_insert_failed`; `pdf_text_layer_import_succeeded` получил `images_replaced_by_frame_render`. `scripts/_list_log_events.py` сканирует `src/docxaicorrector/pdf_import/images.py` и `src/docxaicorrector/pdf_import/image_frames.py`. Новых артефактов и каталогов нет.
 - 2026-11-12: спека 075 — папка результатов и передача книги в студию. Новый §3.14 регистрирует события `ui_results_published`, `ui_results_publish_failed`, `studio_handoff_succeeded`, `studio_handoff_failed` и ключ состояния `latest_results_folder`; §5.5 называет постоянную папку результатов (вне `.run/`, без рантайм-очистки). Новых каталогов в `.run/` нет.
 - 2026-11-11: спека 074 FR-303…FR-305 — событие `audiobook_reading_glossary_built` получило поле `letter_reading_normalized_count` (число принятых записей, чьё чисто побуквенное чтение переписано к соглашению названий букв); у такой записи в артефакте словаря чтения лежит `model_reading` — исходное чтение модели. Новых событий, новых причин отказа и новых вызовов модели нет.
 - 2026-11-10: спека 073 WP-I — документ приведён к коду «текста для озвучки, который голос читает без ошибок». Новый §3.13 регистрирует события `audiobook_reading_glossary_built`, `audiobook_reading_glossary_unresolved`, `audiobook_reading_glossary_failed` (словарь чтения сокращений) и `audiobook_narration_book_failed` (файл книги не собран; TXT, DOCX и PDF доставляются); §5.5 перечисляет новые поля `ui_audiobook_artifact_saved` и `narration_book_path` в `artifact_paths` у `ui_result_artifacts_saved`; retention `.run/ui_results/` включает `.result.narration.json` в группу stem; артефакт словаря чтения лежит в существующей семье `.run/run_glossaries/` (§5.1, те же TTL и count-cap, новой семьи нет). Раннер real-document пишет `<имя>.narration.json` и копию артефакта словаря в каталог прогона и в `latest`, проверяет файл книги (`narration_book_*`), печатает строки `narration_*` для новых полей и строку цены стадии `audiobook_reading_glossary`; версию кода берёт из `runtime/build_info.resolve_git_head` (три собственных помощника раннера удалены). `scripts/_list_log_events.py` сканирует `src/docxaicorrector/pipeline/reading_glossary.py`.

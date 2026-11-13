@@ -20,6 +20,10 @@
   LibreOffice `writer_pdf_import` is no longer the runtime PDF fallback; OCR for
   scanned PDF remains outside the current proof contract unless explicitly
   enabled.
+- Картинки PDF (спека 082, срез A): картинка, чьё цветовое пространство — краска (`Separation`, `DeviceN`; её байты как
+  файл — негатив страницы), приходит в DOCX PNG-отрисовкой своей рамки страницы — `pypdfium2` из `requirements.txt`,
+  системного пакета нет — с размером рамки; если поверх рамки чужой текст или чужая картинка, она остаётся как выдана.
+  Дальше это обычная картинка: режимы изображений ниже обращаются с ней как с любой другой, текст документа не меняется.
 - Официальные entry points для setup, запуска и диагностики: `Setup Project`, `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Tail Streamlit Log`.
 - Официальные видимые real-document entry points: `Run Lietaer Real Validation`, `Run Real Document Validation Profile`, `Run Real Document Quality Gate`.
 - Полный `Run Full Pytest` не должен неявно запускать дорогой real-document AI smoke только потому, что в `.env` присутствует `OPENAI_API_KEY`; для такого smoke требуется явный opt-in.
