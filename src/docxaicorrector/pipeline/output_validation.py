@@ -732,8 +732,12 @@ def opens_with_note_number(text: str) -> bool:
     return body[match.end()].isupper() or body[match.end()] in _NOTE_ENTRY_OPENERS
 
 
-def _notes_run_numbered_parts(text: str) -> tuple[str, tuple[tuple[int, str], ...]] | None:
-    """``(lead, ((number, entry), ...))`` when the paragraph is a notes run by its form."""
+def _numbered_chain_parts(text: str) -> tuple[str, tuple[tuple[int, str], ...]] | None:
+    """``(lead, ((number, entry), ...))`` when the paragraph has the spec 067 NUMBERED-CHAIN form:
+    a chain of two or more entries, at least half of them anchored, or one anchored entry behind
+    a label. This is the form without the spec 079 condition that some piece cites; the quality
+    gate reads a delivered paragraph of this form note by note (``notes_run_untranslated_part``),
+    everything else asks ``_notes_run_numbered_parts``."""
     body = _INTERNAL_PLACEHOLDER_PATTERN.sub(" ", str(text or "")).strip()
     chain = _note_number_chain(body)
     if not chain:
@@ -745,17 +749,27 @@ def _notes_run_numbered_parts(text: str) -> tuple[str, tuple[tuple[int, str], ..
     lead = body[: chain[0][1]].strip()
     with_signal = sum(1 for _, entry in numbered if has_citation_anchor(entry))
     if len(chain) >= 2:
-        if with_signal * 2 < len(chain):
-            return None
-        # Spec 079: a run of notes CITES -- at least one of its pieces is a reference by the
-        # per-piece test (see the note above).
-        pieces = ((lead,) if lead else ()) + tuple(entry for _, entry in numbered)
-        return (lead, numbered) if any(notes_run_piece_reads_as_reference(piece) for piece in pieces) else None
+        return (lead, numbered) if with_signal * 2 >= len(chain) else None
     if not with_signal or not lead:
         return None
     if len(lead.split()) == 1 or is_citation_form_paragraph(lead):
         return lead, numbered
     return None
+
+
+def _notes_run_numbered_parts(text: str) -> tuple[str, tuple[tuple[int, str], ...]] | None:
+    """``(lead, ((number, entry), ...))`` when the paragraph is a notes run by its form."""
+    parts = _numbered_chain_parts(text)
+    if parts is None:
+        return None
+    lead, numbered = parts
+    if len(numbered) >= 2:
+        # Spec 079: a run of notes CITES -- at least one of its pieces is a reference by the
+        # per-piece test (see the note above).
+        pieces = ((lead,) if lead else ()) + tuple(entry for _, entry in numbered)
+        if not any(notes_run_piece_reads_as_reference(piece) for piece in pieces):
+            return None
+    return lead, numbered
 
 
 def notes_run_parts(text: str) -> tuple[str, tuple[str, ...]] | None:
@@ -839,20 +853,29 @@ def notes_run_commentary_numbers(text: str) -> tuple[int, ...]:
 
 
 def notes_run_untranslated_part(text: str) -> str | None:
-    """Spec 069 FR-005 (c): the part of a DELIVERED notes run that is untranslated commentary,
-    or ``None`` when the paragraph is not a notes run by its form.
+    """Spec 069 FR-005 (c): the part of a DELIVERED numbered chain that is untranslated
+    commentary, or ``None`` when the paragraph does not have the numbered-chain form.
 
     The part is the lead and the entries, in text order and joined by a space, whose letters are
     at least ``NOTES_RUN_UNTRANSLATED_LATIN_SHARE`` Latin and which are not a reference by the
     per-entry test. A reference kept under D1 is the right answer and drops out; a comment left
     in the source language stays in, however many references stand beside it. An empty string
-    means a notes run with nothing untranslated in it.
+    means a chain with nothing untranslated in it.
+
+    Spec 079 (Codex acceptance review, finding 1): this reads the numbered-chain FORM
+    (``_numbered_chain_parts``), not the narrower notes run. Taken apart note by note, a chain
+    only ever loses its reference pieces, so the reading is never blinder than the whole-paragraph
+    path; and the whole-paragraph path calls three four-digit numbers bibliography
+    (``quality_gate_text_detectors._is_bibliography_or_url_dominant_text``), which made numbered
+    English prose the 079 rule no longer calls notes -- three entries, a year each -- invisible to
+    the gate (2 396 untranslated characters counted as 0). "Is this a run of notes" is a question
+    of narration and translation policy; "can the gate read it piece by piece" is this one.
     """
-    parts = notes_run_parts(text)
+    parts = _numbered_chain_parts(text)
     if parts is None:
         return None
-    lead, entries = parts
-    pieces = ((lead,) if lead else ()) + entries
+    lead, numbered = parts
+    pieces = ((lead,) if lead else ()) + tuple(entry for _, entry in numbered)
     return " ".join(
         piece
         for piece in pieces
