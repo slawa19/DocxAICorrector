@@ -175,6 +175,11 @@ def build_paragraph_units_from_text_spans(
         display_text_spans=display_text_spans,
     )
     median_font_size = layout_profile.body_font_size
+    # Spec 084: the lines of each page, in reading order, for the hanging-indent run test the
+    # classifier asks of a line it would type a heading -- the same lists spec 081 reads.
+    lines_by_page: dict[int, list[PdfTextSpan]] = {}
+    for ordered_span in ordered_spans:
+        lines_by_page.setdefault(ordered_span.page_number, []).append(ordered_span)
 
     emitted: list[ParagraphUnit] = []
     pending_body_spans: list[PdfTextSpan] = []
@@ -265,6 +270,7 @@ def build_paragraph_units_from_text_spans(
             layout_profile=layout_profile,
             previous_span=previous_content_span,
             next_span=next_content_span,
+            page_lines=lines_by_page.get(span.page_number, []),
         )
         if role == "body":
             # Spec 063 FR-008: the last line of a two-line heading that the per-span
@@ -682,6 +688,7 @@ def _classify_span_role(
     layout_profile: _PdfHeadingLayoutProfile,
     previous_span: PdfTextSpan | None,
     next_span: PdfTextSpan | None,
+    page_lines: list[PdfTextSpan] | None = None,
 ) -> str:
     text = _normalize_text(span.text)
     if _BULLET_PATTERN.match(text) or _ORDERED_LIST_PATTERN.match(text):
@@ -732,6 +739,7 @@ def _classify_span_role(
         layout_profile=layout_profile,
         previous_span=previous_span,
         next_span=next_span,
+        page_lines=page_lines,
     ):
         return "heading"
     return "body"
@@ -1571,12 +1579,55 @@ def _looks_like_footnote_or_citation_tail(text: str) -> bool:
     return False
 
 
+def _opens_a_wrapped_citation_entry(
+    span: PdfTextSpan,
+    *,
+    next_span: PdfTextSpan | None,
+    page_lines: list[PdfTextSpan],
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """Spec 084: `span` is the first line of an entry of a list set with a hanging indent, and
+    the entry is a reference -- so typography does not make it a heading.
+
+    `_looks_like_footnote_or_citation_tail` already keeps a line that cites from becoming a
+    heading, but it reads the one line; an entry that wraps before its year or address
+    ("Surname, A. *A Title of Some Length* (City: Publisher" + "Press 1999)") passes it, and
+    the indent of a hanging-indent list together with title-cased words is enough for the
+    style clusters to call that line a heading. All three are required, each read off the page:
+      * the next line wraps to the hanging indent of a run (`_line_wraps_to_the_hanging_indent`,
+        the spec 081 test): it starts right of `span` by the first-line-indent step, and the
+        unbroken run of same-size lines on the page shows that margin / indent pair at least
+        twice. A heading above a list, or above prose, is followed by a line at the margin;
+      * `span` ran out of room for the next line's first word (`_entry_line_ran_out_of_room`):
+        in prose set with a first-line indent a short heading at the margin is also followed by
+        an indented line, but it ended for a reason of its own;
+      * the line and the next line read together as a citation by the same invariant.
+    The deterministic heading paths (a chapter label, a numbered section heading) never reach
+    this: it is asked only on the typographic path. The run is looked up on `span`'s page, so
+    nothing is compared across a page break, where the edges of facing pages differ. Measured
+    2026-11-13 on the four corpus PDFs with the classifier as it stood before this rule: of 677
+    lines typed heading by typography, 3 hold all three -- the first lines of three entries of
+    one reference list in Creating Wealth -- and they are the only lines for which the run test
+    holds at all (spec 084)."""
+    if next_span is None:
+        return False
+    if not _line_wraps_to_the_hanging_indent(
+        span, next_span, page_lines=page_lines, layout_profile=layout_profile
+    ):
+        return False
+    next_text = _normalize_text(next_span.text)
+    if not _entry_line_ran_out_of_room(span, next_text, layout_profile=layout_profile):
+        return False
+    return _looks_like_footnote_or_citation_tail(f"{_normalize_text(span.text)} {next_text}")
+
+
 def _looks_like_pdf_heading_candidate(
     span: PdfTextSpan,
     *,
     layout_profile: _PdfHeadingLayoutProfile,
     previous_span: PdfTextSpan | None,
     next_span: PdfTextSpan | None,
+    page_lines: list[PdfTextSpan] | None = None,
 ) -> bool:
     text = _normalize_text(span.text)
     words = _words(text)
@@ -1590,6 +1641,13 @@ def _looks_like_pdf_heading_candidate(
         span,
         layout_profile=layout_profile,
         previous_span=previous_span,
+    ):
+        return False
+    if _opens_a_wrapped_citation_entry(
+        span,
+        next_span=next_span,
+        page_lines=page_lines or [],
+        layout_profile=layout_profile,
     ):
         return False
     if _is_table_row_cell(span, layout_profile=layout_profile):
@@ -4097,13 +4155,30 @@ def _entry_line_sits_at_the_hanging_indent(
     head_first_line = _unit_line_span(head, 0, spans_by_origin)
     if head_first_line is None:
         return False
+    return _line_wraps_to_the_hanging_indent(
+        head_first_line,
+        first_line,
+        page_lines=lines_by_page.get(first_line.page_number, []),
+        layout_profile=layout_profile,
+    )
+
+
+def _line_wraps_to_the_hanging_indent(
+    entry_first_line: PdfTextSpan,
+    line: PdfTextSpan,
+    *,
+    page_lines: list[PdfTextSpan],
+    layout_profile: _PdfHeadingLayoutProfile,
+) -> bool:
+    """The two tests of `_entry_line_sits_at_the_hanging_indent`, read from lines: `line` starts
+    right of `entry_first_line` by the first-line-indent step, and the unbroken run on its page
+    that holds both shows that margin / indent pair at least `_HANGING_INDENT_MIN_RUN_ENTRIES`
+    times. Spec 084 asks the same question of a line the classifier would type a heading."""
     body_leading = layout_profile.body_leading or layout_profile.body_font_size or 10.0
-    if float(first_line.x0) - float(head_first_line.x0) < body_leading * 0.45:
+    if float(line.x0) - float(entry_first_line.x0) < body_leading * 0.45:
         return False
     return (
-        _hanging_indent_run_entry_count(
-            lines_by_page.get(first_line.page_number, []), head_first_line, first_line
-        )
+        _hanging_indent_run_entry_count(page_lines, entry_first_line, line)
         >= _HANGING_INDENT_MIN_RUN_ENTRIES
     )
 
