@@ -7,6 +7,8 @@ results in ``specs/085-contents-list-extent/spec.md``). All text is invented.
 from io import BytesIO
 from typing import cast
 
+import pytest
+
 from docx import Document
 from docx.document import Document as DocxDocument
 from docx.shared import Pt
@@ -317,6 +319,75 @@ def test_a_long_paragraph_ending_as_a_sentence_ends_the_walk_even_between_entrie
     paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ".")], [_unit("Low Water")])
 
     assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
+
+
+@pytest.mark.parametrize("ending", [".”", ".)", ".*", ".**", "…", "。"])
+def test_a_long_line_ending_with_a_full_stop_past_closing_marks_is_never_carried(ending: str) -> None:
+    # Codex acceptance review, round 2 (P2): a long provisional line whose last mark, past any
+    # closing quote, bracket or emphasis, is a full stop or an ellipsis of any script ends as a
+    # sentence (``narration_exclusion.ends_as_a_sentence``) and ends the walk (mutation: only a
+    # bare "." or ";" ends it -> the paragraph and "Low Water" are marked).
+    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ending)], [_unit("Low Water")])
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
+
+
+def test_a_long_line_ending_with_a_semicolon_ends_the_walk_as_before() -> None:
+    # The shape test of main still ends the walk on ";" for a long line, whatever its evidence
+    # (mutation: the shape's ending test applied to short lines only -> the line is carried).
+    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ";")], [_unit("Low Water")])
+
+    assert _marked(paragraphs) == ["Contents", "The Tide Ledger", "Keepers of the Lamp"]
+
+
+def test_a_long_line_equal_to_one_later_heading_is_held_provisionally_in_the_walk() -> None:
+    # A long line that one later heading matches whole is NOT accounted for in the walk: it is held
+    # provisionally, so with no evidence before it the list ends in front of it (mutation: one
+    # title accounts for a long line in the walk -> it and the two entries after it are marked).
+    paragraphs = [
+        _unit("Contents"),
+        _unit("Part One"),
+        _unit("Part Two"),
+        _unit(UNTERMINATED_DEDICATION),
+        _unit("The Tide Ledger"),
+        _unit("Keepers of the Lamp"),
+        _sentence("The ledger"),
+        _heading("The Tide Ledger", 1),
+        _heading("Keepers of the Lamp", 1),
+        _heading(UNTERMINATED_DEDICATION, 2),
+    ]
+
+    assert _marked(paragraphs) == ["Contents", "Part One", "Part Two"]
+
+
+@pytest.mark.parametrize("ending", ["?", "!", "!**", "?”"])
+def test_residual_a_long_line_ending_in_a_question_or_exclamation_mark_is_carried(ending: str) -> None:
+    # A section title takes "?" or "!" but never a full stop, and runs of sub-section titles end
+    # so on the corpus ("… Facit Saltus!"); between two accounted-for lines such a line is taken,
+    # prose or not -- the accepted residual, pinned so a change to it is seen (mutation: "?"/"!"
+    # end the walk -> the line and "Low Water" are left out).
+    paragraphs = _bracket_book([_unit(UNTERMINATED_DEDICATION + ending)], [_unit("Low Water")])
+
+    assert UNTERMINATED_DEDICATION + ending in _marked(paragraphs)
+
+
+def test_a_long_line_with_evidence_only_after_it_is_not_bracketed() -> None:
+    # Bracketing needs evidence on BOTH sides (Codex acceptance review, round 2, P1): here the
+    # lines before the long one name no later heading, the two after it do (mutation: evidence
+    # after it is enough -> the long line and the two entries after it are marked).
+    paragraphs = [
+        _unit("Contents"),
+        _unit("Part One"),
+        _unit("Part Two"),
+        _unit(UNTERMINATED_DEDICATION),
+        _unit("The Tide Ledger"),
+        _unit("Keepers of the Lamp"),
+        _sentence("The ledger"),
+        _heading("The Tide Ledger", 1),
+        _heading("Keepers of the Lamp", 1),
+    ]
+
+    assert _marked(paragraphs) == ["Contents", "Part One", "Part Two"]
 
 
 def test_a_long_body_heading_right_after_the_list_stays_outside() -> None:
@@ -693,3 +764,98 @@ def test_a_year_in_the_front_matter_is_not_a_page_number_of_the_contents() -> No
     assert reasons["Foreword"] is None
     assert reasons[CODEX_DEDICATION] is None
     assert reasons["Copyright Harbour Society 2026"] is None
+
+
+# Codex acceptance review of spec 085, round 2 (2026-11-13).
+def _docx(items: list[tuple[str, int | None, float | None]]) -> DocxDocument:
+    """A DOCX from ``(text, heading level or None, font size or None)``, in order. Lines after a
+    contents list carry their own size so that the paragraph-boundary normaliser keeps them apart
+    (a size change refuses a merge, spec 080), as the review's function calls had them."""
+    document = Document()
+    for text, level, size in items:
+        if level is not None:
+            document.add_heading(text, level=level)
+        elif size is None:
+            document.add_paragraph(text)
+        else:
+            document.add_paragraph().add_run(text).font.size = Pt(size)
+    return document
+
+
+def _foreword_before_the_evidence(entries_before: tuple[str, ...]) -> DocxDocument:
+    return _docx(
+        [
+            ("Contents", 1, None),
+            *[(entry, None, None) for entry in entries_before],
+            (CODEX_LONG_HEADING, 2, None),
+            (CODEX_PROSE, None, 9),
+            ("Harbours", None, 10),
+            ("Tides", None, 14),
+            ("The account begins.", None, None),
+            ("Harbours", 1, None),
+            ("The chapter on harbours begins with the tide tables of the quay.", None, None),
+            ("Tides", 1, None),
+            ("The chapter on tides begins with the tide tables of the quay.", None, None),
+        ]
+    )
+
+
+def test_a_foreword_with_evidence_only_after_it_stays_narrated() -> None:
+    # Codex round 2, finding 2: both accounted-for lines stand AFTER the long heading and the prose;
+    # nothing before them accounts for a later heading. Not bracketed (mutation: evidence after the
+    # provisional line is enough -> the heading and the prose get "toc").
+    for entries_before in (("Part One", "Part Two"), ()):
+        reasons = dict(_narration_reasons(_foreword_before_the_evidence(entries_before)))
+
+        assert reasons[CODEX_LONG_HEADING] is None, entries_before
+        assert reasons[CODEX_PROSE] is None, entries_before
+
+
+def _half_title_after_a_numbered_list(*, numbered: bool = True) -> DocxDocument:
+    entries = ("Harbours .... 1", "Tides .... 29") if numbered else ("Harbours", "Tides")
+    return _docx(
+        [
+            ("Contents", 1, None),
+            *[(entry, None, None) for entry in entries],
+            (CODEX_LONG_HEADING, 2, None),
+            ("Copyright Harbour Society 2026", None, 8),
+            ("The account begins.", None, None),
+            ("Harbours", 1, None),
+            ("The chapter on harbours begins with the tide tables of the quay.", None, None),
+            ("Tides", 1, None),
+            ("The chapter on tides begins with the tide tables of the quay.", None, None),
+            (CODEX_LONG_HEADING, 1, None),
+            ("The keepers kept their own notes through the winter.", None, None),
+        ]
+    )
+
+
+def test_a_long_heading_equal_to_a_later_heading_does_not_carry_the_page_numbers_on() -> None:
+    # Codex round 2, finding 3: a long heading set again later (a half-title) is accounted for by
+    # that single heading; the page-number walk ran through it to a copyright year. Page numbers
+    # are read only on lines of the contents shape and stop at the first long line of any kind
+    # (mutation: page numbers past a long line -> heading and copyright get "toc").
+    reasons = _narration_reasons(_half_title_after_a_numbered_list())
+
+    assert reasons[:5] == [
+        ("Contents", "toc"),
+        ("Harbours .... 1", "toc"),
+        ("Tides .... 29", "toc"),
+        (CODEX_LONG_HEADING, None),
+        ("Copyright Harbour Society 2026", None),
+    ]
+
+
+def test_a_long_line_equal_to_one_later_heading_is_no_contents_evidence() -> None:
+    # The mirror of finding 3 without page numbers: one heading's text, longer than the contents
+    # shape, is what a half-title or the body's own heading looks like; a long contents line is
+    # evidence only as a run of SEVERAL titles (mutation: one title accounts for a long line ->
+    # the half-title becomes the list's last evidence and is marked).
+    reasons = _narration_reasons(_half_title_after_a_numbered_list(numbered=False))
+
+    assert reasons[:4] == [
+        ("Contents", "toc"),
+        ("Harbours", "toc"),
+        ("Tides", "toc"),
+        (CODEX_LONG_HEADING, None),
+    ]
