@@ -217,9 +217,14 @@ def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit]) -> list[tuple
             index += 1
             continue
         look_ahead = index + 1
-        while look_ahead < len(paragraphs) and _is_toc_candidate_text(
-            paragraphs[look_ahead].text,
-            allow_plain_entry=look_ahead > index + 1,
+        bounded_by_extraction = _effective_structural_role(paragraph) == "toc_header"
+        while (
+            look_ahead < len(paragraphs)
+            and not _ends_contents_sweep(paragraphs[look_ahead], bounded_by_extraction=bounded_by_extraction)
+            and _is_toc_candidate_text(
+                paragraphs[look_ahead].text,
+                allow_plain_entry=look_ahead > index + 1,
+            )
         ):
             entry = paragraphs[look_ahead]
             _apply_or_hint_toc_structural_role(entry, structural_role="toc_entry")
@@ -231,6 +236,52 @@ def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit]) -> list[tuple
             continue
         index += 1
     return regions
+
+
+# Roles a paragraph carries because of what it IS in the source -- a picture, a table, a caption --
+# not because of its text. The extraction pass's own contents sweep refuses the first two
+# (`extraction._is_toc_candidate_paragraph`); a caption belongs to its picture.
+_NON_CONTENTS_BLOCK_ROLES = frozenset({"image", "table", "caption"})
+
+
+def _ends_contents_sweep(paragraph: ParagraphUnit, *, bounded_by_extraction: bool) -> bool:
+    """Spec 080 rounds 2-3: where the text-only contents sweep above must stop.
+
+    Round 3 (Codex acceptance review, P2): when the extraction pass has already marked this
+    contents list (its header carries ``toc_header``), that pass has decided where the list ends
+    -- including the cut at the last line with a page number
+    (``extraction._toc_region_end_at_last_page_number``) -- and the sweep does not go past the
+    last paragraph it marked. Before, after "Contents / Introduction .... 1 / Conclusion .... 29"
+    the sweep took the organisation name and the author line that followed and narration dropped
+    them. The checks below remain for a list the extraction pass did not mark.
+
+    The sweep accepts any short line after the first entry (``allow_plain_entry``), so on its
+    own it ran past the end of a contents list without page numbers: in the translated Money and
+    Sustainability it went on over the picture after the last entry, the organisation's
+    letterhead, its patron line and the foreword's title, and wrote all four ``toc_entry`` --
+    excluding them from the narration and turning the picture and two headings into body
+    (measured 2026-11-13: region (12, 44) where the extraction pass ended the contents at 40).
+
+    It stops at a paragraph whose role says it is not a line of text at all (a picture, a table,
+    a caption) and at a heading the source styled as a heading (``heading_source ==
+    "explicit"``) -- unless the extraction pass already put that paragraph into the contents
+    (``_annotate_toc_region_candidates``: chapter lines inside a contents list are often styled
+    as headings). Stopping early only loses contents lines the extraction pass did not see; a
+    lost contents line is read and translated as body, which is the direction of error the
+    owner accepts.
+
+    Measured 2026-11-13 on 4 PDFs, 4 translated DOCX and 4 book DOCX (spec 080): with the code of
+    ``main`` the sweep's regions never reach past the extraction pass's contents (4 regions,
+    0 paragraphs added); the one region that did -- the case above -- now ends where the
+    extraction pass ended it.
+    """
+    if _effective_structural_role(paragraph) in {"toc_header", "toc_entry"}:
+        return False
+    if bounded_by_extraction:
+        return True
+    if paragraph.role in _NON_CONTENTS_BLOCK_ROLES:
+        return True
+    return paragraph.role == "heading" and paragraph.heading_source == "explicit"
 
 
 def _apply_or_hint_toc_structural_role(paragraph: ParagraphUnit, *, structural_role: str) -> None:

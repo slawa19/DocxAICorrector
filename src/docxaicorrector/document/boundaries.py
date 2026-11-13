@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from docxaicorrector.document.narration_exclusion import ends_as_a_sentence, is_fragment_without_connected_text
 from docxaicorrector.document.roles import HEADING_STYLE_PATTERN, is_caption_style, is_likely_caption_text
 from docxaicorrector.core.models import ParagraphBoundaryDecision, ParagraphBoundaryNormalizationReport, RawBlock, RawParagraph
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
@@ -254,6 +255,8 @@ def evaluate_paragraph_boundary(
         blocked_reasons.append("style_transition")
     if alignment_transition_implies_structure(left, right):
         blocked_reasons.append("alignment_transition")
+    if font_size_transition_implies_structure(left, right):
+        blocked_reasons.append("font_size_transition")
     if ends_with_strong_paragraph_terminator(left.text) and starts_with_new_sentence_signal(
         right.text,
         has_heading_text_signal=has_heading_text_signal,
@@ -373,6 +376,66 @@ def alignment_transition_implies_structure(left: RawParagraph, right: RawParagra
         return False
     structured_alignments = {"center", "right", "end"}
     return left.paragraph_alignment in structured_alignments or right.paragraph_alignment in structured_alignments
+
+
+def font_sizes_match(first: float | None, second: float | None) -> bool | None:
+    """Whether two paragraph font sizes are one size; ``None`` when either is unknown.
+
+    The tolerance is the PDF importer's (``pdf_import.logical_import._font_sizes_match``: the
+    larger may exceed the smaller by ``max(0.5, 10 %)``), which already decides there whether two
+    lines belong to one paragraph. It is restated here rather than imported: the document layer
+    does not depend on the PDF importer, and ``tests/test_paragraph_boundary_normalization.py``
+    pins the two to the same answers. The importer reads a missing size as "no match"; here a
+    missing size is no evidence either way, so the caller can leave its decision unchanged.
+    """
+    if not isinstance(first, (int, float)) or not isinstance(second, (int, float)):
+        return None
+    if first <= 0 or second <= 0:
+        return None
+    smaller, larger = min(first, second), max(first, second)
+    return larger - smaller <= max(0.5, smaller * 0.1)
+
+
+def font_size_transition_implies_structure(left: RawParagraph, right: RawParagraph) -> bool:
+    """Spec 080: two paragraphs set in clearly different sizes are two things, not one torn one.
+
+    A paragraph torn by a page, a column or a figure keeps its size on both sides; a change of
+    size between two adjacent paragraphs is the typesetter marking a change of kind -- an
+    epigraph or its attribution and the chapter's first paragraph, a lead-in and a displayed
+    quotation, a caption and the body, table-of-contents lines of two tiers. Unknown size on
+    either side is no evidence, and the boundary is then decided by the other signals as before.
+
+    A piece with no connected text of its own -- a note mark the importer left as a paragraph,
+    a year set small, a drop cap; the form is narration's own fragment test,
+    ``narration_exclusion.is_fragment_without_connected_text`` -- is set in another size for
+    another reason: it is part of a line of text, not a different kind of text. Refusing to join
+    it would strand it as a paragraph that narration then drops as a ``fragment`` (Codex
+    acceptance review of spec 080, P1). So the size is no evidence:
+
+    * when the RIGHT side is such a piece and the left side does not end as a sentence
+      (``narration_exclusion.ends_as_a_sentence``): the piece belongs to the text before it;
+    * when the LEFT side is such a piece and the right side continues the sentence
+      (``starts_with_continuation_signal``): the text after it belongs to the same sentence.
+
+    A piece between an epigraph and a chapter's first paragraph therefore joins the epigraph and
+    the chapter opening (a new sentence, capital first) stays apart. The other signals then
+    decide as before. The importer treats a note mark the same way
+    (``_consolidate_cross_role_continuations``: "transparent" between two halves of a sentence).
+
+    Measured 2026-11-13 on 4 corpus PDFs, 4 translated DOCX and 4 book DOCX (spec 080): of the
+    merges across a size change on ``main`` 31 are refused -- 30 joined two different things,
+    one joined the two lines of an attribution across its mark (the price: two paragraphs
+    instead of one, no text lost) -- and 8 still join: a mark to the text it marks, a sentence
+    across its mark, two pieces of a diagram label.
+    """
+    match = font_sizes_match(left.font_size_pt, right.font_size_pt)
+    if match is not False:
+        return False
+    if is_fragment_without_connected_text(right.text) and not ends_as_a_sentence(left.text):
+        return False
+    if is_fragment_without_connected_text(left.text) and starts_with_continuation_signal(right.text):
+        return False
+    return True
 
 
 def style_transition_implies_structure(left: RawParagraph, right: RawParagraph) -> bool:
