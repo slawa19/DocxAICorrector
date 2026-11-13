@@ -112,6 +112,7 @@ from docxaicorrector.pipeline.quality_gate_text_detectors import (  # noqa: F401
     _latin_letter_ratio,
     _is_bibliography_or_url_dominant_text,
     _is_untranslated_body_text,
+    _is_possibly_untranslated_prose_behind_bibliography_hits,
     _is_standalone_numeric_continuation_sample,
     _REFERENCES_BIB_MARKER_PATTERN,
     _MULTI_FOOTNOTE_MARKER_PATTERN,
@@ -467,6 +468,15 @@ class _UntranslatedStructuralSample:
     char_count: int = 0
 
 
+# Spec 083: the review-only finding for prose the three-hits bibliography shortcut hides. Its
+# items carry this reason; the gate reason it raises is the existing non-fatal
+# ``untranslated_body_text_review_required`` (already humanized for the result screen).
+UNTRANSLATED_BODY_POSSIBLE_SAMPLE_REASON = "untranslated_body_text_possible"
+_UNTRANSLATED_BODY_POSSIBLE_LABEL = (
+    "Абзац прозы с годами мог остаться без перевода — проверьте (или это список литературы)"
+)
+
+
 _HYGIENE_GATE_SPECS: dict[str, _HygieneGateSpec] = {
     "role_loss": _HygieneGateSpec(
         review_reason="role_loss_review_required",
@@ -562,6 +572,38 @@ def _collect_untranslated_body_samples(
     final_markdown: str,
     assembly_entries: Sequence[object],
 ) -> list[_UntranslatedStructuralSample]:
+    return _collect_body_samples(
+        final_markdown=final_markdown,
+        assembly_entries=assembly_entries,
+        char_count_of=lambda text: _untranslated_body_char_count(text),
+        reason="untranslated_body_text",
+    )
+
+
+def _collect_possibly_untranslated_body_samples(
+    *,
+    final_markdown: str,
+    assembly_entries: Sequence[object],
+) -> list[_UntranslatedStructuralSample]:
+    """Spec 083: the REVIEW-only list of body paragraphs the three-hits bibliography shortcut keeps
+    out of the untranslated count although they read as prose (``_possibly_untranslated_body_char_count``).
+    Same exemptions as the counting collector -- heading/caption, controlled fallback,
+    ``policy_kept_source`` -- so a paragraph kept in the source language by policy is never listed."""
+    return _collect_body_samples(
+        final_markdown=final_markdown,
+        assembly_entries=assembly_entries,
+        char_count_of=lambda text: _possibly_untranslated_body_char_count(text),
+        reason=UNTRANSLATED_BODY_POSSIBLE_SAMPLE_REASON,
+    )
+
+
+def _collect_body_samples(
+    *,
+    final_markdown: str,
+    assembly_entries: Sequence[object],
+    char_count_of: Callable[[str], int],
+    reason: str,
+) -> list[_UntranslatedStructuralSample]:
     if not assembly_entries:
         return []
     nonempty_line_numbers = [
@@ -588,14 +630,14 @@ def _collect_untranslated_body_samples(
         if _is_policy_kept_source_entry(entry):
             continue
         text = str(getattr(entry, "text", "") or "").strip()
-        char_count = _untranslated_body_char_count(text)
+        char_count = char_count_of(text)
         if not char_count:
             continue
         samples.append(
             _UntranslatedStructuralSample(
                 line=nonempty_line_numbers[index] if index < len(nonempty_line_numbers) else None,
                 text=text,
-                reason="untranslated_body_text",
+                reason=reason,
                 role=role or None,
                 structural_role=structural_role or None,
                 paragraph_id=str(getattr(entry, "paragraph_id", "") or "") or None,
@@ -634,6 +676,18 @@ def _untranslated_body_char_count(text: str) -> int:
     if len(_LATIN_WORD_PATTERN.findall(part)) < _UNTRANSLATED_BODY_MIN_LATIN_WORDS:
         return 0
     return len(part)
+
+
+def _possibly_untranslated_body_char_count(text: str) -> int:
+    """Spec 083: the characters of one delivered body paragraph that the three-hits bibliography
+    shortcut hides from ``_untranslated_body_char_count`` although the paragraph reads as prose; 0
+    if none. A paragraph of the numbered-chain form is read piece by piece by the counting path and
+    the shortcut never sees it, so it is never listed here. Disjoint from the counting path by
+    construction: a paragraph with three hits and no address is 0 there."""
+    stripped = _strip_structural_markdown_prefix(text)
+    if notes_run_untranslated_part(stripped) is not None:
+        return 0
+    return len(stripped) if _is_possibly_untranslated_prose_behind_bibliography_hits(text) else 0
 
 
 def _list_fragment_apparatus_credited_lines(
@@ -1541,6 +1595,10 @@ def _build_translation_quality_report(
         final_markdown=final_markdown,
         assembly_entries=assembly_entries,
     )
+    possibly_untranslated_body_samples = _collect_possibly_untranslated_body_samples(
+        final_markdown=final_markdown,
+        assembly_entries=assembly_entries,
+    )
     untranslated_body_char_count = sum(int(getattr(sample, "char_count", 0) or 0) for sample in untranslated_body_samples)
     untranslated_body_ratio = (
         untranslated_body_char_count / max(len(_strip_structural_markdown_prefix(final_markdown)), 1)
@@ -1993,6 +2051,34 @@ def _build_translation_quality_report(
                 )
                 if sample_index == 0 and use_aggregate:
                     item["aggregate_count"] = len(untranslated_body_samples)
+                formatting_review_items.append(item)
+        if possibly_untranslated_body_samples:
+            # Spec 083: REVIEW ONLY, never the fatal reason and never ``fail``. The three-hits
+            # bibliography shortcut keeps these paragraphs out of the count above; they read as
+            # prose by form, but the form cannot prove they are not a correctly kept reference list
+            # (a sentence-case title is prose by share too), so a person checks them. The gate reason
+            # is the existing non-fatal one (``warn`` at most); the items name each paragraph.
+            if "untranslated_body_text_review_required" not in gate_reasons:
+                quality_status = _apply_quality_review_reason(
+                    quality_status=quality_status,
+                    gate_reasons=gate_reasons,
+                    reason="untranslated_body_text_review_required",
+                )
+            serialized_samples = [
+                dict(_serialize_untranslated_structural_sample(sample))
+                for sample in possibly_untranslated_body_samples[:8]
+            ]
+            use_aggregate = len(possibly_untranslated_body_samples) > len(serialized_samples)
+            for sample_index, sample in enumerate(serialized_samples):
+                item = _build_formatting_review_item(
+                    reason=UNTRANSLATED_BODY_POSSIBLE_SAMPLE_REASON,
+                    label=_UNTRANSLATED_BODY_POSSIBLE_LABEL,
+                    sample=sample,
+                    count=0 if use_aggregate else 1,
+                    severity="review",
+                )
+                if sample_index == 0 and use_aggregate:
+                    item["aggregate_count"] = len(possibly_untranslated_body_samples)
                 formatting_review_items.append(item)
     mapping_text_quality_payload = (
         latest_payload.get("mapping_text_quality") if isinstance(latest_payload, Mapping) else None

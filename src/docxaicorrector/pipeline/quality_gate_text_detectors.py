@@ -6,6 +6,10 @@ string/sample predicates that decide language, bibliography/URL dominance, and
 citation-form list-fragment residue. No behaviour change -- ``quality_gate``
 re-exports every name so ``quality_gate.<name>`` / ``late_phases.<name>`` keep
 resolving for callers and the test namespace.
+
+The module imports nothing from the package at load time. Spec 083 added one import inside
+``_reads_as_prose_by_share`` (the prose-form test lives in ``output_validation``, which imports
+this module) for its review-only finding; the fatal untranslated-body test is unchanged.
 """
 
 import re
@@ -108,6 +112,52 @@ def _is_untranslated_body_text(text: str) -> bool:
     if len(_LATIN_WORD_PATTERN.findall(stripped)) < _UNTRANSLATED_BODY_MIN_LATIN_WORDS:
         return False
     return True
+
+
+def _reads_as_prose_by_share(text: str) -> bool:
+    """Spec 083: is ``text`` prose by FORM -- at least ``PROSE_FORM_MIN_RESIDUE_SHARE`` of its words
+    with a letter are lowercase running words left outside reference material?
+
+    The share half of the repository's one prose-form test (``output_validation.prose_form_word_counts``,
+    spec 064 FR-006). Script-neutral: a lowercase letter of any cased script counts; text with no
+    word that carries a letter is not prose by this test.
+
+    Imported inside the function: ``output_validation`` imports this module (``_latin_letter_ratio``),
+    so a module-level import would be a cycle -- the arrangement ``paragraph_break_detection`` uses.
+    """
+    from docxaicorrector.pipeline.output_validation import PROSE_FORM_MIN_RESIDUE_SHARE, prose_form_word_counts
+
+    residue, total = prose_form_word_counts(text)
+    return bool(total) and residue / total >= PROSE_FORM_MIN_RESIDUE_SHARE
+
+
+def _is_possibly_untranslated_prose_behind_bibliography_hits(text: str) -> bool:
+    """Spec 083: a paragraph the three-hits shortcut of ``_is_bibliography_or_url_dominant_text``
+    skips, that would otherwise be counted as untranslated body, and that is prose by form.
+
+    REVIEW material only -- it never feeds the fatal count. A bare count of four-digit numbers
+    cannot tell a reference list from a sentence that mentions three years, and the form cannot
+    prove it either: a correctly kept reference list whose titles are plain sentence-case text is
+    prose by share too (spec 083, acceptance reviews of rounds 1 and 2). So the shortcut stays as it
+    was for the verdict, and what it hides is listed for a person to check. All of:
+
+    * no address (the address branch decides such a paragraph before the hits are counted);
+    * three or more bibliographic hits (the shortcut that skips it);
+    * the floors the whole-paragraph test applies (length, Latin share, Latin words);
+    * prose by share (``_reads_as_prose_by_share``).
+    """
+    stripped = _strip_structural_markdown_prefix(text)
+    if len(stripped) < _UNTRANSLATED_BODY_MIN_CHARS:
+        return False
+    if _URL_OR_DOMAIN_PATTERN.search(stripped):
+        return False
+    if len(_BIBLIOGRAPHY_LIKE_PATTERN.findall(stripped)) < 3:
+        return False
+    if _latin_letter_ratio(stripped) < 0.8:
+        return False
+    if len(_LATIN_WORD_PATTERN.findall(stripped)) < _UNTRANSLATED_BODY_MIN_LATIN_WORDS:
+        return False
+    return _reads_as_prose_by_share(stripped)
 
 
 def _is_standalone_numeric_continuation_sample(sample: object) -> bool:
