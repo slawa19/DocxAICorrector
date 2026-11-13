@@ -26,8 +26,7 @@ Spec-only tier (Конституция III); `plan.md` и `tasks.md` не пиш
 ## Итог
 
 - Дефект (19 строк оглавления переведённой «The Value of Everything» читаются вслух) **остаётся**: владелец решил
-  убирать оглавление в Studio вручную (решение 2026-11-13: «a contents list read aloud is visible and removable, a
-  silently dropped paragraph is not»).
+  убирать оглавление в Studio вручную (решение 2026-11-13, дословно: «А, уберу вручную»).
 - Перебег «поздно», который замер нашёл на `main` (первый заголовок тела в трёх документах, пять строк титула и
   предисловия в четвёртом; в платном прогоне CW 2026-11-13 заголовок предисловия выпал из озвучки), тоже **остаётся** —
   его исправление требует вернуть абзацы из области оглавления в поток, а это и оказалось недоказуемым (ниже).
@@ -36,7 +35,8 @@ Spec-only tier (Конституция III); `plan.md` и `tasks.md` не пиш
 
 ## Решение владельца (2026-11-13)
 
-Цитата из поручения оркестратора: «OWNER DECISION 2026-11-13: ship only the SAFE part; the contents of the Value of
+Слова владельца на вопрос, расширять ли область оглавления на длинные строки ценой риска потерять абзац: «А, уберу
+вручную». Всё, что ниже, — слова оркестратора, а не владельца. Цитата из поручения оркестратора агенту: «OWNER DECISION 2026-11-13: ship only the SAFE part; the contents of the Value of
 Everything translation stays read aloud and the owner will remove it by hand in the Studio … The owner's rule is that no
 useful text may be excluded; a contents list read aloud is visible and removable, a silently dropped paragraph is not.»
 Последний круг (оркестратор, после ревью Codex №4): «cut to what is provably a subset of main through the whole chain».
